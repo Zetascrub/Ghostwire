@@ -1,4 +1,8 @@
-# Cardputer-Adv firmware workspace
+# Ghostwire
+
+Firmware for the M5Stack Cardputer ADV, built as a keyboard-driven field
+toolkit for authorized security assessment, network administration, radio
+diagnostics, and hardware experimentation.
 
 Current firmware: **Ghostwire 0.3.15.9**, with additional 0.3.x changes under
 active development. The firmware's canonical version string is maintained in
