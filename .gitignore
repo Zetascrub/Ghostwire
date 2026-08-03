@@ -1,0 +1,41 @@
+.pio/
+.pio-core/
+.venv/
+.claude/
+backups/
+/dist/
+
+# Downloaded upstream reference projects and firmware images.
+diagnostics/
+Firmware-Examples/
+
+# Local third-party datasheets, schematics, and research notes. Keep these in
+# the private workspace and link to authoritative upstream sources publicly.
+docs/reference/
+
+# Generated editor/build metadata.
+compile_commands.json
+
+# Retired local boot-art experiment.
+zetascrub_cardputer_boot.gif
+
+# Common local/editor noise.
+.DS_Store
+*.swp
+*.swo
+
+# Local removable-media credentials. Keep only documentation and deliberately
+# blank examples in source control.
+sd-card-files/ghostwire/secrets/*
+!sd-card-files/ghostwire/secrets/README.md
+!sd-card-files/ghostwire/secrets/*.example.json
+
+# Runtime output copied back from a real device can contain network names,
+# identifiers, locations, packet data, RFID identities, and chat content.
+sd-card-files/ghostwire/logs/
+sd-card-files/ghostwire/tags/
+
+# Common developer-local configuration.
+.env
+.env.*
+*.local
