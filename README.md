@@ -19,6 +19,29 @@ The ready-to-copy microSD template is in
 card. The repository keeps blank examples and setup instructions, while local
 credentials such as `ghostwire/secrets/ai.json` remain ignored.
 
+## Getting started
+
+Ghostwire targets the M5Stack Cardputer ADV. Install the PlatformIO CLI, clone
+this repository, and build or upload from its root:
+
+```sh
+git clone https://github.com/Zetascrub/Ghostwire.git
+cd Ghostwire
+pio test -e native
+pio run -e cardputer_adv
+pio run -e cardputer_adv --target upload
+```
+
+PlatformIO downloads the pinned toolchain and libraries into this checkout.
+For download-mode instructions, release packaging, and the hardware test
+checklist, see [Build and release](docs/build-and-release.md). Copy the contents
+of [`sd-card-files`](sd-card-files/README.md) to the root of a microSD card when
+you need scripts, audio, or AI configuration.
+
+Use active assessment features only on equipment you own or have explicit
+authorization to test. Review [Authorized use and data handling](docs/authorized-use.md)
+before collecting radio, network, RFID, terminal, or location data.
+
 ## Current features
 
 The main menu is organized into **Wi-Fi / BLE / GPS / Mesh / War Drive /
@@ -71,9 +94,10 @@ Network / Devices / AI Chat / Cyber Familiar / Tools / Settings**.
   - BLE Keyboard: explicitly started, bondable live HID keyboard. After the
     host pairs with `Ghostwire Keyboard`, printable keys plus Enter, Backspace,
     and Tab are forwarded until Escape stops and disconnects the service.
-  - Spam (**shelved**): Apple Continuity / Google Fast Pair / Microsoft
-    Swift Pair pairing-popup spam. Hardware-stable, but not confirmed to
-    trigger a real popup on any tested device yet.
+  - Spam (**experimental; shelved from further roadmap work**): Apple
+    Continuity / Google Fast Pair / Microsoft Swift Pair pairing-popup spam.
+    It remains available in the BLE menu and is hardware-stable, but has not
+    been confirmed to trigger a real popup on any tested device.
 
 #### GPS and Mesh
 
@@ -151,8 +175,8 @@ A passive virtual companion that develops through normal device use. It
   - Infrared: onboard 38 kHz transmitter self-test.
   - USB/HID: composite USB serial, confirmed text-only keyboard demos, and a
     guarded microSD DuckyScript runner. Put `.txt` or `.duck` scripts in
-    `/ghostwire/scripts`; supported commands are `REM`, `STRING`, `STRINGLN`,
-    `DELAY`, `DEFAULT_DELAY`, `ENTER`, `TAB`, `BACKSPACE`, and `SPACE`.
+    `/ghostwire/scripts`; the [script template](sd-card-files/ghostwire/scripts/README.md)
+    lists the supported commands and execution limits.
   - Audio: speaker tone test, live microphone level, and MP3 playback from
     `/ghostwire/audio`. Format guidance is available in the
     [SD audio template](sd-card-files/ghostwire/audio/README.md).
@@ -175,6 +199,32 @@ persistent options for volume, brightness, screen timeout, eight boot animation
 styles, five boot sound styles with on-device previews, fast boot, Wi-Fi
 credential saving, boot auto-connect, the Cyberdeck idle mode, themes, and
 restoring defaults.
+
+## Controls
+
+The current navigation shortcuts are implemented centrally in `handleInput()`
+in [`src/main.cpp`](src/main.cpp):
+
+- Move with the arrow keys. `W`/`S`, `K`/`J`, and `;`/`.` are equivalent
+  up/down shortcuts on normal navigation screens.
+- Select with `Enter`.
+- Return with `Escape`, `Backspace`, Left, `Q`, or `B`. Individual text-entry
+  and live terminal screens reserve some of these keys for editing or remote
+  input and show their available exit key in the footer.
+- Press `R` to refresh, restart, or start/stop the current operation where the
+  screen footer offers it.
+- Press `Tab` to open the contextual action menu where one is available. Use
+  the normal movement keys and `Enter` inside it; `Tab` or any back key closes
+  it.
+- In AI Chat, `Tab` switches text provider, `Ctrl+R` records a six-second voice
+  prompt, `Ctrl+S` speaks the latest reply, and `Ctrl+N` clears the in-memory
+  conversation.
+- In a live BLE Keyboard session, printable keys, `Enter`, `Backspace`, and
+  `Tab` are forwarded to the paired host; `Escape` stops the service.
+
+Press `Ctrl` + `Alt` + `Backspace` at any time for the global emergency stop.
+It stops active radio operations, sockets, playback and logging, disconnects
+Wi-Fi, and returns to the main menu.
 
 ## Roadmap
 
@@ -240,15 +290,6 @@ authorized security field toolkit. It includes:
 - Persistent boot/recovery counters and append-only SD startup history.
 - Live terminal-style boot diagnostics with a Ghostwire/Zetascrub title card.
 - A system dashboard and placeholders for future tool groups.
-
-Use the arrow keys (or `W`/`S` and `K`/`J`) to move, Enter to select,
-Backspace/Left/`Q`/`B` to return, `R` to refresh Wi-Fi or microSD data,
-and `Tab` to open a screen's contextual action menu (export, deauth,
-disconnect, and other actions available on that screen).
-
-Press `Ctrl` + `Alt` + `Backspace` at any time for the global emergency stop.
-It stops active radio operations, sockets, playback and logging, disconnects
-Wi-Fi, and returns to the main menu.
 
 The 0.2.x series brings up one subsystem at a time:
 
@@ -431,10 +472,6 @@ Next candidates: TCP/UDP socket workbench, offline time controls, BLE
 DuckyScript transport, QR presets, and microphone spectrum diagnostics. See the
 roadmap for acceptance gates and deliberately shelved ideas.
 
-Build and flash from this directory:
+## License
 
-```sh
-pio test -e native
-pio run -e cardputer_adv
-pio run -e cardputer_adv --target upload
-```
+Ghostwire is released under the [MIT License](LICENSE).

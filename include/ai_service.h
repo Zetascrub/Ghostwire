@@ -36,7 +36,7 @@ private:
     String openAiKey_;
     String anthropicKey_;
     String openAiModel_ = "gpt-5-mini";
-    String anthropicModel_ = "claude-sonnet-5";
+    String anthropicModel_ = "claude-sonnet-4-20250514";
     String model_ = openAiModel_;
     String status_ = "Load /ghostwire/secrets/ai.json";
     std::vector<AiTurn> history_;

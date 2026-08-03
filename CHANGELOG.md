@@ -6,6 +6,9 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Replace the invalid bundled Claude fallback `claude-sonnet-5` with
+  Anthropic's documented API model ID `claude-sonnet-4-20250514` in the
+  firmware and example AI configuration.
 - Remove all bundled test MP3 files and the theme-specific MP3 boot-sound
   hooks. Five synthesized boot sounds remain available without SD assets.
 - Chameleon Ultra now automatically retries BLE discovery and connection while

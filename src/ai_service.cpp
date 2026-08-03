@@ -107,7 +107,9 @@ bool AiService::loadConfig() {
         openAiModel_.trim();
     }
     if (openAiModel_.isEmpty()) openAiModel_ = "gpt-5-mini";
-    if (anthropicModel_.isEmpty()) anthropicModel_ = "claude-sonnet-5";
+    if (anthropicModel_.isEmpty()) {
+        anthropicModel_ = "claude-sonnet-4-20250514";
+    }
     const String selected = String(doc["provider"] | "openai");
     provider_ = selected.equalsIgnoreCase("claude") ? AiProvider::Claude
                                                      : AiProvider::OpenAI;
@@ -316,7 +318,7 @@ bool AiService::send(const String& prompt, String& answer) {
             item["content"] = turn.text;
         }
     } else {
-        if (model_.isEmpty()) model_ = "claude-sonnet-5";
+        if (model_.isEmpty()) model_ = "claude-sonnet-4-20250514";
         url = "https://api.anthropic.com/v1/messages";
         doc["model"] = model_;
         doc["max_tokens"] = 2000;
