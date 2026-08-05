@@ -69,6 +69,7 @@
 #include "wifi_screens.h"
 #include "wifi_guardian_service.h"
 #include "wifi_guardian_screen.h"
+#include "wifi_profile.h"
 
 namespace {
 
@@ -124,6 +125,10 @@ unsigned long wifiConnectStartMs = 0;
 bool wifiConnectAttempting = false;
 String wifiConnectSavedSsid;
 String wifiConnectSavedPassword;
+std::vector<WifiProfile> wifiProfiles;
+size_t activeWifiProfile = SIZE_MAX;
+String wifiProfileStatus;
+String wifiProfileNameInput;
 String bleExportStatus;
 String diagnosticExportStatus;
 uint32_t bootCount = 0;
@@ -421,7 +426,9 @@ WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
                         handshakeMessageSeen, handshakePmkidFound,
                         handshakePmkid, handshakeCaptureLogger,
                         wifiConnectSavedSsid, wifiConnectSsid,
-                        wifiConnectPasswordInput, wifiConnectStatusText);
+                        wifiConnectPasswordInput, wifiConnectStatusText,
+                        wifiProfiles, activeWifiProfile, wifiProfileStatus,
+                        wifiProfileNameInput);
 unsigned long lastImuDraw = 0;
 unsigned long lastImuLog = 0;
 m5::imu_data_t imuData{};
@@ -483,6 +490,126 @@ void saveSettings() {
     preferences.putUChar("fam_cue", familiarCueIndex);
 }
 
+String wifiProfileKey(const char* field, size_t index) {
+    return String("wp_") + field + String(index);
+}
+
+void refreshActiveWifiCredentialCache() {
+    if (activeWifiProfile >= wifiProfiles.size()) {
+        activeWifiProfile = wifiProfiles.empty() ? SIZE_MAX : 0;
+    }
+    if (activeWifiProfile == SIZE_MAX) {
+        wifiConnectSavedSsid = "";
+        wifiConnectSavedPassword = "";
+        return;
+    }
+    wifiConnectSavedSsid = wifiProfiles[activeWifiProfile].ssid;
+    wifiConnectSavedPassword = wifiProfiles[activeWifiProfile].password;
+}
+
+void persistWifiProfiles() {
+    preferences.putUChar("wp_count",
+                         static_cast<uint8_t>(wifiProfiles.size()));
+    preferences.putUChar("wp_active",
+                         activeWifiProfile < wifiProfiles.size()
+                             ? static_cast<uint8_t>(activeWifiProfile)
+                             : UINT8_MAX);
+    for (size_t index = 0; index < kMaxWifiProfiles; ++index) {
+        const String nameKey = wifiProfileKey("name", index);
+        const String ssidKey = wifiProfileKey("ssid", index);
+        const String passKey = wifiProfileKey("pass", index);
+        if (index < wifiProfiles.size()) {
+            preferences.putString(nameKey.c_str(), wifiProfiles[index].name);
+            preferences.putString(ssidKey.c_str(), wifiProfiles[index].ssid);
+            preferences.putString(passKey.c_str(), wifiProfiles[index].password);
+        } else {
+            preferences.remove(nameKey.c_str());
+            preferences.remove(ssidKey.c_str());
+            preferences.remove(passKey.c_str());
+        }
+    }
+    refreshActiveWifiCredentialCache();
+}
+
+void clearWifiProfiles() {
+    for (auto& profile : wifiProfiles) {
+        for (size_t index = 0; index < profile.password.length(); ++index) {
+            profile.password.setCharAt(index, '\0');
+        }
+    }
+    wifiProfiles.clear();
+    activeWifiProfile = SIZE_MAX;
+    persistWifiProfiles();
+    preferences.remove("wifi_ssid");
+    preferences.remove("wifi_pass");
+}
+
+void loadWifiProfiles() {
+    wifiProfiles.clear();
+    const size_t count = std::min<size_t>(preferences.getUChar("wp_count", 0),
+                                          kMaxWifiProfiles);
+    for (size_t index = 0; index < count; ++index) {
+        WifiProfile profile;
+        profile.ssid = preferences.getString(
+            wifiProfileKey("ssid", index).c_str(), "");
+        if (profile.ssid.isEmpty()) continue;
+        profile.name = preferences.getString(
+            wifiProfileKey("name", index).c_str(), profile.ssid);
+        if (profile.name.isEmpty()) profile.name = profile.ssid;
+        profile.password = preferences.getString(
+            wifiProfileKey("pass", index).c_str(), "");
+        wifiProfiles.push_back(profile);
+    }
+
+    // One-time migration from the pre-0.5 single saved credential.
+    if (wifiProfiles.empty()) {
+        const String legacySsid = preferences.getString("wifi_ssid", "");
+        if (!legacySsid.isEmpty()) {
+            wifiProfiles.push_back({legacySsid, legacySsid,
+                                    preferences.getString("wifi_pass", "")});
+        }
+    }
+    const uint8_t storedActive = preferences.getUChar("wp_active", 0);
+    activeWifiProfile = storedActive < wifiProfiles.size() ? storedActive
+                                                           : SIZE_MAX;
+    if (!wifiProfiles.empty() && activeWifiProfile == SIZE_MAX) {
+        activeWifiProfile = 0;
+    }
+    persistWifiProfiles();
+    preferences.remove("wifi_ssid");
+    preferences.remove("wifi_pass");
+}
+
+bool saveWifiProfile(const String& ssid, const String& password) {
+    for (size_t index = 0; index < wifiProfiles.size(); ++index) {
+        if (wifiProfiles[index].ssid == ssid) {
+            wifiProfiles[index].password = password;
+            persistWifiProfiles();
+            return true;
+        }
+    }
+    if (wifiProfiles.size() >= kMaxWifiProfiles) return false;
+    wifiProfiles.push_back({ssid, ssid, password});
+    if (activeWifiProfile == SIZE_MAX) activeWifiProfile = 0;
+    persistWifiProfiles();
+    return true;
+}
+
+void deleteWifiProfile(size_t index) {
+    if (index >= wifiProfiles.size()) return;
+    for (size_t character = 0;
+         character < wifiProfiles[index].password.length(); ++character) {
+        wifiProfiles[index].password.setCharAt(character, '\0');
+    }
+    wifiProfiles.erase(wifiProfiles.begin() + index);
+    if (wifiProfiles.empty()) activeWifiProfile = SIZE_MAX;
+    else if (activeWifiProfile == index) activeWifiProfile = 0;
+    else if (activeWifiProfile > index && activeWifiProfile != SIZE_MAX) {
+        --activeWifiProfile;
+    }
+    persistWifiProfiles();
+}
+
 void restoreDefaultSettings() {
     speakerVolume = kDefaultVolume;
     screenBrightness = kDefaultBrightness;
@@ -494,10 +621,7 @@ void restoreDefaultSettings() {
     cyberdeckIdleEnabled = kDefaultCyberdeckIdle;
     cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
     cardNavigationEnabled = kDefaultCardNavigation;
-    preferences.remove("wifi_ssid");
-    preferences.remove("wifi_pass");
-    wifiConnectSavedSsid = "";
-    wifiConnectSavedPassword = "";
+    clearWifiProfiles();
     themeIndex = 0;
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
@@ -917,6 +1041,12 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
             return {};
         case Screen::WifiConnectStatus:
             return {{'d', "Disconnect"}};
+        case Screen::WifiProfiles:
+            return wifiProfiles.empty()
+                       ? std::vector<ActionMenuItem>{}
+                       : std::vector<ActionMenuItem>{{'a', "Set default"},
+                                                     {'n', "Rename profile"},
+                                                     {'d', "Delete profile"}};
         case Screen::Chameleon: {
             std::vector<ActionMenuItem> items;
             if (chameleonClient.isConnected()) {
@@ -2362,7 +2492,7 @@ String formatUptime() {
 
 std::vector<SystemDiagnostic> systemDiagnostics() {
     std::vector<SystemDiagnostic> rows;
-    rows.reserve(24);
+    rows.reserve(25);
     syncOperationCoordinator();
     rows.push_back({"Firmware", Branding::version});
     rows.push_back({"Uptime", formatUptime()});
@@ -2375,6 +2505,12 @@ std::vector<SystemDiagnostic> systemDiagnostics() {
                     operationCoordinator.anyActive()
                         ? DiagnosticState::Information
                         : DiagnosticState::Ready});
+    rows.push_back({"Wi-Fi profiles",
+                    saveWifiCredentials
+                        ? String(wifiProfiles.size()) + " stored"
+                        : "Disabled",
+                    saveWifiCredentials ? DiagnosticState::Ready
+                                        : DiagnosticState::Information});
     const esp_reset_reason_t resetReason = esp_reset_reason();
     rows.push_back({"Last reset", resetReasonName(resetReason),
                     resetReason == ESP_RST_PANIC ||
@@ -3294,6 +3430,11 @@ void drawCurrentScreen() {
         case Screen::WifiConnectSelect: wifiScreens.drawConnectSelect(); break;
         case Screen::WifiConnectPassword: wifiScreens.drawConnectPassword(); break;
         case Screen::WifiConnectStatus: wifiScreens.drawConnectStatus(); break;
+        case Screen::WifiProfiles: wifiScreens.drawProfiles(); break;
+        case Screen::WifiProfileRename: wifiScreens.drawProfileRename(); break;
+        case Screen::WifiProfileDeleteConfirm:
+            wifiScreens.drawProfileDeleteConfirm();
+            break;
         case Screen::BleMenu: menuScreens.drawBle(); break;
         case Screen::DevicesMenu: menuScreens.drawDevices(); break;
         case Screen::AiChat: aiChatScreen.draw(); break;
@@ -4318,6 +4459,23 @@ void goBack() {
         wifiScreens.drawConnectSelect();
         return;
     }
+    if (currentScreen == Screen::WifiProfileDeleteConfirm) {
+        currentScreen = Screen::WifiProfiles;
+        wifiScreens.drawProfiles();
+        return;
+    }
+    if (currentScreen == Screen::WifiProfileRename) {
+        currentScreen = Screen::WifiProfiles;
+        wifiScreens.drawProfiles();
+        return;
+    }
+    if (currentScreen == Screen::WifiProfiles) {
+        currentScreen = Screen::WifiMenu;
+        listSelection = 5;
+        listOffset = 0;
+        menuScreens.drawWifi();
+        return;
+    }
     if (currentScreen == Screen::BleDiscovery) {
         currentScreen = Screen::BleMenu;
         listSelection = 0;
@@ -4486,6 +4644,31 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             currentScreen = Screen::QrEntry;
             qrScreens.drawEntry();
         }
+        return;
+    }
+    if (currentScreen == Screen::WifiProfileRename) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (keys.enter && !wifiProfileNameInput.isEmpty() &&
+            listSelection < wifiProfiles.size()) {
+            wifiProfiles[listSelection].name = wifiProfileNameInput;
+            persistWifiProfiles();
+            wifiProfileStatus = "Profile renamed";
+            currentScreen = Screen::WifiProfiles;
+            wifiScreens.drawProfiles();
+            return;
+        }
+        if (keys.backspace && !wifiProfileNameInput.isEmpty()) {
+            wifiProfileNameInput.remove(wifiProfileNameInput.length() - 1);
+        }
+        for (char value : keys.word) {
+            if (!keys.ctrl && wifiProfileNameInput.length() < 24) {
+                wifiProfileNameInput += value;
+            }
+        }
+        drawTextEntryRow(56, "Name: ", wifiProfileNameInput);
         return;
     }
     if (currentScreen == Screen::TtsLab) {
@@ -5031,8 +5214,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::WifiMenu:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 6);
+            if (down) moveSelection(1, 6);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::WifiRecon;
@@ -5057,10 +5240,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     currentScreen = Screen::WifiGuardian;
                     startWifiGuardian();
                     drawCurrentScreen();
-                } else {
+                } else if (listSelection == 4) {
                     currentScreen = Screen::WifiConnectSelect;
                     drawCurrentScreen();
                     scanWifiNetworks();
+                } else {
+                    currentScreen = Screen::WifiProfiles;
+                    listSelection = 0;
+                    listOffset = 0;
+                    wifiProfileStatus = "";
+                    drawCurrentScreen();
                 }
                 return;
             }
@@ -5181,6 +5370,49 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             wifiScreens.drawConnectStatus();
+            break;
+
+        case Screen::WifiProfiles:
+            if (up) moveSelection(-1, wifiProfiles.size());
+            if (down) moveSelection(1, wifiProfiles.size());
+            if (keys.enter && listSelection < wifiProfiles.size()) {
+                const WifiProfile profile = wifiProfiles[listSelection];
+                wifiProfileStatus = "";
+                startWifiConnection(profile.ssid, profile.password);
+                return;
+            }
+            if (pressedLetter(keys, 'a') &&
+                listSelection < wifiProfiles.size()) {
+                activeWifiProfile = listSelection;
+                persistWifiProfiles();
+                wifiProfileStatus = "Default profile selected";
+            }
+            if (pressedLetter(keys, 'n') &&
+                listSelection < wifiProfiles.size()) {
+                wifiProfileNameInput = wifiProfiles[listSelection].name;
+                currentScreen = Screen::WifiProfileRename;
+                wifiScreens.drawProfileRename();
+                return;
+            }
+            if (pressedLetter(keys, 'd') &&
+                listSelection < wifiProfiles.size()) {
+                currentScreen = Screen::WifiProfileDeleteConfirm;
+                wifiScreens.drawProfileDeleteConfirm();
+                return;
+            }
+            wifiScreens.drawProfiles();
+            break;
+
+        case Screen::WifiProfileDeleteConfirm:
+            if (keys.enter && listSelection < wifiProfiles.size()) {
+                deleteWifiProfile(listSelection);
+                if (!wifiProfiles.empty() && listSelection >= wifiProfiles.size()) {
+                    listSelection = wifiProfiles.size() - 1;
+                }
+                wifiProfileStatus = "Profile deleted";
+                currentScreen = Screen::WifiProfiles;
+                wifiScreens.drawProfiles();
+            }
             break;
 
         case Screen::BleMenu:
@@ -6268,10 +6500,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 saveWifiCredentials = !saveWifiCredentials;
                 if (!saveWifiCredentials) {
                     autoConnectWifi = false;
-                    preferences.remove("wifi_ssid");
-                    preferences.remove("wifi_pass");
-                    wifiConnectSavedSsid = "";
-                    wifiConnectSavedPassword = "";
+                    clearWifiProfiles();
                 }
                 saveSettings();
             }
@@ -6319,6 +6548,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::QrEntry:
         case Screen::QrDisplay:
         case Screen::WifiConnectPassword:
+        case Screen::WifiProfileRename:
         case Screen::BleKeyboard:
         case Screen::TelnetConnect:
         case Screen::TelnetSession:
@@ -6575,10 +6805,12 @@ void setup() {
     }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
-        wifiConnectSavedSsid = preferences.getString("wifi_ssid", "");
-        wifiConnectSavedPassword = preferences.getString("wifi_pass", "");
+        loadWifiProfiles();
     } else {
         autoConnectWifi = false;
+        wifiProfiles.clear();
+        activeWifiProfile = SIZE_MAX;
+        refreshActiveWifiCredentialCache();
         preferences.remove("wifi_ssid");
         preferences.remove("wifi_pass");
     }
@@ -7136,10 +7368,11 @@ void loop() {
             wifiConnectAttempting = false;
             wifiConnectStatusText = "Connected";
             if (saveWifiCredentials) {
-                preferences.putString("wifi_ssid", wifiConnectSsid);
-                preferences.putString("wifi_pass", wifiConnectAttemptPassword);
-                wifiConnectSavedSsid = wifiConnectSsid;
-                wifiConnectSavedPassword = wifiConnectAttemptPassword;
+                wifiProfileStatus =
+                    saveWifiProfile(wifiConnectSsid,
+                                    wifiConnectAttemptPassword)
+                        ? "Profile saved"
+                        : "Connected; profile list full";
             }
             for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
                 wifiConnectPasswordInput.setCharAt(i, '\0');

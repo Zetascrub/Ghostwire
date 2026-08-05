@@ -61,7 +61,7 @@ void SettingsScreens::drawConnectivity() {
     ScreenChrome::drawHeader("Settings: Connectivity");
     constexpr size_t count = 2;
     ScreenChrome::normalizeListPosition(count);
-    ScreenChrome::drawListRow(0, "Save Wi-Fi login", listSelection_ == 0,
+    ScreenChrome::drawListRow(0, "Save network profiles", listSelection_ == 0,
                               saveWifiCredentials_ ? "On" : "Off");
     ScreenChrome::drawListRow(1, "Auto-connect Wi-Fi", listSelection_ == 1,
                               autoConnectWifi_ ? "On" : "Off");

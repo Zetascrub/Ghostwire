@@ -21,7 +21,8 @@ network profiles, first-run guidance, and repeated hardware reliability tests.
 - [x] Tested conflict policy and clear on-device refusal when a requested radio
   mode cannot safely coexist with active work.
 - [x] Active operation visibility in System Diagnostics and the header status.
-- [ ] Named Wi-Fi/network profiles with deliberate save, select, and delete.
+- [x] Up to five named Wi-Fi/network profiles with deliberate connect, rename,
+  default selection, migration, and deletion.
 - [ ] First-run guidance for the Observe -> Scout -> Record workflow.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.

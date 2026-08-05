@@ -131,8 +131,12 @@ The detailed capabilities behind those missions are:
     deauth to force a fresh handshake.
   - Connect: pick a scanned network, enter its password, join it. The
     connection persists in the background (explicit disconnect only) so
-    other tools can use it. Saving credentials for one-key reconnect is an
-    opt-in setting and is disabled by default.
+    other tools can use it.
+  - Network Profiles: optionally retain up to five named networks, connect
+    directly without rescanning, rename or delete individual entries, and
+    select the default used by the opt-in auto-connect setting. Profile saving
+    is disabled by default. Existing pre-0.5 single-network credentials migrate
+    into the first profile automatically.
 
 #### BLE
 

@@ -6,6 +6,12 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add a five-entry Network Profiles workflow under Wi-Fi. Successful
+  connections update the matching SSID without replacing unrelated profiles;
+  operators can connect, rename, choose the auto-connect default, or explicitly
+  delete each entry. Existing single-network credentials migrate on first boot,
+  while full stores report the limit instead of silently evicting a network.
+
 - Begin the 0.5 Field Reliability milestone with a central operation inventory
   and tested radio-conflict policy. System Diagnostics now reports the active
   operation, and firmware installation refuses to begin until other ongoing

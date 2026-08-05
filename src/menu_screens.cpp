@@ -133,23 +133,24 @@ void MenuScreens::drawFieldKit() {
 void MenuScreens::drawWifi() {
     static const char* const items[] = {
         "Discovery", "Channel Analyzer", "Sniffer", "Guardian", "Connect",
+        "Network Profiles",
     };
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Find nearby access points", "Compare channel congestion",
             "Passively inspect Wi-Fi traffic", "Watch for disruption bursts",
-            "Join a network for scouting",
+            "Join a network for scouting", "Connect or manage saved networks",
         };
         String badge = listSelection_ == 3 && wifiGuardian_.isActive()
                            ? "WATCHING" : "";
         ScreenChrome::drawNavigationCard("Wi-Fi airspace", items[listSelection_],
                                          descriptions[listSelection_],
-                                         listSelection_, 5, 1, badge);
+                                         listSelection_, 6, 1, badge);
         return;
     }
     ScreenChrome::drawHeader("Wi-Fi");
-    ScreenChrome::normalizeListPosition(5);
-    for (size_t row = 0; row < 5; ++row) {
+    ScreenChrome::normalizeListPosition(6);
+    for (size_t row = 0; row < 6; ++row) {
         ScreenChrome::drawListRow(row, items[row], row == listSelection_);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");

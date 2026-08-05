@@ -285,3 +285,58 @@ void WifiScreens::drawConnectStatus(bool fullDraw) {
     }
     ScreenChrome::drawFooter("Tab: actions   Backspace/Q: back");
 }
+
+void WifiScreens::drawProfiles() {
+    ScreenChrome::drawHeader("Network Profiles");
+    ScreenChrome::normalizeListPosition(wifiProfiles_.size());
+    ScreenChrome::drawHeaderPosition(listSelection_ + 1, wifiProfiles_.size());
+    if (wifiProfiles_.empty()) {
+        auto& display = M5Cardputer.Display;
+        display.setTextColor(Branding::muted, Branding::background);
+        display.setCursor(8, 38);
+        display.print("No saved profiles.");
+        display.setCursor(8, 56);
+        display.print("Connect with profile saving enabled.");
+    } else {
+        for (size_t row = 0; row < ScreenChrome::kVisibleRows &&
+                             row + listOffset_ < wifiProfiles_.size(); ++row) {
+            const size_t index = row + listOffset_;
+            String suffix = index == activeWifiProfile_ ? "DEFAULT" : "";
+            ScreenChrome::drawListRow(row, wifiProfiles_[index].name,
+                                      index == listSelection_, suffix);
+        }
+    }
+    ScreenChrome::drawFooter(
+        wifiProfileStatus_.isEmpty()
+            ? "Enter:join A:default D:delete Q:back"
+            : wifiProfileStatus_.c_str());
+}
+
+void WifiScreens::drawProfileDeleteConfirm() {
+    if (wifiProfiles_.empty() || listSelection_ >= wifiProfiles_.size()) {
+        currentScreen_ = Screen::WifiProfiles;
+        drawProfiles();
+        return;
+    }
+    ScreenChrome::drawHeader("Delete Profile?");
+    auto& display = M5Cardputer.Display;
+    display.setTextColor(Branding::warning, Branding::background);
+    display.setCursor(8, 40);
+    display.print(wifiProfiles_[listSelection_].name.substring(0, 34));
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 62);
+    display.print("The saved password will be erased.");
+    ScreenChrome::drawFooter("Enter: delete   Q: cancel");
+}
+
+void WifiScreens::drawProfileRename() {
+    ScreenChrome::drawHeader("Rename Profile");
+    auto& display = M5Cardputer.Display;
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 36);
+    if (listSelection_ < wifiProfiles_.size()) {
+        display.print(wifiProfiles_[listSelection_].ssid.substring(0, 34));
+    }
+    ScreenChrome::drawTextEntryRow(56, "Name: ", wifiProfileNameInput_);
+    ScreenChrome::drawFooter("Enter: save   Esc: cancel");
+}
