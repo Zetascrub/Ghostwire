@@ -72,6 +72,8 @@ public:
     }
     bool sendText(const String& text, size_t channelIndex, uint32_t nodeId,
                   uint8_t hopLimit);
+    bool sendNodeInfo(const String& longName, const String& shortName,
+                      size_t channelIndex, uint32_t nodeId, uint8_t hopLimit);
     const String& transmitStatus() const { return transmitStatus_; }
     uint32_t nextTransmitMs() const { return nextTransmitMs_; }
 
@@ -93,6 +95,8 @@ private:
     std::vector<MeshMessage> messages_;
 
     void observeDecodedPacket();
+    bool transmitPacket(const std::vector<uint8_t>& packet,
+                        const String& successStatus);
     String transmitStatus_;
     uint32_t nextTransmitMs_ = 0;
 };

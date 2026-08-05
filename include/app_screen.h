@@ -79,6 +79,7 @@ enum class Screen {
     MeshRadar,
     MeshChannels,
     MeshCompose,
+    MeshSettings,
     WifiSniffer,
     WifiGuardian,
     Imu,

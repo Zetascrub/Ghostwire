@@ -166,19 +166,57 @@ bool MeshtasticDecoder::encodeText(const String& text, size_t channelIndex,
                                    std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || text.isEmpty() ||
         text.length() > 180 || hopLimit < 1 || hopLimit > 7) return false;
+    std::vector<uint8_t> payload(text.c_str(), text.c_str() + text.length());
+    return encodeApplication(payload, 1, channelIndex, from, packetId,
+                             hopLimit, packet);
+}
+
+bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
+                                       const String& shortName,
+                                       size_t channelIndex, uint32_t from,
+                                       uint32_t packetId, uint8_t hopLimit,
+                                       std::vector<uint8_t>& packet) const {
+    if (longName.isEmpty() || longName.length() > 24 || shortName.isEmpty() ||
+        shortName.length() > 4) return false;
+    std::vector<uint8_t> user;
+    const auto appendString = [&](uint8_t tag, const String& value) {
+        user.push_back(tag);
+        user.push_back(static_cast<uint8_t>(value.length()));
+        user.insert(user.end(), value.c_str(), value.c_str() + value.length());
+    };
+    char nodeId[10];
+    snprintf(nodeId, sizeof(nodeId), "!%08lx",
+             static_cast<unsigned long>(from));
+    appendString(0x0a, nodeId);    // User.id
+    appendString(0x12, longName);  // User.long_name
+    appendString(0x1a, shortName); // User.short_name
+    user.push_back(0x38);          // User.role
+    user.push_back(0x01);          // CLIENT_MUTE
+    return encodeApplication(user, 4, channelIndex, from, packetId, hopLimit,
+                             packet);
+}
+
+bool MeshtasticDecoder::encodeApplication(
+    const std::vector<uint8_t>& payload, uint32_t port, size_t channelIndex,
+    uint32_t from, uint32_t packetId, uint8_t hopLimit,
+    std::vector<uint8_t>& packet) const {
+    if (channelIndex >= channels_.size() || from == 0 || payload.empty() ||
+        payload.size() > 220 || port > 127 || hopLimit < 1 || hopLimit > 7) {
+        return false;
+    }
     const auto& channel = channels_[channelIndex];
     std::vector<uint8_t> plain;
-    plain.reserve(text.length() + 5);
+    plain.reserve(payload.size() + 5);
     plain.push_back(0x08);  // Data.portnum, varint
-    plain.push_back(0x01);  // TEXT_MESSAGE_APP
+    plain.push_back(static_cast<uint8_t>(port));
     plain.push_back(0x12);  // Data.payload, length-delimited
-    if (text.length() < 128) {
-        plain.push_back(static_cast<uint8_t>(text.length()));
+    if (payload.size() < 128) {
+        plain.push_back(static_cast<uint8_t>(payload.size()));
     } else {
-        plain.push_back(static_cast<uint8_t>(text.length()) | 0x80);
-        plain.push_back(static_cast<uint8_t>(text.length() >> 7));
+        plain.push_back(static_cast<uint8_t>(payload.size()) | 0x80);
+        plain.push_back(static_cast<uint8_t>(payload.size() >> 7));
     }
-    plain.insert(plain.end(), text.c_str(), text.c_str() + text.length());
+    plain.insert(plain.end(), payload.begin(), payload.end());
 
     packet.assign(kHeaderLength + plain.size(), 0);
     const auto writeLe32 = [&](size_t offset, uint32_t value) {

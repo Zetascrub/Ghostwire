@@ -45,10 +45,17 @@ public:
     bool encodeText(const String& text, size_t channelIndex, uint32_t from,
                     uint32_t packetId, uint8_t hopLimit,
                     std::vector<uint8_t>& packet) const;
+    bool encodeNodeInfo(const String& longName, const String& shortName,
+                        size_t channelIndex, uint32_t from, uint32_t packetId,
+                        uint8_t hopLimit, std::vector<uint8_t>& packet) const;
     static bool readVarint(const uint8_t* data, size_t length, size_t& offset,
                            uint64_t& value);
 
 private:
+    bool encodeApplication(const std::vector<uint8_t>& payload, uint32_t port,
+                           size_t channelIndex, uint32_t from,
+                           uint32_t packetId, uint8_t hopLimit,
+                           std::vector<uint8_t>& packet) const;
     static bool decodeData(const uint8_t* data, size_t length,
                            MeshtasticDecoded& result);
     static void decodeApplicationPayload(MeshtasticDecoded& result);

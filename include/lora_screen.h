@@ -25,6 +25,9 @@ public:
     void drawCompose(const String& draft, size_t channelIndex,
                      uint8_t hopLimit, const String& nodeName,
                      const String& status);
+    void drawSettings(size_t selection, size_t offset, const String& longName,
+                      const String& shortName, size_t channelIndex,
+                      uint8_t hopLimit, bool editing, const String& status);
 
 private:
     LoRaService& service_;

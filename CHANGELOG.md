@@ -6,6 +6,11 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add dedicated Mesh Settings for persistent Meshtastic long/short names,
+  transmit channel, and hop limit. The page displays the fixed `CLIENT_MUTE`
+  role and EU_868 region and can explicitly advertise a standard NodeInfo
+  identity packet so other nodes learn Ghostwire's configured names.
+
 - Add the first Mesh chat transmitter: compose broadcast text from the message
   inbox, select any loaded channel, and originate standards-compatible packets
   as a non-repeating endpoint. The persistent hop limit defaults to 7 and is
@@ -13,7 +18,7 @@ assessment tools built on those verified foundations.
   guard protect the shared EU_868 carrier. Sent messages are retained in the SD
   journal, and positioned nodes now carry a map-pin indicator in the directory.
 
-- Add receive-only Meshtastic Channel Profiles. Ghostwire always listens for
+- Add Meshtastic Channel Profiles. Ghostwire always listens for
   public LongFast and can validate/load three private AES-128/AES-256 profiles
   from `/ghostwire/mesh/channels.json`, match frames using Meshtastic's actual
   name-plus-PSK channel hash, and show loaded names/hashes without displaying

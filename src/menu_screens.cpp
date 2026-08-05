@@ -222,20 +222,20 @@ void MenuScreens::drawGps() {
 void MenuScreens::drawMesh() {
     static const char* const items[] = {"Mesh Dashboard", "Node Directory",
                                        "Message Inbox", "Position Radar",
-                                       "Channel Profiles"};
+                                       "Channel Profiles", "Mesh Settings"};
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Listen and review mesh activity", "Known identities and positions",
             "Receive and send channel messages", "GNSS-relative mesh positions",
-            "Channels, private keys, and hop limit"};
+            "Public and private channel keys", "Identity and radio behaviour"};
         ScreenChrome::drawNavigationCard("Mesh signals", items[listSelection_],
                                          descriptions[listSelection_],
-                                         listSelection_, 5, 1);
+                                         listSelection_, 6, 1);
         return;
     }
     ScreenChrome::drawHeader("Mesh");
-    ScreenChrome::normalizeListPosition(5);
-    for (size_t index = 0; index < 5; ++index) {
+    ScreenChrome::normalizeListPosition(6);
+    for (size_t index = 0; index < 6; ++index) {
         ScreenChrome::drawListRow(index, items[index], listSelection_ == index);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");

@@ -125,8 +125,10 @@ verified against test tags.
 - [x] Add standards-compatible broadcast text with packet IDs, selectable
   loaded channel, adjustable 1-7 hop limit, channel-activity checks, and an
   airtime guard.
-- Add direct messages, acknowledgements, NodeInfo announcements, and position
-  sharing only after broadcast interoperability and duty-cycle testing.
+- [x] Add persistent long/short node identity, a dedicated Mesh Settings page,
+  and deliberate NodeInfo advertisement as a `CLIENT_MUTE` endpoint.
+- Add direct messages, acknowledgements, and position sharing only after
+  broadcast interoperability and duty-cycle testing.
 
 The client behaves as a quiet endpoint: it can receive and originate text but
 does not claim router behaviour or rebroadcast other nodes' traffic.

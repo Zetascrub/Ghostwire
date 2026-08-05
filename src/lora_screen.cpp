@@ -125,6 +125,53 @@ void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
     ScreenChrome::drawFooter("Enter send   </> channel   Esc back");
 }
 
+void LoRaScreen::drawSettings(size_t selection, size_t offset,
+                              const String& longName, const String& shortName,
+                              size_t channelIndex, uint8_t hopLimit,
+                              bool editing, const String& status) {
+    ScreenChrome::drawHeader(editing ? "Edit Mesh Identity" : "Mesh Settings");
+    auto& display = M5Cardputer.Display;
+    const auto& channels = service_.meshChannels();
+    const String channel = channelIndex < channels.size()
+                               ? channels[channelIndex].name : "Unavailable";
+    if (editing) {
+        const bool shortField = selection == 1;
+        display.setTextColor(Branding::muted, Branding::background);
+        display.setCursor(8, 36);
+        display.print(shortField ? "Short name (1-4 characters)"
+                                 : "Long name (1-24 characters)");
+        display.setTextColor(Branding::text, Branding::background);
+        display.setCursor(8, 62);
+        display.print((shortField ? shortName : longName).substring(0, 24));
+        display.setTextColor(Branding::accent, Branding::background);
+        display.print("_");
+        ScreenChrome::drawFooter("Enter save   Esc cancel");
+        return;
+    }
+    constexpr size_t count = 7;
+    ScreenChrome::normalizeListPosition(count);
+    const char* const labels[count] = {
+        "Long name", "Short name", "TX channel", "Hop limit",
+        "Device role", "Region", "Advertise identity",
+    };
+    const String values[count] = {
+        longName, shortName, channel, String(hopLimit), "Client mute",
+        "EU_868", "Enter",
+    };
+    for (size_t row = 0;
+         row < ScreenChrome::kVisibleRows && row + offset < count; ++row) {
+        const size_t item = row + offset;
+        ScreenChrome::drawListRow(row, labels[item], item == selection,
+                                  values[item]);
+    }
+    if (!status.isEmpty()) {
+        display.setTextColor(Branding::muted, Branding::background);
+        display.setCursor(8, 112);
+        display.print(status.substring(0, 37));
+    }
+    ScreenChrome::drawFooter("Enter edit/send   Left/Right adjust");
+}
+
 void LoRaScreen::drawNodes(size_t selection, size_t offset) {
     const auto& nodes = service_.nodes();
     ScreenChrome::drawHeader("Mesh Nodes");

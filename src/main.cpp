@@ -419,6 +419,9 @@ String meshDraft;
 String meshComposeStatus;
 String meshNodeName;
 String meshNodeShortName;
+String meshIdentityEditOriginal;
+String meshSettingsStatus;
+bool meshIdentityEditing = false;
 uint32_t meshNodeId = 0;
 uint8_t meshHopLimit = 7;
 size_t meshTransmitChannel = 0;
@@ -3708,6 +3711,12 @@ void drawCurrentScreen() {
                                    meshHopLimit, meshNodeName,
                                    meshComposeStatus);
             break;
+        case Screen::MeshSettings:
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, meshIdentityEditing,
+                                    meshSettingsStatus);
+            break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
         case Screen::Imu: imuScreen.draw(); break;
@@ -4484,6 +4493,22 @@ void goBack() {
         loraScreen.drawMessages(listSelection, listOffset);
         return;
     }
+    if (currentScreen == Screen::MeshSettings) {
+        if (meshIdentityEditing) {
+            if (listSelection == 0) meshNodeName = meshIdentityEditOriginal;
+            else meshNodeShortName = meshIdentityEditOriginal;
+            meshIdentityEditing = false;
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, false, meshSettingsStatus);
+            return;
+        }
+        currentScreen = Screen::MeshMenu;
+        listSelection = 5;
+        listOffset = 0;
+        menuScreens.drawMesh();
+        return;
+    }
     if (currentScreen == Screen::LoRa) {
         loraLogger.stop();
     }
@@ -4961,6 +4986,44 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         meshComposeStatus = "";
         loraScreen.drawCompose(meshDraft, meshTransmitChannel, meshHopLimit,
                                meshNodeName, meshComposeStatus);
+        return;
+    }
+    if (currentScreen == Screen::MeshSettings && meshIdentityEditing) {
+        String& value = listSelection == 0 ? meshNodeName : meshNodeShortName;
+        const size_t limit = listSelection == 0 ? 24 : 4;
+        if (keys.esc) {
+            value = meshIdentityEditOriginal;
+            meshIdentityEditing = false;
+        } else if (keys.enter) {
+            value.trim();
+            if (value.isEmpty()) {
+                value = meshIdentityEditOriginal;
+                meshSettingsStatus = "Name cannot be empty";
+            } else {
+                preferences.putString(listSelection == 0 ? "mesh_name"
+                                                         : "mesh_short",
+                                      value);
+                meshSettingsStatus = "Saved; advertise to publish";
+                LoRaService::MeshNode localMeshNode;
+                localMeshNode.id = meshNodeId;
+                localMeshNode.longName = meshNodeName;
+                localMeshNode.shortName = meshNodeShortName;
+                loraService.restoreNode(localMeshNode);
+            }
+            meshIdentityEditing = false;
+        } else {
+            if (keys.backspace && !value.isEmpty()) {
+                value.remove(value.length() - 1);
+            }
+            for (char character : keys.word) {
+                if (!keys.ctrl && character >= 32 && character <= 126 &&
+                    value.length() < limit) value += character;
+            }
+        }
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshIdentityEditing,
+                                meshSettingsStatus);
         return;
     }
     // QR composition owns printable keys before global letter shortcuts.
@@ -5473,7 +5536,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         currentScreen == Screen::SettingsDisplay ||
         currentScreen == Screen::SettingsBoot ||
         currentScreen == Screen::SettingsConnectivity ||
-        currentScreen == Screen::MeshChannels;
+        currentScreen == Screen::MeshChannels ||
+        currentScreen == Screen::MeshSettings;
     const bool alternateBack =
         (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
         pressedLetter(keys, 'q') ||
@@ -6449,15 +6513,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 6);
+            if (down) moveSelection(1, 6);
             if (keys.enter) {
                 const size_t destination = listSelection;
                 currentScreen = destination == 0 ? Screen::LoRa
                               : destination == 1 ? Screen::MeshNodes
                               : destination == 2 ? Screen::MeshMessages
                               : destination == 3 ? Screen::MeshRadar
-                                                 : Screen::MeshChannels;
+                              : destination == 4 ? Screen::MeshChannels
+                                                 : Screen::MeshSettings;
                 listSelection = 0;
                 listOffset = 0;
                 drawHeader("LoRa Receive");
@@ -6728,6 +6793,53 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             normalizeListPosition(loraService.meshChannels().size());
             loraScreen.drawChannels(listSelection, listOffset,
                                     meshChannelStatus, meshHopLimit);
+            break;
+
+        case Screen::MeshSettings:
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
+            normalizeListPosition(7);
+            if (listSelection == 2 && !loraService.meshChannels().empty()) {
+                if (navigationLeft) {
+                    meshTransmitChannel = meshTransmitChannel == 0
+                        ? loraService.meshChannels().size() - 1
+                        : meshTransmitChannel - 1;
+                }
+                if (navigationRight) {
+                    meshTransmitChannel =
+                        (meshTransmitChannel + 1) %
+                        loraService.meshChannels().size();
+                }
+                preferences.putUChar("mesh_tx_ch",
+                                     static_cast<uint8_t>(meshTransmitChannel));
+            }
+            if (listSelection == 3) {
+                if (navigationLeft && meshHopLimit > 1) --meshHopLimit;
+                if (navigationRight && meshHopLimit < 7) ++meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
+            if (keys.enter && (listSelection == 0 || listSelection == 1)) {
+                meshIdentityEditOriginal = listSelection == 0
+                                               ? meshNodeName
+                                               : meshNodeShortName;
+                meshIdentityEditing = true;
+                meshSettingsStatus = "";
+            } else if (keys.enter && listSelection == 6) {
+                if (loraService.sendNodeInfo(
+                        meshNodeName, meshNodeShortName, meshTransmitChannel,
+                        meshNodeId, meshHopLimit)) {
+                    LoRaService::MeshNode localMeshNode;
+                    localMeshNode.id = meshNodeId;
+                    localMeshNode.longName = meshNodeName;
+                    localMeshNode.shortName = meshNodeShortName;
+                    loraService.restoreNode(localMeshNode);
+                }
+                meshSettingsStatus = loraService.transmitStatus();
+            }
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, meshIdentityEditing,
+                                    meshSettingsStatus);
             break;
 
         case Screen::WifiSniffer:
@@ -7208,6 +7320,12 @@ void setup() {
              static_cast<unsigned long>(meshNodeId & 0xffffU));
     meshNodeName = preferences.getString("mesh_name", defaultMeshName);
     meshNodeShortName = preferences.getString("mesh_short", "GW");
+    if (meshNodeName.isEmpty() || meshNodeName.length() > 24) {
+        meshNodeName = defaultMeshName;
+    }
+    if (meshNodeShortName.isEmpty() || meshNodeShortName.length() > 4) {
+        meshNodeShortName = "GW";
+    }
     meshHopLimit = preferences.getUChar("mesh_hops", 7);
     if (meshHopLimit < 1 || meshHopLimit > 7) meshHopLimit = 7;
     verifyOtaBootOrRollback();
@@ -7277,6 +7395,10 @@ void setup() {
     gnssService.begin();
     initSd();
     loadMeshChannels();
+    meshTransmitChannel = preferences.getUChar("mesh_tx_ch", 0);
+    if (meshTransmitChannel >= loraService.meshChannels().size()) {
+        meshTransmitChannel = 0;
+    }
     loadMeshState();
     LoRaService::MeshNode localMeshNode;
     localMeshNode.id = meshNodeId;

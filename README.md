@@ -170,6 +170,10 @@ The detailed capabilities behind those missions are:
   packets as a non-repeating `CLIENT_MUTE`-style endpoint, with a persistent
   adjustable hop limit of 1-7 (default 7), channel-activity checks, and an
   airtime guard; it does not route or rebroadcast other nodes' traffic.
+  Mesh Settings provides persistent 24-character long and four-character
+  short names, transmit-channel selection, hop-limit adjustment, and an
+  explicit NodeInfo identity advertisement. The page also makes the fixed
+  `CLIENT_MUTE` role and EU_868 region visible.
 - Channel Profiles always retains the public `LongFast` decoder and can load
   up to three private receive/transmit channels from
   `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name

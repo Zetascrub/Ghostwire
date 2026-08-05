@@ -168,19 +168,41 @@ void LoRaService::restoreMessage(const MeshMessage& message) {
 
 bool LoRaService::sendText(const String& text, size_t channelIndex,
                            uint32_t nodeId, uint8_t hopLimit) {
+    const uint32_t packetId = esp_random();
+    std::vector<uint8_t> packet;
+    if (!decoder_.encodeText(text, channelIndex, nodeId, packetId, hopLimit,
+                             packet)) {
+        transmitStatus_ = "Invalid message or channel";
+        return false;
+    }
+    if (!transmitPacket(packet, "Broadcast sent")) return false;
+    const String channel = channelIndex < decoder_.channels().size()
+                               ? decoder_.channels()[channelIndex].name : "";
+    restoreMessage({nodeId, 0xffffffffU, packetId, millis(), text, channel,
+                    true});
+    return true;
+}
+
+bool LoRaService::sendNodeInfo(const String& longName, const String& shortName,
+                               size_t channelIndex, uint32_t nodeId,
+                               uint8_t hopLimit) {
+    std::vector<uint8_t> packet;
+    if (!decoder_.encodeNodeInfo(longName, shortName, channelIndex, nodeId,
+                                 esp_random(), hopLimit, packet)) {
+        transmitStatus_ = "Invalid identity or channel";
+        return false;
+    }
+    return transmitPacket(packet, "Identity advertised");
+}
+
+bool LoRaService::transmitPacket(const std::vector<uint8_t>& packet,
+                                 const String& successStatus) {
     if (!ready_ || profile_ != Profile::MeshtasticEuLongFast) {
         transmitStatus_ = "Meshtastic radio unavailable";
         return false;
     }
     if (static_cast<int32_t>(millis() - nextTransmitMs_) < 0) {
         transmitStatus_ = "Airtime guard active";
-        return false;
-    }
-    const uint32_t packetId = esp_random();
-    std::vector<uint8_t> packet;
-    if (!decoder_.encodeText(text, channelIndex, nodeId, packetId, hopLimit,
-                             packet)) {
-        transmitStatus_ = "Invalid message or channel";
         return false;
     }
     packetReceived = false;
@@ -210,11 +232,7 @@ bool LoRaService::sendText(const String& text, size_t channelIndex,
         return false;
     }
     nextTransmitMs_ = millis() + std::max<uint32_t>(5000, airtimeUs / 100);
-    transmitStatus_ = "Broadcast sent";
-    const String channel = channelIndex < decoder_.channels().size()
-                               ? decoder_.channels()[channelIndex].name : "";
-    restoreMessage({nodeId, 0xffffffffU, packetId, millis(), text, channel,
-                    true});
+    transmitStatus_ = successStatus;
     return true;
 }
 
