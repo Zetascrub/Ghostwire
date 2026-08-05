@@ -16,7 +16,8 @@ bool isConnectedNetwork(OperationKind operation) {
 
 bool isBleRadio(OperationKind operation) {
     return operation == OperationKind::BleCapture ||
-           operation == OperationKind::BleTransmit;
+           operation == OperationKind::BleTransmit ||
+           operation == OperationKind::BleAccessory;
 }
 
 }  // namespace
@@ -94,6 +95,7 @@ const char* OperationCoordinator::label(OperationKind operation) {
         case OperationKind::WarDrive: return "War drive";
         case OperationKind::BleCapture: return "BLE capture";
         case OperationKind::BleTransmit: return "BLE transmit";
+        case OperationKind::BleAccessory: return "BLE accessory";
         case OperationKind::FamiliarPatrol: return "Familiar patrol";
         case OperationKind::NetworkScan: return "Network scan";
         case OperationKind::RemoteSession: return "Remote session";

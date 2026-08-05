@@ -13,6 +13,7 @@ enum class OperationKind : uint8_t {
     WarDrive,
     BleCapture,
     BleTransmit,
+    BleAccessory,
     FamiliarPatrol,
     NetworkScan,
     RemoteSession,

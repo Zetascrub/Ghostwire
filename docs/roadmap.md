@@ -28,6 +28,11 @@ reliability testing is the remaining 0.5 release gate.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 
+The automated release-candidate pass now builds both targets as GNU C++17 and
+tests every operation label plus full conflict-policy symmetry. Real-device
+radio transition and endurance checks remain deliberately open until exercised
+interactively on hardware.
+
 This roadmap favours features that are useful during authorised assessment,
 network administration, or field diagnostics on the Cardputer ADV. Inspiration
 may come from projects such as Bruce, but features are designed for Ghostwire's

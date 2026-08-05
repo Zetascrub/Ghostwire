@@ -668,6 +668,9 @@ void syncOperationCoordinator() {
     operationCoordinator.setActive(
         OperationKind::BleTransmit,
         bleSpamService.isActive() || bleKeyboardService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleAccessory,
+        biscuitClient.isConnected() || chameleonClient.isConnected());
     operationCoordinator.setActive(OperationKind::FamiliarPatrol,
                                    familiarPatrolService.isActive());
     operationCoordinator.setActive(
@@ -5507,6 +5510,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (up) moveSelection(-1, 2);
             if (down) moveSelection(1, 2);
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleAccessory)) {
+                    return;
+                }
                 currentScreen = listSelection == 0 ? Screen::Biscuit
                                                    : Screen::Chameleon;
                 if (currentScreen == Screen::Chameleon) {
@@ -5523,6 +5529,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::Biscuit:
             if (refresh || (keys.enter && !biscuitClient.isConnected())) {
+                if (!requireOperationStart(OperationKind::BleAccessory)) {
+                    return;
+                }
                 drawHeader("Biscuit Pro");
                 M5Cardputer.Display.setTextColor(Branding::warning,
                                                  Branding::background);

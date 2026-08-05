@@ -6,6 +6,11 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Harden the 0.5 release candidate by aligning device and native builds on
+  GNU C++17, expanding operation-policy coverage, and treating Biscuit Pro and
+  Chameleon Ultra connections as BLE accessory operations so incompatible
+  capture/transmit modes are refused consistently.
+
 - Add a seven-page first-run field guide after the normal boot experience. It
   introduces Ghostwire's Observe -> Scout -> Record loop, the Familiar, SD
   evidence, navigation choice, and profile storage; every page can be skipped,
