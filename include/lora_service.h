@@ -14,6 +14,7 @@ public:
         uint32_t id = 0;
         String longName;
         String shortName;
+        std::vector<uint8_t> publicKey;
         uint32_t lastSeenMs = 0;
         float lastRssi = 0.0F;
         float lastSnr = 0.0F;
@@ -68,6 +69,10 @@ public:
     void restoreMessage(const MeshMessage& message);
     void setMeshChannels(const std::vector<MeshtasticChannel>& channels) {
         decoder_.setChannels(channels);
+    }
+    void setMeshKeyPair(const std::vector<uint8_t>& privateKey,
+                        const std::vector<uint8_t>& publicKey) {
+        decoder_.setLocalKeyPair(privateKey, publicKey);
     }
     const std::vector<MeshtasticChannel>& meshChannels() const {
         return decoder_.channels();

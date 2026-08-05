@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
 #include <ArduinoJson.h>
+#include <Curve25519.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
@@ -428,6 +429,8 @@ uint32_t observedMeshMessageCount = 0;
 bool meshAlertSecondNotePending = false;
 unsigned long meshAlertSecondNoteDue = 0;
 uint32_t meshNodeId = 0;
+std::vector<uint8_t> meshPrivateKey;
+std::vector<uint8_t> meshPublicKey;
 uint8_t meshHopLimit = 7;
 size_t meshTransmitChannel = 0;
 uint32_t meshComposeRecipient = 0xffffffffU;
@@ -906,6 +909,46 @@ constexpr char kMeshStatePath[] = "/ghostwire/mesh/state.json";
 constexpr char kMeshStateTempPath[] = "/ghostwire/mesh/state.tmp";
 constexpr char kMeshStateBackupPath[] = "/ghostwire/mesh/state.bak";
 
+String meshKeyHex(const std::vector<uint8_t>& key) {
+    String value;
+    value.reserve(key.size() * 2);
+    const char digits[] = "0123456789abcdef";
+    for (uint8_t byte : key) {
+        value += digits[byte >> 4];
+        value += digits[byte & 0x0f];
+    }
+    return value;
+}
+
+std::vector<uint8_t> meshKeyFromHex(const String& value) {
+    if (value.length() != 64) return {};
+    std::vector<uint8_t> key(32);
+    for (size_t index = 0; index < key.size(); ++index) {
+        const auto nibble = [](char character) -> int {
+            if (character >= '0' && character <= '9') return character - '0';
+            if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+            if (character >= 'A' && character <= 'F') return character - 'A' + 10;
+            return -1;
+        };
+        const int high = nibble(value[index * 2]);
+        const int low = nibble(value[index * 2 + 1]);
+        if (high < 0 || low < 0) return {};
+        key[index] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return key;
+}
+
+uint32_t meshIdentityCrc32(const std::vector<uint8_t>& value) {
+    uint32_t crc = 0xffffffffU;
+    for (uint8_t byte : value) {
+        crc ^= byte;
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1U) ? 0xedb88320U : 0U);
+        }
+    }
+    return ~crc;
+}
+
 void loadMeshState() {
     if (!sdAvailable) return;
     const char* source = SD.exists(kMeshStatePath) ? kMeshStatePath
@@ -925,6 +968,7 @@ void loadMeshState() {
         node.id = value["id"] | 0U;
         node.longName = value["long"] | "";
         node.shortName = value["short"] | "";
+        node.publicKey = meshKeyFromHex(value["public_key"] | "");
         node.lastRssi = value["rssi"] | 0.0F;
         node.lastSnr = value["snr"] | 0.0F;
         node.packets = value["packets"] | 0U;
@@ -962,6 +1006,9 @@ void saveMeshState() {
         value["id"] = node.id;
         value["long"] = node.longName;
         value["short"] = node.shortName;
+        if (node.publicKey.size() == 32) {
+            value["public_key"] = meshKeyHex(node.publicKey);
+        }
         value["rssi"] = node.lastRssi;
         value["snr"] = node.lastSnr;
         value["packets"] = node.packets;
@@ -5077,6 +5124,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 localMeshNode.id = meshNodeId;
                 localMeshNode.longName = meshNodeName;
                 localMeshNode.shortName = meshNodeShortName;
+                localMeshNode.publicKey = meshPublicKey;
                 loraService.restoreNode(localMeshNode);
             }
             meshIdentityEditing = false;
@@ -6944,6 +6992,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     localMeshNode.id = meshNodeId;
                     localMeshNode.longName = meshNodeName;
                     localMeshNode.shortName = meshNodeShortName;
+                    localMeshNode.publicKey = meshPublicKey;
                     loraService.restoreNode(localMeshNode);
                 }
                 meshSettingsStatus = loraService.transmitStatus();
@@ -7426,14 +7475,30 @@ void setup() {
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
-    const uint64_t hardwareId = ESP.getEfuseMac();
-    meshNodeId = static_cast<uint32_t>(hardwareId & 0xffffffffU);
-    if (meshNodeId < 4 || meshNodeId == 0xffffffffU) meshNodeId ^= 0x47570004U;
+    meshPrivateKey.resize(32);
+    if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
+        preferences.getBytes("mesh_priv", meshPrivateKey.data(),
+                             meshPrivateKey.size());
+    } else {
+        esp_fill_random(meshPrivateKey.data(), meshPrivateKey.size());
+        preferences.putBytes("mesh_priv", meshPrivateKey.data(),
+                             meshPrivateKey.size());
+    }
+    meshPublicKey.resize(32);
+    if (!Curve25519::eval(meshPublicKey.data(), meshPrivateKey.data(), nullptr)) {
+        meshPrivateKey.clear();
+        meshPublicKey.clear();
+    }
+    meshNodeId = meshIdentityCrc32(meshPublicKey);
+    if (meshNodeId < 4 || meshNodeId == 0xffffffffU) {
+        meshNodeId ^= 0x47570004U;
+    }
     char defaultMeshName[25];
     snprintf(defaultMeshName, sizeof(defaultMeshName), "Ghostwire %04lX",
              static_cast<unsigned long>(meshNodeId & 0xffffU));
     meshNodeName = preferences.getString("mesh_name", defaultMeshName);
     meshNodeShortName = preferences.getString("mesh_short", "GW");
+    loraService.setMeshKeyPair(meshPrivateKey, meshPublicKey);
     if (meshNodeName.isEmpty() || meshNodeName.length() > 24) {
         meshNodeName = defaultMeshName;
     }
@@ -7522,6 +7587,7 @@ void setup() {
     localMeshNode.id = meshNodeId;
     localMeshNode.longName = meshNodeName;
     localMeshNode.shortName = meshNodeShortName;
+    localMeshNode.publicKey = meshPublicKey;
     loraService.restoreNode(localMeshNode);
     if (meshBackgroundEnabled) {
         loraService.begin();

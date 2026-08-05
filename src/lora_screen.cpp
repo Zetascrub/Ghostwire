@@ -261,6 +261,12 @@ void LoRaScreen::drawNodeDetail(size_t selection) {
         display.setTextColor(Branding::muted, Branding::background);
         display.print("No position received");
     }
+    display.setCursor(8, 115);
+    display.setTextColor(node.publicKey.size() == 32 ? Branding::accent
+                                                     : Branding::muted,
+                         Branding::background);
+    display.print(node.publicKey.size() == 32 ? "Direct messaging ready"
+                                              : "Awaiting identity key");
     ScreenChrome::drawFooter("Q: node list");
 }
 

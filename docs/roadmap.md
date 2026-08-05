@@ -129,8 +129,9 @@ verified against test tags.
   and deliberate NodeInfo advertisement as a `CLIENT_MUTE` endpoint.
 - [x] Add optional boot-started background receive and rate-limited audible
   notification for newly decoded text messages.
-- [x] Add direct reply composition on the source channel with Meshtastic's
-  acknowledgement-request flag and clear incoming/outgoing conversation labels.
+- [x] Add PKI-encrypted direct reply composition with Meshtastic's
+  acknowledgement-request flag, signed key-bearing identity advertisement,
+  peer-key readiness feedback, and clear incoming/outgoing conversation labels.
 - Decode acknowledgement outcomes and add deliberate direct composition from
   the node directory; add position sharing after duty-cycle testing.
 

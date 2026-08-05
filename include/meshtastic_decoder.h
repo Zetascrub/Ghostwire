@@ -14,6 +14,7 @@ struct MeshtasticDecoded {
     String summary;
     String longName;
     String shortName;
+    std::vector<uint8_t> publicKey;
     bool hasPosition = false;
     double latitude = 0.0;
     double longitude = 0.0;
@@ -36,7 +37,8 @@ struct MeshtasticChannel {
 class MeshtasticDecoder {
 public:
     bool decodePublic(const uint8_t* packet, size_t length,
-                      MeshtasticDecoded& result) const;
+                      MeshtasticDecoded& result,
+                      const std::vector<uint8_t>* senderPublicKey = nullptr) const;
     static const char* portName(uint32_t port);
     void setChannels(const std::vector<MeshtasticChannel>& channels);
     const std::vector<MeshtasticChannel>& channels() const { return channels_; }
@@ -44,10 +46,13 @@ public:
                                const std::vector<uint8_t>& key);
     bool encodeText(const String& text, size_t channelIndex, uint32_t from,
                     uint32_t to, uint32_t packetId, uint8_t hopLimit,
+                    const std::vector<uint8_t>* recipientPublicKey,
                     std::vector<uint8_t>& packet) const;
     bool encodeNodeInfo(const String& longName, const String& shortName,
                         size_t channelIndex, uint32_t from, uint32_t packetId,
                         uint8_t hopLimit, std::vector<uint8_t>& packet) const;
+    void setLocalKeyPair(const std::vector<uint8_t>& privateKey,
+                         const std::vector<uint8_t>& publicKey);
     static bool readVarint(const uint8_t* data, size_t length, size_t& offset,
                            uint64_t& value);
 
@@ -56,9 +61,14 @@ private:
                            size_t channelIndex, uint32_t from,
                            uint32_t to, uint32_t packetId, uint8_t hopLimit,
                            bool wantAck,
+                           const std::vector<uint8_t>* recipientPublicKey,
                            std::vector<uint8_t>& packet) const;
     static bool decodeData(const uint8_t* data, size_t length,
                            MeshtasticDecoded& result);
     static void decodeApplicationPayload(MeshtasticDecoded& result);
     std::vector<MeshtasticChannel> channels_;
+    std::vector<uint8_t> privateKey_;
+    std::vector<uint8_t> publicKey_;
+    std::vector<uint8_t> signingPrivateKey_;
+    std::vector<uint8_t> signingPublicKey_;
 };

@@ -66,7 +66,21 @@ void LoRaService::update() {
         }
         lastDecoded_ = MeshtasticDecoded{};
         if (profile_ == Profile::MeshtasticEuLongFast) {
-            decoder_.decodePublic(packet.data(), packet.size(), lastDecoded_);
+            const std::vector<uint8_t>* senderKey = nullptr;
+            if (packet.size() >= 16) {
+                const uint32_t sender = static_cast<uint32_t>(packet[4]) |
+                    (static_cast<uint32_t>(packet[5]) << 8) |
+                    (static_cast<uint32_t>(packet[6]) << 16) |
+                    (static_cast<uint32_t>(packet[7]) << 24);
+                const auto known = std::find_if(
+                    nodes_.begin(), nodes_.end(),
+                    [sender](const MeshNode& node) { return node.id == sender; });
+                if (known != nodes_.end() && known->publicKey.size() == 32) {
+                    senderKey = &known->publicKey;
+                }
+            }
+            decoder_.decodePublic(packet.data(), packet.size(), lastDecoded_,
+                                  senderKey);
         }
         lastRssi_ = radio_.getRSSI();
         lastSnr_ = radio_.getSNR();
@@ -100,6 +114,9 @@ void LoRaService::observeDecodedPacket() {
     ++node->packets;
     if (!lastDecoded_.longName.isEmpty()) node->longName = lastDecoded_.longName;
     if (!lastDecoded_.shortName.isEmpty()) node->shortName = lastDecoded_.shortName;
+    if (lastDecoded_.publicKey.size() == 32) {
+        node->publicKey = lastDecoded_.publicKey;
+    }
     if (lastDecoded_.hasPosition) {
         node->hasPosition = true;
         node->latitude = lastDecoded_.latitude;
@@ -171,8 +188,19 @@ bool LoRaService::sendText(const String& text, size_t channelIndex,
                            uint32_t nodeId, uint32_t to, uint8_t hopLimit) {
     const uint32_t packetId = esp_random();
     std::vector<uint8_t> packet;
+    const std::vector<uint8_t>* recipientKey = nullptr;
+    if (to != 0xffffffffU) {
+        const auto recipient = std::find_if(
+            nodes_.begin(), nodes_.end(),
+            [to](const MeshNode& node) { return node.id == to; });
+        if (recipient == nodes_.end() || recipient->publicKey.size() != 32) {
+            transmitStatus_ = "No public key; await NodeInfo";
+            return false;
+        }
+        recipientKey = &recipient->publicKey;
+    }
     if (!decoder_.encodeText(text, channelIndex, nodeId, to, packetId, hopLimit,
-                             packet)) {
+                             recipientKey, packet)) {
         transmitStatus_ = "Invalid message or channel";
         return false;
     }

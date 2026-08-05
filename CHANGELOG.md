@@ -6,11 +6,14 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
-- Add direct Meshtastic replies from received-message detail. Replies retain
-  the original public/private channel, target the sender's node ID, request an
-  acknowledgement, and are journalled with the actual recipient. Message lists
-  and details now distinguish incoming senders, outgoing recipients, channel,
-  and direct-versus-broadcast traffic.
+- Add interoperable direct Meshtastic replies from received-message detail.
+  Replies target the sender's node ID, use Curve25519-derived AES-CCM PKI,
+  request an acknowledgement, and are journalled with the actual recipient.
+  Ghostwire now maintains a persistent mesh key pair, derives its node ID from
+  the public key, signs broadcast identity/data with XEdDSA, learns peer keys
+  from NodeInfo, and shows whether a node is ready for direct messaging.
+  Message lists and details distinguish incoming senders, outgoing recipients,
+  channel, and direct-versus-broadcast traffic.
 
 - Add persistent Background client and Message alerts toggles to Mesh Settings.
   Background mode starts Meshtastic reception at boot and keeps it active away

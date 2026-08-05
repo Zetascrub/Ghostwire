@@ -1,7 +1,12 @@
 #include "meshtastic_decoder.h"
 
 #include <cstring>
+#include <Curve25519.h>
+#include <XEdDSA.h>
+#include <esp_system.h>
 #include <mbedtls/aes.h>
+#include <mbedtls/ccm.h>
+#include <mbedtls/sha256.h>
 
 namespace {
 constexpr size_t kHeaderLength = 16;
@@ -66,10 +71,25 @@ void decodeDeviceMetrics(const uint8_t* data, size_t length,
     }
     result.hasDeviceMetrics = true;
 }
+
+bool deriveSharedKey(const std::vector<uint8_t>& privateKey,
+                     const std::vector<uint8_t>& remotePublic,
+                     uint8_t sharedKey[32]) {
+    if (privateKey.size() != 32 || remotePublic.size() != 32) return false;
+    uint8_t secret[32];
+    if (!Curve25519::eval(secret, privateKey.data(), remotePublic.data())) {
+        memset(secret, 0, sizeof(secret));
+        return false;
+    }
+    const int status = mbedtls_sha256_ret(secret, sizeof(secret), sharedKey, 0);
+    memset(secret, 0, sizeof(secret));
+    return status == 0;
+}
 }  // namespace
 
 bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
-                                     MeshtasticDecoded& result) const {
+                                     MeshtasticDecoded& result,
+                                     const std::vector<uint8_t>* senderPublicKey) const {
     result = MeshtasticDecoded{};
     if (!packet || length <= kHeaderLength || length > 255) return false;
 
@@ -78,6 +98,47 @@ bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
     result.id = readLe32(packet + 8);
     result.channelHash = packet[13];
     if (result.from == 0) return false;
+
+    if (result.channelHash == 0 && senderPublicKey != nullptr &&
+        senderPublicKey->size() == 32 && privateKey_.size() == 32 &&
+        length > kHeaderLength + 12) {
+        const size_t cipherLength = length - kHeaderLength - 12;
+        const uint8_t* cipher = packet + kHeaderLength;
+        const uint8_t* tag = cipher + cipherLength;
+        uint32_t extraNonce = 0;
+        memcpy(&extraNonce, tag + 8, sizeof(extraNonce));
+        uint8_t nonce[16] = {};
+        memcpy(nonce, &result.id, sizeof(result.id));
+        memcpy(nonce + 4, &extraNonce, sizeof(extraNonce));
+        memcpy(nonce + 8, &result.from, sizeof(result.from));
+        uint8_t sharedKey[32];
+        if (!deriveSharedKey(privateKey_, *senderPublicKey, sharedKey)) {
+            return false;
+        }
+        std::vector<uint8_t> plain(cipherLength);
+        mbedtls_ccm_context ccm;
+        mbedtls_ccm_init(&ccm);
+        int status = mbedtls_ccm_setkey(&ccm, MBEDTLS_CIPHER_ID_AES,
+                                        sharedKey, 256);
+        if (status == 0) {
+            status = mbedtls_ccm_auth_decrypt(
+                &ccm, cipherLength, nonce, 13, nullptr, 0, cipher,
+                plain.data(), tag, 8);
+        }
+        mbedtls_ccm_free(&ccm);
+        memset(sharedKey, 0, sizeof(sharedKey));
+        if (status != 0 || !decodeData(plain.data(), plain.size(), result)) {
+            return false;
+        }
+        result.channelName = "PKI";
+        result.valid = true;
+        decodeApplicationPayload(result);
+        result.summary = (result.port == 1 || result.port == 7 ||
+                          result.port == 32)
+                             ? printableText(result.payload)
+                             : portName(result.port);
+        return true;
+    }
 
     const MeshtasticChannel* channel = nullptr;
     for (const auto& candidate : channels_) {
@@ -160,16 +221,35 @@ void MeshtasticDecoder::setChannels(
     }
 }
 
+void MeshtasticDecoder::setLocalKeyPair(
+    const std::vector<uint8_t>& privateKey,
+    const std::vector<uint8_t>& publicKey) {
+    privateKey_ = privateKey.size() == 32 ? privateKey : std::vector<uint8_t>{};
+    publicKey_ = publicKey.size() == 32 ? publicKey : std::vector<uint8_t>{};
+    signingPrivateKey_.clear();
+    signingPublicKey_.clear();
+    if (privateKey_.size() == 32 && publicKey_.size() == 32) {
+        signingPrivateKey_.resize(32);
+        signingPublicKey_.resize(32);
+        std::vector<uint8_t> curvePrivate = privateKey_;
+        XEdDSA::priv_curve_to_ed_keys(curvePrivate.data(),
+                                     signingPrivateKey_.data(),
+                                     signingPublicKey_.data());
+    }
+}
+
 bool MeshtasticDecoder::encodeText(const String& text, size_t channelIndex,
                                    uint32_t from, uint32_t to,
                                    uint32_t packetId,
                                    uint8_t hopLimit,
+                                   const std::vector<uint8_t>* recipientPublicKey,
                                    std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || text.isEmpty() ||
         text.length() > 180 || hopLimit < 1 || hopLimit > 7) return false;
     std::vector<uint8_t> payload(text.c_str(), text.c_str() + text.length());
     return encodeApplication(payload, 1, channelIndex, from, to, packetId,
-                             hopLimit, to != 0xffffffffU, packet);
+                             hopLimit, to != 0xffffffffU, recipientPublicKey,
+                             packet);
 }
 
 bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
@@ -191,16 +271,22 @@ bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
     appendString(0x0a, nodeId);    // User.id
     appendString(0x12, longName);  // User.long_name
     appendString(0x1a, shortName); // User.short_name
+    if (publicKey_.size() == 32) {
+        user.push_back(0x42);      // User.public_key
+        user.push_back(32);
+        user.insert(user.end(), publicKey_.begin(), publicKey_.end());
+    }
     user.push_back(0x38);          // User.role
     user.push_back(0x01);          // CLIENT_MUTE
     return encodeApplication(user, 4, channelIndex, from, 0xffffffffU,
-                             packetId, hopLimit, false, packet);
+                             packetId, hopLimit, false, nullptr, packet);
 }
 
 bool MeshtasticDecoder::encodeApplication(
     const std::vector<uint8_t>& payload, uint32_t port, size_t channelIndex,
     uint32_t from, uint32_t to, uint32_t packetId, uint8_t hopLimit,
     bool wantAck,
+    const std::vector<uint8_t>* recipientPublicKey,
     std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || payload.empty() ||
         payload.size() > 220 || port > 127 || hopLimit < 1 || hopLimit > 7) {
@@ -219,6 +305,28 @@ bool MeshtasticDecoder::encodeApplication(
         plain.push_back(static_cast<uint8_t>(payload.size() >> 7));
     }
     plain.insert(plain.end(), payload.begin(), payload.end());
+    if (to != 0xffffffffU) {
+        plain.push_back(0x48);  // Data.bitfield (present, value zero)
+        plain.push_back(0x00);
+    } else if (signingPrivateKey_.size() == 32 &&
+               signingPublicKey_.size() == 32) {
+        uint8_t signature[64];
+        esp_fill_random(signature, 32);
+        std::vector<uint8_t> signedMessage(12 + payload.size());
+        memcpy(signedMessage.data(), &from, sizeof(from));
+        memcpy(signedMessage.data() + 4, &packetId, sizeof(packetId));
+        memcpy(signedMessage.data() + 8, &port, sizeof(port));
+        memcpy(signedMessage.data() + 12, payload.data(), payload.size());
+        XEdDSA::sign(signature, signingPrivateKey_.data(),
+                     signingPublicKey_.data(), signedMessage.data(),
+                     signedMessage.size());
+        plain.push_back(0x52);  // Data.xeddsa_signature
+        plain.push_back(64);
+        plain.insert(plain.end(), signature, signature + sizeof(signature));
+        memset(signature, 0, sizeof(signature));
+    }
+
+    if (plain.size() + kHeaderLength > 255) return false;
 
     packet.assign(kHeaderLength + plain.size(), 0);
     const auto writeLe32 = [&](size_t offset, uint32_t value) {
@@ -232,11 +340,40 @@ bool MeshtasticDecoder::encodeApplication(
     writeLe32(8, packetId);
     packet[12] = static_cast<uint8_t>(hopLimit | (hopLimit << 5) |
                                       (wantAck ? 0x08 : 0x00));
-    packet[13] = channel.hash;
+    const bool pki = to != 0xffffffffU && recipientPublicKey != nullptr &&
+                     recipientPublicKey->size() == 32 && privateKey_.size() == 32;
+    if (to != 0xffffffffU && !pki) return false;
+    packet[13] = pki ? 0 : channel.hash;
     packet[14] = 0;
     packet[15] = static_cast<uint8_t>(from & 0xff);
 
-    if (!channel.key.empty()) {
+    if (pki) {
+        uint8_t sharedKey[32];
+        if (!deriveSharedKey(privateKey_, *recipientPublicKey, sharedKey)) {
+            return false;
+        }
+        const uint32_t extraNonce = esp_random();
+        uint8_t nonce[16] = {};
+        memcpy(nonce, &packetId, sizeof(packetId));
+        memcpy(nonce + 4, &extraNonce, sizeof(extraNonce));
+        memcpy(nonce + 8, &from, sizeof(from));
+        packet.resize(kHeaderLength + plain.size() + 12);
+        uint8_t* cipher = packet.data() + kHeaderLength;
+        uint8_t* tag = cipher + plain.size();
+        mbedtls_ccm_context ccm;
+        mbedtls_ccm_init(&ccm);
+        int status = mbedtls_ccm_setkey(&ccm, MBEDTLS_CIPHER_ID_AES,
+                                        sharedKey, 256);
+        if (status == 0) {
+            status = mbedtls_ccm_encrypt_and_tag(
+                &ccm, plain.size(), nonce, 13, nullptr, 0, plain.data(),
+                cipher, tag, 8);
+        }
+        mbedtls_ccm_free(&ccm);
+        memset(sharedKey, 0, sizeof(sharedKey));
+        if (status != 0) return false;
+        memcpy(tag + 8, &extraNonce, sizeof(extraNonce));
+    } else if (!channel.key.empty()) {
         uint8_t nonce[16] = {};
         memcpy(nonce, &packetId, sizeof(packetId));
         memcpy(nonce + 8, &from, sizeof(from));
@@ -283,6 +420,10 @@ void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
                 }
                 if (field == 2) result.longName = value;
                 if (field == 3) result.shortName = value;
+            }
+            if (result.port == 4 && field == 8 && length == 32) {
+                result.publicKey.assign(result.payload.begin() + offset,
+                                        result.payload.begin() + offset + 32);
             }
             if (result.port == 67 && field == 2) {
                 decodeDeviceMetrics(result.payload.data() + offset, length,
