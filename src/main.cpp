@@ -1047,6 +1047,9 @@ void drawNavigationCard(const char* header, const String& label,
     drawHeaderPosition(selected + 1, count);
     auto& display = M5Cardputer.Display;
     drawNavigationIcon(icon, 39, 65);
+    // Titles are wrapped deliberately below. M5GFX's implicit wrapping can
+    // otherwise push a final character onto an extra line at the right edge.
+    display.setTextWrap(false);
     display.setTextSize(2);
     display.setTextColor(Branding::text, Branding::background);
     String titleFirst = label;
@@ -1094,6 +1097,7 @@ void drawNavigationCard(const char* header, const String& label,
         else display.drawCircle(x, 108, 2, Branding::muted);
     }
     drawFooter("Left/Right: browse   Enter: open");
+    display.setTextWrap(true);
 }
 
 // Main/Observe/Field kit menus: see include/menu_screens.h/src/menu_screens.cpp.

@@ -6,6 +6,15 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+## 0.4.7 - 2026-08-05
+
+- Prevent M5GFX's automatic wrapping from splitting the final letter of card
+  labels such as `Boot Experience`; card titles now use only Ghostwire's
+  intentional word-aware wrapping.
+- Report an empty public GitHub Releases feed as `No public release available
+  yet` instead of the opaque `HTTP 404` response.
+- Abort OTA installation if writing a downloaded chunk to the inactive flash
+  partition is incomplete.
 - Expand Cyberdeck Idle into three persistent styles: smoother Data Rain,
   Signal Radar, and connected Node Drift. Compose the animated content in a
   temporary off-screen canvas, push complete frames to reduce flicker, and

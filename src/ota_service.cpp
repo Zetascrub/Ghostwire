@@ -83,7 +83,9 @@ OtaService::CheckResult OtaService::checkForUpdate(const char* currentVersion) {
     http.addHeader("Accept", "application/vnd.github+json");
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        status_ = "Release check failed (HTTP " + String(code) + ")";
+        status_ = code == HTTP_CODE_NOT_FOUND
+                      ? "No public release available yet"
+                      : "Release check failed (HTTP " + String(code) + ")";
         http.end();
         return CheckResult::Failed;
     }
@@ -196,7 +198,12 @@ OtaService::InstallResult OtaService::downloadAndInstall(
         if (stream->available()) {
             const int n = stream->read(buf, want);
             if (n > 0) {
-                Update.write(buf, static_cast<size_t>(n));
+                const size_t written =
+                    Update.write(buf, static_cast<size_t>(n));
+                if (written != static_cast<size_t>(n)) {
+                    ioError = true;
+                    break;
+                }
                 mbedtls_sha256_update_ret(&sha, buf, static_cast<size_t>(n));
                 downloaded += static_cast<size_t>(n);
                 downloadedBytes_ = downloaded;
