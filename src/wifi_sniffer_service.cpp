@@ -243,8 +243,12 @@ const char* WifiSnifferService::captureModeName() const {
 }
 
 void WifiSnifferService::cycleCaptureMode() {
-    captureMode_ = static_cast<WifiCaptureMode>(
-        (static_cast<uint8_t>(captureMode_) + 1U) % 3U);
+    setCaptureMode(static_cast<WifiCaptureMode>(
+        (static_cast<uint8_t>(captureMode_) + 1U) % 3U));
+}
+
+void WifiSnifferService::setCaptureMode(WifiCaptureMode mode) {
+    captureMode_ = mode;
     callbackCaptureMode = captureMode_;
     if (active_) {
         wifi_promiscuous_filter_t filter{};

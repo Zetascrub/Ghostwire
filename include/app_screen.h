@@ -2,6 +2,8 @@
 
 enum class Screen {
     MainMenu,
+    ObserveMenu,
+    FieldKitMenu,
     WifiMenu,
     WifiRecon,
     WifiChannelAnalyzer,
@@ -15,6 +17,8 @@ enum class Screen {
     DevicesMenu,
     AiChat,
     CyberFamiliar,
+    FamiliarPatrol,
+    FamiliarPatrolConfirm,
     CyberFamiliarResetConfirm,
     BleDiscovery,
     BleDetail,
@@ -36,6 +40,7 @@ enum class Screen {
     DuckyConfirm,
     DuckyResult,
     Audio,
+    TtsLab,
     AudioMic,
     AudioFiles,
     AudioPlaying,
@@ -64,6 +69,7 @@ enum class Screen {
     Gnss,
     LoRa,
     WifiSniffer,
+    WifiGuardian,
     Imu,
     Settings,
     SettingsDisplay,

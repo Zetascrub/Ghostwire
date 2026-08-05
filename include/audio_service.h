@@ -17,7 +17,7 @@ public:
     bool recordWav(const char* path, uint32_t durationMs,
                    String& error);
 
-    bool startMp3(const char* path);
+    bool startMp3(const char* path, uint16_t settleDelayMs = 150);
     void stopPlayback();
     bool isPlaying() const;
 

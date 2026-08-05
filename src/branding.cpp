@@ -6,6 +6,9 @@ const Theme kThemes[] = {
     // name                 background  panel   accent  text    muted   warning
     {"Matrix",              0x0000,     0x0100, 0x07E0, 0x9FF3, 0x03E0, 0xFD20},
     {"Cyberpunk",           0x0001,     0x1846, 0xF816, 0x079F, 0x79F4, 0xFE80},
+    // Night City-inspired: near-black chrome, electric yellow, cyan HUD text,
+    // and hot-magenta danger accents.
+    {"Night City 2077",     0x0000,     0x18C3, 0xFFE1, 0x079F, 0x6D5A, 0xF807},
     {"Windows",             0x0410,     0x0010, 0xFFFF, 0xE73C, 0x0659, 0xFFE0},
     {"Amber Terminal",      0x0820,     0x28A0, 0xFD80, 0xFE4B, 0x9320, 0xF9E7},
     {"Space",               0x0022,     0x10A6, 0x55BF, 0xCF1F, 0x5B52, 0xFAE7},

@@ -24,7 +24,10 @@
 #include "chameleon_ultra_client.h"
 #include "cyber_familiar.h"
 #include "eapol_parser.h"
+#include "familiar_patrol_service.h"
 #include "ir_service.h"
+#include "ir_screen.h"
+#include "screen_chrome.h"
 #include "hid_service.h"
 #include "audio_service.h"
 #include "ai_service.h"
@@ -38,6 +41,7 @@
 #include "sd_logger.h"
 #include "war_drive_service.h"
 #include "wifi_sniffer_service.h"
+#include "wifi_guardian_service.h"
 
 namespace {
 
@@ -59,6 +63,7 @@ struct FileEntry {
 struct LogEntry {
     String name;
     String type;
+    String path;
     uint64_t size;
 };
 
@@ -71,8 +76,8 @@ struct ActionMenuItem {
 };
 
 const char* const kMenuItems[] = {
-    "Wi-Fi", "BLE", "GPS", "Mesh", "War Drive", "Network", "Devices",
-    "AI Chat", "Cyber Familiar", "Tools", "Settings",
+    "My Familiar", "Observe signals", "Scout network", "Evidence",
+    "Field kit", "Settings",
 };
 constexpr size_t kMenuCount = sizeof(kMenuItems) / sizeof(kMenuItems[0]);
 const char* const kHidPresetNames[] = {
@@ -96,6 +101,7 @@ uint64_t sdCardSizeMiB = 0;
 String currentPath = "/";
 Screen audioReturnScreen = Screen::AudioFiles;
 Screen textPreviewReturnScreen = Screen::FileDetail;
+Screen evidenceReturnScreen = Screen::MainMenu;
 String nowPlayingName;
 String nowPlayingSource;
 String qrText;
@@ -209,30 +215,87 @@ String sshLocalEchoPending;
 String sshHistory[3];
 size_t sshHistoryIndex = 0;
 IrService irService;
+IrScreen irScreen(irService);
 HidService hidService;
 AudioService audioService;
 AiService aiService;
 CyberFamiliar cyberFamiliar;
+FamiliarPatrolService familiarPatrolService;
+FamiliarPatrolState lastFamiliarPatrolState = FamiliarPatrolState::Idle;
+unsigned long lastFamiliarPatrolDraw = 0;
+bool familiarPatrolContinuousChoice = false;
+uint8_t familiarPatrolIntervalIndex = 1;
+constexpr uint32_t kFamiliarPatrolIntervals[] = {
+    60000, 300000, 900000, 1800000, 3600000,
+};
 uint8_t familiarPage = 0;
 unsigned long lastFamiliarDraw = 0;
 bool familiarIdleActive = false;
+bool familiarIdleDrawn = false;
+enum class FamiliarReaction : uint8_t {
+    None,
+    Searching,
+    HostFound,
+    ServiceFound,
+    Warning,
+    Complete,
+};
+FamiliarReaction familiarReaction = FamiliarReaction::None;
+unsigned long familiarReactionUntil = 0;
+uint32_t familiarObservedPatrolHosts = 0;
+uint32_t familiarObservedOpenPorts = 0;
+String familiarSpeechBubble;
+unsigned long familiarSpeechBubbleUntil = 0;
+unsigned long lastFamiliarCueMs = 0;
+void triggerFamiliarReaction(FamiliarReaction reaction, uint32_t durationMs);
+void showFamiliarSpeech(const String& message, uint32_t durationMs);
 Screen lastFamiliarObservedScreen = Screen::MainMenu;
 String aiPrompt;
+String ttsLabStatus = "Word bank ready";
+uint8_t ttsLabPhrase = 0;
+uint32_t ttsLabPlaybackMs = 0;
 String aiNotice;
 size_t aiScrollLines = 0;
 String familiarWorkflowStatus;
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
+struct FamiliarPhrase {
+    const char* name;
+    const char* words[4];
+    uint8_t wordCount;
+};
+constexpr FamiliarPhrase kTtsLabPhrases[] = {
+    {"New host discovered", {"new", "host", "discovered"}, 3},
+    {"New host detected", {"new", "host", "detected"}, 3},
+    {"Interesting service found", {"interesting", "service", "found"}, 3},
+    {"Patrol started", {"patrol", "started"}, 2},
+    {"Patrol completed", {"patrol", "completed"}, 2},
+    {"Warning: service detected", {"warning", "service", "detected"}, 3},
+    {"Error", {"error"}, 1},
+};
+constexpr size_t kTtsLabPhraseCount =
+    sizeof(kTtsLabPhrases) / sizeof(kTtsLabPhrases[0]);
+constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
+String familiarWordPath(const char* word) {
+    return String(kFamiliarAudioPath) + word + ".mp3";
+}
+int8_t familiarVoicePhrase = -1;
+int8_t familiarVoicePending = -1;
+uint8_t familiarVoiceWord = 0;
+unsigned long familiarVoiceReadyMs = 0;
 constexpr char kAiRecordingPath[] = "/ghostwire/ai_voice.wav";
 GnssService gnssService;
 LoRaService loraService;
 WifiSnifferService wifiSnifferService;
+WifiGuardianService wifiGuardianService;
 SdLogger imuLogger;
 SdLogger gnssLogger;
 SdLogger loraLogger;
 SdLogger wifiSnifferLogger;
+SdLogger guardianEventLogger;
 SdLogger chameleonLogger;
 SdLogger bleCaptureLogger;
 PcapLogger wifiPassiveCaptureLogger;
+PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
 Preferences preferences;
 std::vector<String> audioFiles;
@@ -251,13 +314,16 @@ uint8_t speakerVolume = 96;
 uint8_t screenBrightness = 128;
 uint16_t screenTimeoutSeconds = 30;
 bool bootSoundEnabled = true;
-bool fastBootEnabled = false;
+uint8_t bootSpeedIndex = 1;
 bool saveWifiCredentials = false;
 bool autoConnectWifi = false;
 bool cyberdeckIdleEnabled = false;
+uint8_t cyberdeckIdleStyle = 0;
+bool cardNavigationEnabled = false;
 size_t themeIndex = 0;
 uint8_t bootAnimationIndex = 0;
 uint8_t bootSoundIndex = 0;
+uint8_t familiarCueIndex = 0;
 bool screenSleeping = false;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
@@ -266,6 +332,13 @@ uint8_t cyberdeckRainSpeed[kCyberdeckColumns]{};
 unsigned long lastCyberdeckDraw = 0;
 uint32_t cyberdeckLastWifiCount = 0;
 uint32_t cyberdeckLastBleCount = 0;
+M5Canvas cyberdeckIdleCanvas(&M5Cardputer.Display);
+bool cyberdeckIdleCanvasReady = false;
+constexpr size_t kIdleNodeCount = 12;
+int16_t idleNodeX[kIdleNodeCount]{};
+int16_t idleNodeY[kIdleNodeCount]{};
+int8_t idleNodeDx[kIdleNodeCount]{};
+int8_t idleNodeDy[kIdleNodeCount]{};
 bool clockSynced = false;
 String clockStatus = "Waiting for GNSS UTC";
 unsigned long lastClockSyncAttempt = 0;
@@ -279,6 +352,10 @@ unsigned long lastGnssLog = 0;
 unsigned long lastLoRaDraw = 0;
 uint32_t lastLoggedLoRaPacket = 0;
 unsigned long lastWifiSnifferDraw = 0;
+unsigned long lastGuardianDraw = 0;
+String guardianLastEvent = "No alerts observed";
+uint8_t guardianLastChannel = 0;
+int8_t guardianLastRssi = 0;
 unsigned long lastBleSpamDraw = 0;
 unsigned long lastBleKeyboardDraw = 0;
 constexpr size_t kMaxRecentWifiProbes = 8;
@@ -304,12 +381,15 @@ constexpr uint8_t kDefaultVolume = 96;
 constexpr uint8_t kDefaultBrightness = 128;
 constexpr uint16_t kDefaultScreenTimeout = 30;
 constexpr bool kDefaultBootSound = true;
-constexpr bool kDefaultFastBoot = false;
+constexpr uint8_t kDefaultBootSpeed = 1;
 constexpr bool kDefaultSaveWifiCredentials = false;
 constexpr bool kDefaultAutoConnectWifi = false;
 constexpr bool kDefaultCyberdeckIdle = false;
+constexpr uint8_t kDefaultCyberdeckIdleStyle = 0;
+constexpr bool kDefaultCardNavigation = false;
 constexpr uint8_t kDefaultBootAnimation = 0;
 constexpr uint8_t kDefaultBootSoundPreset = 0;
+constexpr uint8_t kDefaultFamiliarCue = 0;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 constexpr size_t kSystemDiagnosticCount = 22;
 const char* const kBootAnimationNames[] = {
@@ -322,12 +402,27 @@ const char* const kBootSoundNames[] = {
     "Classic Chime", "Hero Signal", "Arcade Ready",
     "Starship", "Mystic Spark",
 };
+const char* const kBootSpeedNames[] = {"Slow", "Normal", "Fast"};
+constexpr size_t kBootSpeedCount =
+    sizeof(kBootSpeedNames) / sizeof(kBootSpeedNames[0]);
 constexpr size_t kBootSoundCount =
     sizeof(kBootSoundNames) / sizeof(kBootSoundNames[0]);
+const char* const kFamiliarCueNames[] = {
+    "No sound", "Subtle", "Chirps", "Arcade", "Mystic", "Voice pack",
+};
+const char* const kCyberdeckIdleStyleNames[] = {
+    "Data Rain", "Signal Radar", "Node Drift",
+};
+constexpr size_t kCyberdeckIdleStyleCount =
+    sizeof(kCyberdeckIdleStyleNames) / sizeof(kCyberdeckIdleStyleNames[0]);
+constexpr size_t kFamiliarCueCount =
+    sizeof(kFamiliarCueNames) / sizeof(kFamiliarCueNames[0]);
 
 String csvSafePayload(const String& payload);
 String utcTimestamp();
 void drawCurrentScreen();
+void beginCyberdeckIdle();
+void drawCyberdeckIdle();
 
 void applySettings() {
     audioService.setVolume(speakerVolume);
@@ -339,13 +434,17 @@ void saveSettings() {
     preferences.putUChar("brightness", screenBrightness);
     preferences.putUShort("timeout", screenTimeoutSeconds);
     preferences.putBool("boot_sound", bootSoundEnabled);
-    preferences.putBool("fast_boot", fastBootEnabled);
+    preferences.putUChar("boot_speed", bootSpeedIndex);
+    preferences.remove("fast_boot");
     preferences.putBool("save_wifi", saveWifiCredentials);
     preferences.putBool("auto_wifi", autoConnectWifi);
     preferences.putBool("cyber_idle", cyberdeckIdleEnabled);
+    preferences.putUChar("idle_style", cyberdeckIdleStyle);
+    preferences.putBool("nav_cards", cardNavigationEnabled);
     preferences.putUChar("theme", static_cast<uint8_t>(themeIndex));
     preferences.putUChar("boot_anim", bootAnimationIndex);
     preferences.putUChar("boot_tone", bootSoundIndex);
+    preferences.putUChar("fam_cue", familiarCueIndex);
 }
 
 void restoreDefaultSettings() {
@@ -353,10 +452,12 @@ void restoreDefaultSettings() {
     screenBrightness = kDefaultBrightness;
     screenTimeoutSeconds = kDefaultScreenTimeout;
     bootSoundEnabled = kDefaultBootSound;
-    fastBootEnabled = kDefaultFastBoot;
+    bootSpeedIndex = kDefaultBootSpeed;
     saveWifiCredentials = kDefaultSaveWifiCredentials;
     autoConnectWifi = kDefaultAutoConnectWifi;
     cyberdeckIdleEnabled = kDefaultCyberdeckIdle;
+    cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
+    cardNavigationEnabled = kDefaultCardNavigation;
     preferences.remove("wifi_ssid");
     preferences.remove("wifi_pass");
     wifiConnectSavedSsid = "";
@@ -364,6 +465,7 @@ void restoreDefaultSettings() {
     themeIndex = 0;
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
+    familiarCueIndex = kDefaultFamiliarCue;
     Branding::applyTheme(themeIndex);
     applySettings();
     saveSettings();
@@ -472,9 +574,15 @@ void drawHeaderStatus(bool force = false) {
     auto& display = M5Cardputer.Display;
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
     const bool captureActive = wifiSnifferService.isActive() ||
+                               wifiGuardianService.isActive() ||
                                bleSpamService.isActive() ||
                                warDriveService.isActive() ||
-                               handshakeCaptureLogger.isActive();
+                               handshakeCaptureLogger.isActive() ||
+                               bleCaptureLogger.isActive() ||
+                               gnssLogger.isActive() ||
+                               loraLogger.isActive() ||
+                               imuLogger.isActive() ||
+                               familiarPatrolService.isActive();
     const uint8_t battery = batteryPercentage();
     const uint32_t clockMinute =
         clockSynced ? static_cast<uint32_t>(time(nullptr) / 60) : 0;
@@ -671,13 +779,22 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'f', "Cycle RSSI filter (" +
                               String(bleCaptureRssiFilter) + " dBm)"}};
         case Screen::CyberFamiliar:
-            return {{'p', "Pet familiar"},
+            return {{'a', familiarPatrolService.isActive()
+                              ? "Open active patrol"
+                              : "Start Familiar Patrol"},
+                    {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
                                                    : "Enable idle watch"},
+                    {'w', "Start idle watch now"},
                     {'x', "Export familiar record"},
                     {'g', "Import capture logs"},
                     {'z', "Reset familiar progress"}};
+        case Screen::FamiliarPatrol:
+            if (familiarPatrolService.isActive()) {
+                return {{'x', "Stop patrol"}};
+            }
+            return {};
         case Screen::System:
             return {{'e', "Export diagnostics"}};
         case Screen::TimeStatus:
@@ -729,17 +846,22 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
 void drawActionMenu() {
     auto& display = M5Cardputer.Display;
     const int itemCount = static_cast<int>(actionMenuItems.size());
+    const int visibleCount = std::min(itemCount, 6);
+    const int firstVisible = std::max(
+        0, std::min(static_cast<int>(actionMenuSelection) - visibleCount + 1,
+                    itemCount - visibleCount));
     const int rowHeight = 16;
-    const int boxHeight = itemCount * rowHeight + 10;
+    const int boxHeight = visibleCount * rowHeight + 10;
     const int boxWidth = display.width() - 40;
     const int boxX = 20;
     const int boxY = std::max(22, (display.height() - boxHeight) / 2);
 
     display.fillRect(boxX, boxY, boxWidth, boxHeight, Branding::panel);
     display.drawRect(boxX, boxY, boxWidth, boxHeight, Branding::accent);
-    for (int i = 0; i < itemCount; ++i) {
+    for (int row = 0; row < visibleCount; ++row) {
+        const int i = firstVisible + row;
         const bool selected = static_cast<size_t>(i) == actionMenuSelection;
-        const int rowY = boxY + 5 + i * rowHeight;
+        const int rowY = boxY + 5 + row * rowHeight;
         display.fillRect(boxX + 2, rowY, boxWidth - 4, rowHeight - 2,
                          selected ? Branding::accent : Branding::panel);
         display.setTextColor(selected ? Branding::background : Branding::text,
@@ -749,17 +871,246 @@ void drawActionMenu() {
     }
 }
 
+void drawNavigationIcon(uint8_t icon, int cx, int cy) {
+    auto& display = M5Cardputer.Display;
+    const uint16_t color = Branding::accent;
+    display.drawRoundRect(cx - 26, cy - 26, 52, 52, 9, Branding::muted);
+    switch (icon) {
+        case 0:  // Familiar face
+            display.fillTriangle(cx - 18, cy - 10, cx - 11, cy - 23,
+                                 cx - 4, cy - 9, color);
+            display.fillTriangle(cx + 4, cy - 9, cx + 11, cy - 23,
+                                 cx + 18, cy - 10, color);
+            display.drawRoundRect(cx - 19, cy - 12, 38, 30, 8, color);
+            display.fillCircle(cx - 8, cy, 2, color);
+            display.fillCircle(cx + 8, cy, 2, color);
+            display.drawFastHLine(cx - 5, cy + 9, 10, color);
+            break;
+        case 1:  // Radio waves
+            display.fillCircle(cx, cy + 6, 3, color);
+            display.drawCircle(cx, cy + 6, 10, color);
+            display.drawCircle(cx, cy + 6, 17, color);
+            display.drawFastVLine(cx, cy - 17, 23, color);
+            break;
+        case 2:  // Network nodes
+            display.fillCircle(cx, cy - 15, 5, color);
+            display.fillCircle(cx - 17, cy + 14, 5, color);
+            display.fillCircle(cx + 17, cy + 14, 5, color);
+            display.drawLine(cx, cy - 10, cx - 14, cy + 10, color);
+            display.drawLine(cx, cy - 10, cx + 14, cy + 10, color);
+            display.drawFastHLine(cx - 12, cy + 14, 24, color);
+            break;
+        case 3:  // Evidence folder
+            display.fillRect(cx - 20, cy - 10, 40, 27, color);
+            display.fillRect(cx - 17, cy - 16, 17, 7, color);
+            display.drawFastHLine(cx - 13, cy - 2, 26,
+                                  Branding::background);
+            display.drawFastHLine(cx - 13, cy + 5, 20,
+                                  Branding::background);
+            break;
+        case 4:  // Field kit
+            display.drawRoundRect(cx - 20, cy - 11, 40, 29, 4, color);
+            display.drawRect(cx - 9, cy - 18, 18, 8, color);
+            display.drawFastHLine(cx - 19, cy, 38, color);
+            display.fillRect(cx - 4, cy - 3, 8, 7, color);
+            break;
+        case 5:  // Settings cog
+            display.drawCircle(cx, cy, 17, color);
+            display.drawCircle(cx, cy, 7, color);
+            display.drawFastHLine(cx - 24, cy, 48, color);
+            display.drawFastVLine(cx, cy - 24, 48, color);
+            display.drawLine(cx - 17, cy - 17, cx + 17, cy + 17, color);
+            display.drawLine(cx + 17, cy - 17, cx - 17, cy + 17, color);
+            break;
+        case 6:  // Bluetooth
+            display.drawFastVLine(cx, cy - 22, 44, color);
+            display.drawLine(cx, cy - 22, cx + 14, cy - 9, color);
+            display.drawLine(cx + 14, cy - 9, cx - 10, cy + 12, color);
+            display.drawLine(cx - 10, cy - 12, cx + 14, cy + 9, color);
+            display.drawLine(cx + 14, cy + 9, cx, cy + 22, color);
+            break;
+        case 7:  // Position marker
+            display.drawCircle(cx, cy - 5, 16, color);
+            display.fillCircle(cx, cy - 5, 5, color);
+            display.fillTriangle(cx - 12, cy + 5, cx + 12, cy + 5,
+                                 cx, cy + 23, color);
+            break;
+        case 8:  // AI notes
+            display.drawRoundRect(cx - 20, cy - 19, 40, 37, 5, color);
+            display.fillCircle(cx - 8, cy - 4, 2, color);
+            display.fillCircle(cx + 8, cy - 4, 2, color);
+            display.drawFastHLine(cx - 10, cy + 7, 20, color);
+            break;
+        default:  // Utilities
+            display.drawLine(cx - 17, cy + 17, cx + 17, cy - 17, color);
+            display.drawCircle(cx - 13, cy + 13, 7, color);
+            display.drawCircle(cx + 13, cy - 13, 7, color);
+            break;
+    }
+}
+
+void drawNavigationCard(const char* header, const String& label,
+                        const String& description, size_t selected,
+                        size_t count, uint8_t icon,
+                        const String& badge = "") {
+    drawHeader(header);
+    drawHeaderPosition(selected + 1, count);
+    auto& display = M5Cardputer.Display;
+    drawNavigationIcon(icon, 39, 65);
+    display.setTextSize(2);
+    display.setTextColor(Branding::text, Branding::background);
+    String titleFirst = label;
+    String titleSecond;
+    int descriptionY = 57;
+    if (titleFirst.length() > 13) {
+        int split = titleFirst.substring(0, 14).lastIndexOf(' ');
+        if (split < 5) split = 13;
+        titleSecond = titleFirst.substring(split + 1);
+        titleFirst = titleFirst.substring(0, split);
+        descriptionY = 68;
+    }
+    display.setCursor(76, titleSecond.isEmpty() ? 31 : 25);
+    display.print(titleFirst.substring(0, 13));
+    if (!titleSecond.isEmpty()) {
+        display.setCursor(76, 43);
+        display.print(titleSecond.substring(0, 13));
+    }
+    display.setTextSize(1);
+    display.setTextColor(Branding::muted, Branding::background);
+    String firstLine = description;
+    String secondLine;
+    if (firstLine.length() > 25) {
+        int split = firstLine.substring(0, 26).lastIndexOf(' ');
+        if (split < 8) split = 25;
+        secondLine = firstLine.substring(split + 1);
+        firstLine = firstLine.substring(0, split);
+    }
+    if (!titleSecond.isEmpty() && !badge.isEmpty()) secondLine = "";
+    display.setCursor(77, descriptionY);
+    display.print(firstLine.substring(0, 25));
+    display.setCursor(77, descriptionY + 13);
+    display.print(secondLine.substring(0, 25));
+    if (!badge.isEmpty()) {
+        const int width = static_cast<int>(badge.length()) * 6 + 10;
+        display.fillRoundRect(77, 88, width, 15, 4, Branding::accent);
+        display.setTextColor(Branding::background, Branding::accent);
+        display.setCursor(82, 92);
+        display.print(badge);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const int x = 120 - static_cast<int>(count * 5) +
+                      static_cast<int>(i * 10);
+        if (i == selected) display.fillCircle(x, 108, 3, Branding::accent);
+        else display.drawCircle(x, 108, 2, Branding::muted);
+    }
+    drawFooter("Left/Right: browse   Enter: open");
+}
+
 void drawMainMenu() {
-    drawHeader(Branding::productName);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Your companion and scout", "Watch the air around you",
+            "Explore a connected network", "Review what Ghostwire saved",
+            "Accessories, notes and tools", "Make the deck feel like yours",
+        };
+        String badge;
+        if (menuSelection == 0) badge = "LEVEL " + String(cyberFamiliar.level());
+        else if (menuSelection == 1 && wifiGuardianService.isActive()) badge = "WATCHING";
+        else if (menuSelection == 2 && familiarPatrolService.isActive()) badge = "PATROL LIVE";
+        else if (menuSelection == 3) badge = sdAvailable ? "SD READY" : "NO SD";
+        const String title = String(Branding::productName) + " // " +
+                             cyberFamiliar.name();
+        drawNavigationCard(title.c_str(), kMenuItems[menuSelection],
+                           descriptions[menuSelection], menuSelection,
+                           kMenuCount, static_cast<uint8_t>(menuSelection), badge);
+        return;
+    }
+    const String title = String(Branding::productName) + " // " +
+                         cyberFamiliar.name();
+    drawHeader(title.c_str());
     drawHeaderPosition(menuSelection + 1, kMenuCount);
     const size_t offset =
         menuSelection >= kVisibleRows ? menuSelection - kVisibleRows + 1 : 0;
     for (size_t row = 0; row < kVisibleRows && row + offset < kMenuCount;
          ++row) {
-        drawListRow(row, kMenuItems[row + offset],
-                    row + offset == menuSelection);
+        const size_t item = row + offset;
+        String suffix;
+        if (item == 0) {
+            suffix = "Lv" + String(cyberFamiliar.level());
+        } else if (item == 1 && wifiGuardianService.isActive()) {
+            suffix = "WATCH";
+        } else if (item == 2 && familiarPatrolService.isActive()) {
+            suffix = "LIVE";
+        } else if (item == 3) {
+            suffix = sdAvailable ? "SD" : "NO SD";
+        }
+        drawListRow(row, kMenuItems[item], item == menuSelection, suffix);
     }
-    drawFooter("Fn+;/.: move   Enter: open");
+    drawFooter("Choose a mission   Enter: open");
+}
+
+void drawObserveMenu() {
+    static const char* const items[] = {
+        "Wi-Fi airspace", "Bluetooth nearby", "Position / GPS",
+        "Mesh signals", "War drive survey",
+    };
+    constexpr size_t count = sizeof(items) / sizeof(items[0]);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Discover networks and watch Wi-Fi", "Inspect nearby Bluetooth devices",
+            "Find position and record a trail", "Listen to LoRa and mesh traffic",
+            "Survey Wi-Fi, BLE and position",
+        };
+        static constexpr uint8_t icons[] = {1, 6, 7, 1, 7};
+        String badge;
+        if (listSelection == 0 && wifiGuardianService.isActive()) badge = "WATCHING";
+        if (listSelection == 4 && warDriveService.isActive()) badge = "SURVEY LIVE";
+        drawNavigationCard("Observe signals", items[listSelection],
+                           descriptions[listSelection], listSelection, count,
+                           icons[listSelection], badge);
+        return;
+    }
+    drawHeader("Observe signals");
+    normalizeListPosition(count);
+    drawHeaderPosition(listSelection + 1, count);
+    for (size_t row = 0; row < kVisibleRows && row + listOffset < count;
+         ++row) {
+        const size_t item = row + listOffset;
+        String suffix;
+        if (item == 0 && wifiGuardianService.isActive()) suffix = "WATCH";
+        if (item == 4 && warDriveService.isActive()) suffix = "LIVE";
+        drawListRow(row, items[item], item == listSelection, suffix);
+    }
+    drawFooter("Observe first. Save what matters.");
+}
+
+void drawFieldKitMenu() {
+    static const char* const items[] = {
+        "Connected devices", "AI field notes", "Utility tools",
+    };
+    constexpr size_t count = sizeof(items) / sizeof(items[0]);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Work with supported accessories", "Capture and develop field notes",
+            "Deck diagnostics and utilities",
+        };
+        static constexpr uint8_t icons[] = {4, 8, 9};
+        drawNavigationCard("Field kit", items[listSelection],
+                           descriptions[listSelection], listSelection, count,
+                           icons[listSelection]);
+        return;
+    }
+    drawHeader("Field kit");
+    normalizeListPosition(count);
+    drawHeaderPosition(listSelection + 1, count);
+    for (size_t row = 0; row < count; ++row) {
+        drawListRow(row, items[row], row == listSelection);
+    }
+    auto& display = M5Cardputer.Display;
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 82);
+    display.print("Accessories, notes and deck utilities.");
+    drawFooter("Enter: open   Q: missions");
 }
 
 void appendWrappedAiLines(std::vector<String>& lines, const String& prefix,
@@ -2015,40 +2366,8 @@ void drawBleDetail() {
     drawFooter("Backspace/Q: results");
 }
 
-void drawInfrared() {
-    drawHeader("Infrared Self-Test");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 32);
-    display.printf("Onboard TX: GPIO %u", IrService::kTransmitPin);
-    display.setCursor(8, 49);
-    display.printf("Carrier:    %u kHz", IrService::kCarrierKhz);
-    display.setCursor(8, 66);
-    display.printf("Tests sent: %lu",
-                   static_cast<unsigned long>(irService.transmissionCount()));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 86);
-    display.print("RX requires an external receiver.");
-    display.setCursor(8, 102);
-    display.print("View emitter through phone camera.");
-    drawFooter("Enter/R: emit test burst  Backspace/Q: back");
-}
-
-void transmitInfraredSelfTest() {
-    drawHeader("Infrared Self-Test");
-    M5Cardputer.Display.setTextColor(Branding::warning,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 45);
-    M5Cardputer.Display.print("Transmitting test pattern...");
-    drawFooter("Point the IR end toward a camera");
-    irService.sendSelfTest();
-    recoverKeyboardAfterBlockingOperation();
-    Serial.printf("[ir] self-test burst=%lu pin=%u carrier=%u kHz\n",
-                  static_cast<unsigned long>(irService.transmissionCount()),
-                  IrService::kTransmitPin,
-                  IrService::kCarrierKhz);
-    drawInfrared();
-}
+// Infrared self-test screen: see include/ir_screen.h/src/ir_screen.cpp.
+// (First screen extracted out of this file -- see docs/screen-extraction.md.)
 
 void drawUsbHid() {
     drawHeader("USB / HID");
@@ -2291,13 +2610,41 @@ void runUsbHidPreset() {
 void drawAudio() {
     static const char* const items[] = {
         "Speaker tone test", "Microphone level", "Play MP3 from SD",
+        "Familiar phrase lab",
     };
     drawHeader("Audio Self-Test");
-    normalizeListPosition(3);
-    for (size_t row = 0; row < 3; ++row) {
+    normalizeListPosition(4);
+    for (size_t row = 0; row < 4; ++row) {
         drawListRow(row, items[row], row == listSelection);
     }
     drawFooter("Enter: open/run  Backspace/Q: back");
+}
+
+void drawTtsLab() {
+    drawHeader("Familiar Phrase Lab");
+    auto& display = M5Cardputer.Display;
+    const auto& phrase = kTtsLabPhrases[ttsLabPhrase];
+    display.setTextColor(Branding::text, Branding::background);
+    display.setCursor(8, 31);
+    display.printf("Phrase %u/%u: %s", ttsLabPhrase + 1,
+                   static_cast<unsigned>(kTtsLabPhraseCount), phrase.name);
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 55);
+    display.print("Words: ");
+    for (uint8_t i = 0; i < phrase.wordCount; ++i) {
+        if (i != 0) display.print(" + ");
+        display.print(phrase.words[i]);
+    }
+    display.setCursor(8, 78);
+    display.print(ttsLabStatus.substring(0, 37));
+    display.setCursor(8, 95);
+    if (ttsLabPlaybackMs > 0) {
+        display.printf("Sequence time: %lums",
+                       static_cast<unsigned long>(ttsLabPlaybackMs));
+    } else {
+        display.print("Streams individual MP3s from SD.");
+    }
+    drawFooter("Tab: phrase  Enter: play  Esc: back");
 }
 
 void drawMicrophone() {
@@ -2510,26 +2857,48 @@ String logTypeFromName(const String& name) {
     return "Other";
 }
 
+String evidenceTypeFromPath(const String& path, const String& name) {
+    if (path.startsWith("/ghostwire/assessments/")) return "Patrol";
+    return logTypeFromName(name);
+}
+
+void collectEvidenceFiles(const String& directoryPath, uint8_t depth) {
+    if (depth > 3 || logSessions.size() >= 256) return;
+    File directory = SD.open(directoryPath);
+    if (!directory || !directory.isDirectory()) return;
+    File entry = directory.openNextFile();
+    while (entry && logSessions.size() < 256) {
+        String name = entry.name();
+        const int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        String path = directoryPath;
+        if (!path.endsWith("/")) path += "/";
+        path += name;
+        if (entry.isDirectory()) {
+            entry.close();
+            collectEvidenceFiles(path, depth + 1);
+        } else {
+            // Temporary checkpoints are recovery state, not operator evidence.
+            if (!name.endsWith(".tmp") && !name.endsWith(".bak") &&
+                name != "active.json") {
+                logSessions.push_back(
+                    {name, evidenceTypeFromPath(path, name), path,
+                     entry.size()});
+            }
+            entry.close();
+        }
+        entry = directory.openNextFile();
+    }
+    directory.close();
+}
+
 void loadLogSessions() {
     logSessions.clear();
     logSelection = 0;
     logOffset = 0;
     if (!sdAvailable) return;
-    File directory = SD.open("/ghostwire/logs");
-    if (!directory || !directory.isDirectory()) return;
-    File entry = directory.openNextFile();
-    while (entry && logSessions.size() < 256) {
-        if (!entry.isDirectory()) {
-            String name = entry.name();
-            const int slash = name.lastIndexOf('/');
-            if (slash >= 0) name = name.substring(slash + 1);
-            logSessions.push_back(
-                {name, logTypeFromName(name), entry.size()});
-        }
-        entry.close();
-        entry = directory.openNextFile();
-    }
-    directory.close();
+    collectEvidenceFiles("/ghostwire/logs", 0);
+    collectEvidenceFiles("/ghostwire/assessments", 0);
     std::sort(logSessions.begin(), logSessions.end(),
               [](const LogEntry& left, const LogEntry& right) {
                   String a = left.name;
@@ -2555,8 +2924,18 @@ void normalizeLogPosition() {
     }
 }
 
+String evidenceDisplayName(const LogEntry& entry) {
+    if (entry.type != "Patrol") return entry.name;
+    const int fileSlash = entry.path.lastIndexOf('/');
+    if (fileSlash <= 0) return entry.name;
+    const String parentPath = entry.path.substring(0, fileSlash);
+    const int parentSlash = parentPath.lastIndexOf('/');
+    const String session = parentPath.substring(parentSlash + 1);
+    return session + "/" + entry.name;
+}
+
 void drawLogSessions() {
-    drawHeader("Logs / Sessions");
+    drawHeader("Evidence");
     normalizeLogPosition();
     drawHeaderPosition(logSelection + 1, logSessions.size());
     if (!sdAvailable) {
@@ -2568,21 +2947,21 @@ void drawLogSessions() {
         M5Cardputer.Display.setTextColor(Branding::muted,
                                         Branding::background);
         M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("No saved sessions");
+        M5Cardputer.Display.print("No evidence saved yet");
     } else {
         for (size_t row = 0;
              row < kVisibleRows && logOffset + row < logSessions.size();
              ++row) {
             const auto& entry = logSessions[logOffset + row];
-            drawListRow(row, entry.name,
+            drawListRow(row, evidenceDisplayName(entry),
                         logOffset + row == logSelection, entry.type);
         }
     }
-    drawFooter("Enter: details   R: refresh   Q: back");
+    drawFooter("Enter: inspect   R: refresh   Q: back");
 }
 
-uint32_t countCsvRows(const String& name) {
-    File file = SD.open("/ghostwire/logs/" + name, FILE_READ);
+uint32_t countCsvRows(const String& path) {
+    File file = SD.open(path, FILE_READ);
     if (!file) return 0;
     uint32_t lines = 0;
     uint8_t buffer[256];
@@ -2604,7 +2983,11 @@ void openLogDetail() {
                                     Branding::background);
     M5Cardputer.Display.setCursor(8, 44);
     M5Cardputer.Display.print("Reading session metadata...");
-    selectedLogRows = countCsvRows(logSessions[logSelection].name);
+    String lower = logSessions[logSelection].name;
+    lower.toLowerCase();
+    selectedLogRows = lower.endsWith(".csv")
+                          ? countCsvRows(logSessions[logSelection].path)
+                          : 0;
     currentScreen = Screen::LogDetail;
 }
 
@@ -2619,15 +3002,25 @@ void drawLogDetail() {
     auto& display = M5Cardputer.Display;
     display.setTextColor(Branding::text, Branding::background);
     display.setCursor(8, 31);
-    display.print(entry.name.substring(0, 37));
+    display.print(evidenceDisplayName(entry).substring(0, 37));
     display.setCursor(8, 50);
-    display.printf("Subsystem: %s", entry.type.c_str());
+    display.printf("Source: %s", entry.type.c_str());
     display.setCursor(8, 69);
     display.printf("Size: %s", formatFileSize(entry.size).c_str());
     display.setCursor(8, 88);
-    display.printf("CSV data rows: %lu",
-                   static_cast<unsigned long>(selectedLogRows));
-    drawFooter("Enter: preview   Tab: actions   Q: sessions");
+    String lower = entry.name;
+    lower.toLowerCase();
+    if (lower.endsWith(".csv")) {
+        display.printf("Data rows: %lu",
+                       static_cast<unsigned long>(selectedLogRows));
+    } else {
+        display.print(isPreviewableFile(entry.name)
+                          ? "Readable evidence file"
+                          : "Binary capture / asset");
+    }
+    drawFooter(isPreviewableFile(entry.name)
+                   ? "Enter: preview   Tab: actions   Q: evidence"
+                   : "Tab: actions   Q: evidence");
 }
 
 void drawLogDeleteConfirm() {
@@ -3140,20 +3533,131 @@ void drawGnss(bool fullDraw = true) {
 
 void drawWifiMenu() {
     static const char* const items[] = {
-        "Discovery", "Channel Analyzer", "Sniffer", "Connect",
+        "Discovery", "Channel Analyzer", "Sniffer", "Guardian", "Connect",
     };
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Find nearby access points", "Compare channel congestion",
+            "Passively inspect Wi-Fi traffic", "Watch for disruption bursts",
+            "Join a network for scouting",
+        };
+        String badge = listSelection == 3 && wifiGuardianService.isActive()
+                           ? "WATCHING" : "";
+        drawNavigationCard("Wi-Fi airspace", items[listSelection],
+                           descriptions[listSelection], listSelection, 5, 1,
+                           badge);
+        return;
+    }
     drawHeader("Wi-Fi");
-    normalizeListPosition(4);
-    for (size_t row = 0; row < 4; ++row) {
+    normalizeListPosition(5);
+    for (size_t row = 0; row < 5; ++row) {
         drawListRow(row, items[row], row == listSelection);
     }
     drawFooter("Enter: open   Backspace/Q: back");
+}
+
+bool startWifiGuardian() {
+    guardianLastEvent = "Starting passive watch...";
+    if (!sdAvailable) {
+        guardianLastEvent = "microSD required for evidence";
+        return false;
+    }
+    wifiPassiveCaptureLogger.stop();
+    wifiSnifferLogger.stop();
+    wifiSnifferService.end();
+    WiFi.disconnect(false, false);
+    delay(50);
+    wifiSnifferService.setCaptureMode(WifiCaptureMode::Management);
+    if (!guardianEventLogger.begin(
+            "guardian_events",
+            "timestamp_utc,event,channel,rssi,deauth_total,disassoc_total")) {
+        guardianLastEvent = guardianEventLogger.status();
+        return false;
+    }
+    if (!guardianEvidenceLogger.begin("guardian_evidence")) {
+        guardianEventLogger.stop();
+        guardianLastEvent = guardianEvidenceLogger.status();
+        return false;
+    }
+    if (!wifiSnifferService.begin()) {
+        guardianEventLogger.stop();
+        guardianEvidenceLogger.stop();
+        guardianLastEvent = "Unable to start Wi-Fi monitor";
+        return false;
+    }
+    wifiGuardianService.begin(wifiGuardianService.sensitivity());
+    guardianLastEvent = "Watching; observations are not proof";
+    cyberFamiliar.notePatrol("Guardian watch started.", 5,
+                             FamiliarMood::Curious);
+    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+    showFamiliarSpeech("I'll keep an eye on things.", 2800);
+    return true;
+}
+
+void stopWifiGuardian() {
+    const bool wasActive = wifiGuardianService.isActive();
+    wifiGuardianService.stop();
+    wifiSnifferService.end();
+    guardianEventLogger.stop();
+    guardianEvidenceLogger.stop();
+    if (wasActive) {
+        cyberFamiliar.notePatrol("Guardian watch ended. Evidence saved.", 3,
+                                 FamiliarMood::Content);
+    }
+}
+
+void drawWifiGuardian(bool fullDraw = true) {
+    beginContentUpdate("Familiar Guardian", fullDraw);
+    auto& display = M5Cardputer.Display;
+    display.setTextColor(wifiGuardianService.isActive() ? Branding::accent
+                                                        : Branding::warning,
+                         Branding::background);
+    display.setCursor(8, 29);
+    display.printf("%s  CH %u  %s",
+                   wifiGuardianService.isActive() ? "WATCHING" : "STOPPED",
+                   wifiSnifferService.currentChannel(),
+                   wifiGuardianService.sensitivityName());
+    display.setTextColor(Branding::text, Branding::background);
+    display.setCursor(8, 46);
+    display.printf("Mgmt:%lu  Beacon:%lu Probe:%lu",
+                   static_cast<unsigned long>(
+                       wifiGuardianService.managementFrames()),
+                   static_cast<unsigned long>(wifiGuardianService.beaconFrames()),
+                   static_cast<unsigned long>(wifiGuardianService.probeFrames()));
+    display.setCursor(8, 63);
+    display.printf("Deauth:%lu Disassoc:%lu Recent:%u",
+                   static_cast<unsigned long>(wifiGuardianService.deauthFrames()),
+                   static_cast<unsigned long>(
+                       wifiGuardianService.disassocFrames()),
+                   wifiGuardianService.recentDisruptionFrames());
+    display.setCursor(8, 80);
+    display.printf("Alerts:%lu Evidence:%lu Drop:%lu",
+                   static_cast<unsigned long>(wifiGuardianService.alertCount()),
+                   static_cast<unsigned long>(guardianEvidenceLogger.rowCount()),
+                   static_cast<unsigned long>(
+                       wifiSnifferService.droppedRawFrameCount()));
+    display.setTextColor(
+        wifiGuardianService.alertCount() > 0 ? Branding::warning
+                                              : Branding::muted,
+        Branding::background);
+    display.setCursor(8, 97);
+    display.print(guardianLastEvent.substring(0, 37));
+    if (fullDraw) drawFooter("S: sensitivity  R: restart  Q: save/exit");
 }
 
 void drawBleMenu() {
     static const char* const items[] = {
         "Advertisement Sniffer", "BLE Keyboard", "Spam",
     };
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Inspect nearby advertisements", "Use the deck as a BLE keyboard",
+            "Experimental pairing broadcasts",
+        };
+        drawNavigationCard("Bluetooth nearby", items[listSelection],
+                           descriptions[listSelection], listSelection, 3, 6);
+        return;
+    }
     drawHeader("BLE");
     normalizeListPosition(3);
     for (size_t row = 0; row < 3; ++row) {
@@ -3163,8 +3667,16 @@ void drawBleMenu() {
 }
 
 void drawDevicesMenu() {
-    drawHeader("Devices");
     static const char* const items[] = {"Biscuit Pro", "Chameleon Ultra"};
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Connect to a Biscuit Pro", "Read and manage test identities",
+        };
+        drawNavigationCard("Connected devices", items[listSelection],
+                           descriptions[listSelection], listSelection, 2, 4);
+        return;
+    }
+    drawHeader("Devices");
     normalizeListPosition(2);
     for (size_t row = 0; row < 2; ++row) {
         drawListRow(row, items[row], row == listSelection);
@@ -3678,6 +4190,11 @@ void drawGpsMenu() {
     static const char* const items[] = {
         "GNSS Monitor",
     };
+    if (cardNavigationEnabled) {
+        drawNavigationCard("Position / GPS", items[0],
+                           "Monitor fixes and record a trail", 0, 1, 7);
+        return;
+    }
     drawHeader("GPS");
     normalizeListPosition(1);
     drawListRow(0, items[0], listSelection == 0);
@@ -3688,6 +4205,11 @@ void drawMeshMenu() {
     static const char* const items[] = {
         "LoRa / Meshtastic",
     };
+    if (cardNavigationEnabled) {
+        drawNavigationCard("Mesh signals", items[0],
+                           "Listen to LoRa and Meshtastic", 0, 1, 1);
+        return;
+    }
     drawHeader("Mesh");
     normalizeListPosition(1);
     drawListRow(0, items[0], listSelection == 0);
@@ -3702,6 +4224,17 @@ void drawNetworkMenu() {
         "SSH Client",
     };
     constexpr size_t kNetworkMenuCount = sizeof(items) / sizeof(items[0]);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Review the current network", "Find responsive local hosts",
+            "Open a plain-text session", "Open a secure shell session",
+        };
+        String badge = familiarPatrolService.isActive() ? "PATROL LIVE" : "";
+        drawNavigationCard("Scout network", items[listSelection],
+                           descriptions[listSelection], listSelection,
+                           kNetworkMenuCount, 2, badge);
+        return;
+    }
     drawHeader("Network");
     normalizeListPosition(kNetworkMenuCount);
     for (size_t row = 0; row < kNetworkMenuCount; ++row) {
@@ -3746,6 +4279,19 @@ void drawToolsMenu() {
         "Motion / IMU", "Files",     "QR Generator", "System", "About",
     };
     constexpr size_t kToolsCount = sizeof(items) / sizeof(items[0]);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Test the infrared transmitter", "Keyboard and guarded scripts",
+            "Speaker, microphone and phrases", "Browse saved log sessions",
+            "Inspect motion sensor data", "Browse the microSD card",
+            "Create an offline QR code", "Inspect deck health and time",
+            "Version and project identity",
+        };
+        drawNavigationCard("Utility tools", items[listSelection],
+                           descriptions[listSelection], listSelection,
+                           kToolsCount, 9);
+        return;
+    }
     drawHeader("Tools");
     normalizeListPosition(kToolsCount);
     drawHeaderPosition(listSelection + 1, kToolsCount);
@@ -3929,8 +4475,18 @@ String csvSafePayload(const String& payload) {
 }
 
 const char* familiarFace() {
-    const bool blink = (millis() / 2600U) % 9U == 0;
+    const bool blink = (millis() / 180U) % 23U == 0;
     if (blink) return "(-_-)";
+    if (millis() < familiarReactionUntil) {
+        switch (familiarReaction) {
+            case FamiliarReaction::HostFound: return "(^.^)!";
+            case FamiliarReaction::ServiceFound: return "(o.o)+";
+            case FamiliarReaction::Warning: return "(O.O)!";
+            case FamiliarReaction::Complete: return "(^.^)7";
+            case FamiliarReaction::Searching: return "(o.o)?";
+            default: break;
+        }
+    }
     switch (cyberFamiliar.mood()) {
         case FamiliarMood::Curious: return "(o_o)?";
         case FamiliarMood::Excited: return "(^o^)";
@@ -3940,6 +4496,216 @@ const char* familiarFace() {
         case FamiliarMood::Dizzy: return "(@_@)";
         default: return "(._.)";
     }
+}
+
+void triggerFamiliarReaction(FamiliarReaction reaction,
+                             uint32_t durationMs = 1800) {
+    familiarReaction = reaction;
+    familiarReactionUntil = millis() + durationMs;
+}
+
+enum class FamiliarCue : uint8_t {
+    Started, Host, Service, Warning, Complete, Error,
+};
+
+uint8_t familiarVoicePhraseForCue(FamiliarCue cue) {
+    switch (cue) {
+        case FamiliarCue::Started: return 3;
+        case FamiliarCue::Host: return 0;
+        case FamiliarCue::Service: return 2;
+        case FamiliarCue::Warning: return 5;
+        case FamiliarCue::Complete: return 4;
+        case FamiliarCue::Error: return 6;
+    }
+    return 6;
+}
+
+uint8_t familiarVoicePriority(uint8_t phrase) {
+    if (phrase == 6) return 3;
+    if (phrase == 5) return 2;
+    return 1;
+}
+
+void queueFamiliarVoice(FamiliarCue cue) {
+    const uint8_t phrase = familiarVoicePhraseForCue(cue);
+    if (familiarVoicePhrase < 0 && millis() >= familiarVoiceReadyMs) {
+        familiarVoicePhrase = phrase;
+        familiarVoiceWord = 0;
+        return;
+    }
+    // Retain only one pending announcement. Warnings and errors may replace
+    // routine news, preventing a busy host from creating stale narration.
+    if (familiarVoicePending < 0 ||
+        familiarVoicePriority(phrase) >
+            familiarVoicePriority(static_cast<uint8_t>(familiarVoicePending))) {
+        familiarVoicePending = phrase;
+    }
+}
+
+void updateFamiliarVoice() {
+    if (familiarVoicePhrase < 0) {
+        if (familiarVoicePending < 0 || millis() < familiarVoiceReadyMs) return;
+        familiarVoicePhrase = familiarVoicePending;
+        familiarVoicePending = -1;
+        familiarVoiceWord = 0;
+    }
+    if (audioService.isPlaying()) return;
+    const auto& phrase =
+        kTtsLabPhrases[static_cast<uint8_t>(familiarVoicePhrase)];
+    if (familiarVoiceWord >= phrase.wordCount) {
+        familiarVoicePhrase = -1;
+        familiarVoiceWord = 0;
+        familiarVoiceReadyMs = millis() + 900;
+        return;
+    }
+    const String path = familiarWordPath(phrase.words[familiarVoiceWord]);
+    if (!audioService.startMp3(path.c_str(), 25)) {
+        familiarVoicePhrase = -1;
+        familiarVoicePending = -1;
+        familiarVoiceReadyMs = millis() + 3000;
+        return;
+    }
+    ++familiarVoiceWord;
+}
+
+void showFamiliarSpeech(const String& message, uint32_t durationMs = 2600) {
+    familiarSpeechBubble = message;
+    familiarSpeechBubbleUntil = millis() + durationMs;
+}
+
+String familiarHostLabel(const IPAddress& ip) {
+    // Always-available compact fallback. A future non-blocking name resolver
+    // can replace this without changing reaction or rendering code.
+    return "." + String(ip[3]);
+}
+
+const char* familiarServiceName(uint16_t port) {
+    switch (port) {
+        case 21: return "FTP"; case 22: return "SSH";
+        case 23: return "Telnet"; case 53: return "DNS";
+        case 80: case 8080: case 8081: case 8000: return "Web";
+        case 139: case 445: return "SMB";
+        case 443: case 8443: return "Secure web";
+        case 1883: return "MQTT"; case 2049: return "NFS";
+        case 2375: case 2376: return "Docker";
+        case 3306: return "MySQL"; case 3389: return "RDP";
+        case 5432: return "Postgres"; case 5900: return "VNC";
+        case 6379: return "Redis"; case 6443: return "Kubernetes";
+        case 9100: return "Printer"; case 9200: return "Elastic";
+        case 27017: return "MongoDB";
+        default: return "service";
+    }
+}
+
+void playFamiliarCue(FamiliarCue cue) {
+    if (familiarCueIndex == 0) return;
+    if (familiarCueIndex == kFamiliarCueCount - 1) {
+        if (millis() - lastFamiliarCueMs >= 1800 ||
+            cue == FamiliarCue::Warning || cue == FamiliarCue::Error) {
+            lastFamiliarCueMs = millis();
+            queueFamiliarVoice(cue);
+        }
+        return;
+    }
+    if (audioService.isPlaying() || millis() - lastFamiliarCueMs < 700) {
+        return;
+    }
+    lastFamiliarCueMs = millis();
+    uint16_t first = 700;
+    uint16_t second = 0;
+    uint16_t duration = 55;
+    if (familiarCueIndex == 1) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 440 : 880;
+        duration = 45;
+    } else if (familiarCueIndex == 2) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 520 : 1050;
+        second = cue == FamiliarCue::Complete ? 1400 : first + 180;
+    } else if (familiarCueIndex == 3) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 220 : 660;
+        second = cue == FamiliarCue::Complete ? 1320 : first * 2;
+        duration = 60;
+    } else {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 330 : 784;
+        second = cue == FamiliarCue::Complete ? 1568 : 1175;
+        duration = 85;
+    }
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
+    M5Cardputer.Speaker.tone(first, duration);
+    if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
+}
+
+void drawFamiliarSpeechBubble(int x, int y, int width) {
+    if (familiarSpeechBubble.isEmpty() ||
+        millis() >= familiarSpeechBubbleUntil) return;
+    auto& display = M5Cardputer.Display;
+    display.fillRoundRect(x, y, width, 18, 5, Branding::text);
+    display.fillTriangle(x + 12, y + 17, x + 20, y + 17,
+                         x + 16, y + 23, Branding::text);
+    display.setTextColor(Branding::background, Branding::text);
+    display.setCursor(x + 5, y + 5);
+    display.print(familiarSpeechBubble.substring(0, (width - 10) / 6));
+}
+
+bool familiarSensitivePort(uint16_t port) {
+    switch (port) {
+        case 23: case 111: case 135: case 139: case 445:
+        case 1433: case 2049: case 3306: case 3389: case 5432:
+        case 5900: case 6379: case 9200: case 27017:
+            return true;
+        default: return false;
+    }
+}
+
+void drawFamiliarCreature(int centerX, int baseY, bool large) {
+    auto& display = M5Cardputer.Display;
+    const uint32_t phase = millis() / 180U;
+    const int bob = (phase % 8U == 1U || phase % 8U == 2U) ? -1 : 0;
+    const int width = large ? 68 : 50;
+    const int height = large ? 40 : 29;
+    const int x = centerX - width / 2;
+    const int y = baseY - height + bob;
+    const uint16_t color =
+        familiarReaction == FamiliarReaction::Warning &&
+                millis() < familiarReactionUntil
+            ? Branding::warning
+            : Branding::accent;
+
+    // Tail, ears and rounded body are redrawn procedurally: no frame buffers.
+    const int tailLift = (phase / 2U) % 2U == 0U ? 0 : 4;
+    display.drawLine(x + width - 2, y + height - 10,
+                     x + width + 10, y + height - 15 - tailLift, color);
+    display.drawLine(x + width + 10, y + height - 15 - tailLift,
+                     x + width + 14, y + height - 10 - tailLift, color);
+    display.fillTriangle(x + 7, y + 7, x + 14, y - 6,
+                         x + 23, y + 5, color);
+    display.fillTriangle(x + width - 23, y + 5, x + width - 14, y - 6,
+                         x + width - 7, y + 7, color);
+    display.fillRoundRect(x, y, width, height, large ? 10 : 7, color);
+    display.fillRoundRect(x + 3, y + 3, width - 6, height - 6,
+                          large ? 8 : 5, Branding::background);
+
+    display.setTextSize(large ? 2 : 1);
+    display.setTextColor(color, Branding::background);
+    const String face = familiarFace();
+    display.setCursor(centerX - static_cast<int>(face.length()) *
+                                    (large ? 6 : 3),
+                      y + (large ? 12 : 10));
+    display.print(face);
+
+    const bool searching = familiarPatrolService.isActive() &&
+                           familiarPatrolService.state() ==
+                               FamiliarPatrolState::Discovery;
+    if (searching) {
+        const int radius = 4 + static_cast<int>((phase % 4U) * 3U);
+        display.drawCircle(x - 8, y + height / 2, radius, color);
+        display.drawPixel(x - 8, y + height / 2, Branding::text);
+    }
+    display.setTextSize(1);
 }
 
 String familiarAgeText() {
@@ -4072,14 +4838,17 @@ void drawCyberFamiliarResetConfirm() {
 }
 
 void drawCyberFamiliar(bool fullDraw = true) {
-    beginContentUpdate(cyberFamiliar.name().c_str(), fullDraw);
+    if (fullDraw || familiarPage != 0) {
+        beginContentUpdate(cyberFamiliar.name().c_str(), fullDraw);
+    } else {
+        // Preserve the static dashboard; only invalidate the animated zone.
+        M5Cardputer.Display.fillRect(74, 22, 162, 46,
+                                     Branding::background);
+    }
     auto& display = M5Cardputer.Display;
     if (familiarPage == 0) {
-        display.setTextSize(3);
-        display.setTextColor(Branding::accent, Branding::background);
-        display.setCursor(57, 30);
-        display.print(familiarFace());
-        display.setTextSize(1);
+        drawFamiliarCreature(120, 66, false);
+        drawFamiliarSpeechBubble(145, 29, 88);
         display.setTextColor(Branding::text, Branding::background);
         display.setCursor(8, 70);
         display.printf("Lv %u  %s  Bond %u",
@@ -4127,15 +4896,110 @@ void drawCyberFamiliar(bool fullDraw = true) {
     }
 }
 
+void drawFamiliarPatrolConfirm() {
+    drawHeader("Confirm Familiar Patrol");
+    auto& display = M5Cardputer.Display;
+    if (!sdAvailable || WiFi.status() != WL_CONNECTED) {
+        display.setTextColor(Branding::warning, Branding::background);
+        display.setCursor(8, 34);
+        display.print(!sdAvailable ? "microSD card required"
+                                   : "Connect Wi-Fi first");
+        drawFooter("Esc: cancel");
+        return;
+    }
+    const String scope = FamiliarPatrolService::cidrText(
+        WiFi.localIP(), WiFi.subnetMask());
+    const uint32_t count = FamiliarPatrolService::usableAddressCount(
+        WiFi.localIP(), WiFi.subnetMask());
+    display.setTextColor(Branding::warning, Branding::background);
+    display.setCursor(8, 28);
+    display.print("AUTHORIZED SCOPE REQUIRED");
+    display.setTextColor(Branding::text, Branding::background);
+    display.setCursor(8, 47);
+    display.printf("Scope: %s", scope.c_str());
+    display.setCursor(8, 63);
+    display.printf("Addresses: %lu", static_cast<unsigned long>(count));
+    display.setCursor(8, 79);
+    display.printf("Mode: %s", familiarPatrolContinuousChoice
+                                   ? "Continuous Watch" : "One-shot scout");
+    display.setCursor(8, 95);
+    display.printf("Interval: %lus", static_cast<unsigned long>(
+        kFamiliarPatrolIntervals[familiarPatrolIntervalIndex] / 1000));
+    drawFooter("C: mode  V: interval  Enter: go");
+}
+
+void drawFamiliarPatrol(bool fullDraw = true) {
+    beginContentUpdate("Familiar Patrol", fullDraw);
+    auto& display = M5Cardputer.Display;
+    const FamiliarPatrolState state = familiarPatrolService.state();
+    display.setTextColor(
+        state == FamiliarPatrolState::Error ? Branding::warning
+        : familiarPatrolService.isActive() ? Branding::accent
+                                            : Branding::text,
+        Branding::background);
+    display.setCursor(8, 28);
+    display.printf("%s", familiarPatrolService.stateName());
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(158, 28);
+    display.printf("Mood:%s", cyberFamiliar.moodName());
+    display.setTextColor(Branding::text, Branding::background);
+    display.setCursor(8, 44);
+    if (state == FamiliarPatrolState::WatchWait) {
+        display.printf("Cycle %lu; next scan in %lus",
+            static_cast<unsigned long>(familiarPatrolService.cycle()),
+            static_cast<unsigned long>(familiarPatrolService.nextScanSeconds()));
+    } else if (state == FamiliarPatrolState::Discovery) {
+        display.printf("Addresses: %lu / %lu",
+            static_cast<unsigned long>(familiarPatrolService.discoveryScanned()),
+            static_cast<unsigned long>(familiarPatrolService.addressCount()));
+    } else {
+        display.printf("Host: %lu / %lu",
+            static_cast<unsigned long>(familiarPatrolService.hostIndex() + 1),
+            static_cast<unsigned long>(familiarPatrolService.cycleHostsFound()));
+    }
+    display.setCursor(8, 60);
+    display.printf("Found: %lu hosts  %lu open ports",
+        static_cast<unsigned long>(familiarPatrolService.hostsFound()),
+        static_cast<unsigned long>(familiarPatrolService.openPortsFound()));
+    display.setCursor(8, 76);
+    const uint32_t port = familiarPatrolService.currentPort();
+    if (port > 0) {
+        display.printf("%s : %lu",
+            familiarPatrolService.currentHost().toString().c_str(),
+            static_cast<unsigned long>(port));
+    } else {
+        display.print(familiarPatrolService.status().substring(0, 37));
+    }
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 94);
+    if (!familiarSpeechBubble.isEmpty() &&
+        millis() < familiarSpeechBubbleUntil) {
+        drawFamiliarSpeechBubble(7, 91, 226);
+    } else {
+        String path = familiarPatrolService.sessionPath();
+        const int slash = path.lastIndexOf('/');
+        if (slash >= 0) path = path.substring(slash + 1);
+        display.print(path.substring(0, 37));
+    }
+    if (fullDraw) {
+        drawFooter(familiarPatrolService.isActive()
+                       ? "Tab: stop menu   Q: background"
+                       : "Q: back");
+    }
+}
+
 void drawCyberFamiliarIdle() {
     auto& display = M5Cardputer.Display;
-    display.fillRect(0, 0, display.width(), display.height(),
-                     Branding::background);
-    display.setTextSize(3);
-    display.setTextColor(Branding::accent, Branding::background);
-    display.setCursor(57, 31);
-    display.print(familiarFace());
-    display.setTextSize(1);
+    if (!familiarIdleDrawn) {
+        display.fillRect(0, 0, display.width(), display.height(),
+                         Branding::background);
+        familiarIdleDrawn = true;
+    } else {
+        // The creature and bubble are the only animated idle elements.
+        display.fillRect(0, 0, display.width(), 80, Branding::background);
+    }
+    drawFamiliarCreature(120, 75, true);
+    drawFamiliarSpeechBubble(15, 4, 210);
     display.setTextColor(Branding::text, Branding::background);
     display.setCursor(8, 82);
     display.printf("%s  Lv%u  %s", cyberFamiliar.name().c_str(),
@@ -4151,12 +5015,22 @@ void drawCyberFamiliarIdle() {
 }
 
 void drawSettings() {
-    drawHeader("Settings");
     static const char* const items[] = {
         "Display & Audio", "Boot Experience", "Connectivity",
         "Restore Defaults",
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
+    if (cardNavigationEnabled) {
+        static const char* const descriptions[] = {
+            "Theme, sound and navigation", "Animation, sound and boot speed",
+            "Saved Wi-Fi connection options", "Return preferences to defaults",
+        };
+        drawNavigationCard("Settings", items[listSelection],
+                           descriptions[listSelection], listSelection, count,
+                           5);
+        return;
+    }
+    drawHeader("Settings");
     normalizeListPosition(count);
     for (size_t row = 0; row < count; ++row) {
         drawListRow(row, items[row], row == listSelection);
@@ -4166,25 +5040,31 @@ void drawSettings() {
 
 void drawSettingsDisplay() {
     drawHeader("Settings: Display");
-    constexpr size_t count = 5;
+    constexpr size_t count = 8;
     normalizeListPosition(count);
     const String timeout =
         screenTimeoutSeconds == 0 ? "Off"
                                   : String(screenTimeoutSeconds) + "s";
     const char* const labels[count] = {
         "Speaker volume", "Screen brightness", "Screen timeout",
-        "Cyberdeck idle", "Theme",
+        "Cyberdeck idle", "Theme", "Familiar cues", "Navigation style",
+        "Idle animation",
     };
     const String values[count] = {
         String((speakerVolume * 100U) / 255U) + "%",
         String((screenBrightness * 100U) / 255U) + "%",
         timeout, cyberdeckIdleEnabled ? "On" : "Off",
         Branding::kThemes[themeIndex].name,
+        kFamiliarCueNames[familiarCueIndex],
+        cardNavigationEnabled ? "Cards" : "Compact",
+        kCyberdeckIdleStyleNames[cyberdeckIdleStyle],
     };
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, labels[row], row == listSelection, values[row]);
+    for (size_t row = 0; row < kVisibleRows && row + listOffset < count;
+         ++row) {
+        const size_t item = row + listOffset;
+        drawListRow(row, labels[item], item == listSelection, values[item]);
     }
-    drawFooter("Up/Down select   -/=: adjust   Q: back");
+    drawFooter("Up/Down: select  Left/Right: adjust");
 }
 
 void drawSettingsBoot() {
@@ -4192,19 +5072,19 @@ void drawSettingsBoot() {
     constexpr size_t count = 6;
     normalizeListPosition(count);
     const char* const labels[count] = {
-        "Boot sound", "Sound style", "Animation style", "Fast boot",
+        "Boot sound", "Sound style", "Animation style", "Boot speed",
         "Preview sound", "Preview animation",
     };
     const String values[count] = {
         bootSoundEnabled ? "On" : "Off",
         kBootSoundNames[bootSoundIndex],
         kBootAnimationNames[bootAnimationIndex],
-        fastBootEnabled ? "On" : "Off", "Enter", "Enter",
+        kBootSpeedNames[bootSpeedIndex], "Enter", "Enter",
     };
     for (size_t row = 0; row < count; ++row) {
         drawListRow(row, labels[row], row == listSelection, values[row]);
     }
-    drawFooter("Enter: change / preview   Q: back");
+    drawFooter("Left/Right: adjust  Enter: preview");
 }
 
 void drawSettingsConnectivity() {
@@ -4215,7 +5095,7 @@ void drawSettingsConnectivity() {
                 saveWifiCredentials ? "On" : "Off");
     drawListRow(1, "Auto-connect Wi-Fi", listSelection == 1,
                 autoConnectWifi ? "On" : "Off");
-    drawFooter("-/= or Enter: toggle   Q: back");
+    drawFooter("Left/Right: toggle   Q: back");
 }
 
 void drawSettingsReset() {
@@ -4252,9 +5132,9 @@ void drawAbout() {
     display.printf("by %s", Branding::creatorName);
     display.setTextColor(Branding::muted, Branding::background);
     display.setCursor(8, 76);
-    display.print("Authorized security field toolkit");
+    display.print("Pocket network and radio scout");
     display.setCursor(8, 92);
-    display.print("Build: Cardputer-Adv / ESP32-S3");
+    display.print("Observe. Scout. Bring evidence.");
     drawFooter("Esc: back");
 }
 
@@ -4379,6 +5259,8 @@ void updateImu() {
 void drawCurrentScreen() {
     switch (currentScreen) {
         case Screen::MainMenu: drawMainMenu(); break;
+        case Screen::ObserveMenu: drawObserveMenu(); break;
+        case Screen::FieldKitMenu: drawFieldKitMenu(); break;
         case Screen::WifiMenu: drawWifiMenu(); break;
         case Screen::WifiRecon: drawWifiRecon(); break;
         case Screen::WifiChannelAnalyzer: drawWifiChannelAnalyzer(); break;
@@ -4392,6 +5274,8 @@ void drawCurrentScreen() {
         case Screen::DevicesMenu: drawDevicesMenu(); break;
         case Screen::AiChat: drawAiChat(); break;
         case Screen::CyberFamiliar: drawCyberFamiliar(); break;
+        case Screen::FamiliarPatrol: drawFamiliarPatrol(); break;
+        case Screen::FamiliarPatrolConfirm: drawFamiliarPatrolConfirm(); break;
         case Screen::CyberFamiliarResetConfirm:
             drawCyberFamiliarResetConfirm();
             break;
@@ -4410,13 +5294,14 @@ void drawCurrentScreen() {
             drawChameleonEmulateConfirm();
             break;
         case Screen::ToolsMenu: drawToolsMenu(); break;
-        case Screen::Infrared: drawInfrared(); break;
+        case Screen::Infrared: irScreen.draw(); break;
         case Screen::UsbHid: drawUsbHid(); break;
         case Screen::UsbHidConfirm: drawUsbHidConfirmation(); break;
         case Screen::DuckyScripts: drawDuckyScripts(); break;
         case Screen::DuckyConfirm: drawDuckyConfirm(); break;
         case Screen::DuckyResult: drawDuckyResult(); break;
         case Screen::Audio: drawAudio(); break;
+        case Screen::TtsLab: drawTtsLab(); break;
         case Screen::AudioMic: drawMicrophone(); break;
         case Screen::AudioFiles: drawAudioFiles(); break;
         case Screen::AudioPlaying: break;
@@ -4445,6 +5330,7 @@ void drawCurrentScreen() {
         case Screen::Gnss: drawGnss(); break;
         case Screen::LoRa: drawLoRa(); break;
         case Screen::WifiSniffer: drawWifiSniffer(); break;
+        case Screen::WifiGuardian: drawWifiGuardian(); break;
         case Screen::Imu: drawImu(); break;
         case Screen::Settings: drawSettings(); break;
         case Screen::SettingsDisplay: drawSettingsDisplay(); break;
@@ -4515,6 +5401,12 @@ void drawBootConsole(unsigned long elapsed,
     const int progress =
         static_cast<int>(visibleEntries * display.width() / entryCount);
     display.fillRect(0, 132, progress, 3, Branding::accent);
+}
+
+unsigned long bootDuration(unsigned long normalMs) {
+    if (bootSpeedIndex == 0) return normalMs * 3UL / 2UL;
+    if (bootSpeedIndex == 2) return std::max(100UL, normalMs / 2UL);
+    return normalMs;
 }
 
 void playBootChimeTones() {
@@ -4612,10 +5504,10 @@ void showBootSummary(const std::vector<SystemDiagnostic>& diagnostics) {
             bootChimeDeadlineMs = millis() + 20000;
             nextBootChimeAttemptMs = millis() + 250;
             bootChimeStatus = "Pending (deferred)";
-            if (!fastBootEnabled) delay(1000);
+            delay(bootDuration(1000));
         }
     } else {
-        if (!fastBootEnabled) delay(1000);
+        delay(bootDuration(1000));
     }
 }
 
@@ -4654,25 +5546,25 @@ void showBootTitle() {
 
     // Decrypt-style reveal: the product name resolves out of scrambled
     // characters left-to-right, like a terminal brute-forcing a cipher.
-    // Skipped entirely under fast boot.
+    // Reveal and hold durations follow the selected boot speed.
     display.setTextSize(2);
     const int titleY = 39;
     const int titleWidth = display.textWidth(Branding::productName);
     const int titleX = (display.width() - titleWidth) / 2;
     const size_t nameLength = strlen(Branding::productName);
     bool skipped = false;
-    if (!fastBootEnabled) {
+    {
         static constexpr char kScrambleChars[] =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&@?";
         constexpr size_t kScrambleCharCount = sizeof(kScrambleChars) - 1;
-        constexpr unsigned long kRevealDurationMs = 650;
+        const unsigned long revealDurationMs = bootDuration(650);
         const unsigned long revealStarted = millis();
         size_t locked = 0;
         while (locked < nameLength && !skipped) {
             const unsigned long elapsed = millis() - revealStarted;
             locked = std::min(nameLength,
                               static_cast<size_t>((elapsed * nameLength) /
-                                                  kRevealDurationMs));
+                                                  revealDurationMs));
             display.fillRect(titleX - 2, titleY - 2, titleWidth + 4, 18,
                              Branding::background);
             display.setCursor(titleX, titleY);
@@ -4703,18 +5595,13 @@ void showBootTitle() {
     display.setCursor(versionX, versionY);
     display.printf("v%s", Branding::version);
 
-    if (fastBootEnabled) {
-        delay(150);
-        return;
-    }
-
     // Blinking terminal cursor for the remaining hold time.
     const int cursorX = versionX + display.textWidth(String("v") +
                                                       Branding::version) +
                         2;
     const unsigned long holdStarted = millis();
     bool cursorOn = true;
-    while (!skipped && millis() - holdStarted < 2200) {
+    while (!skipped && millis() - holdStarted < bootDuration(2200)) {
         display.fillRect(cursorX, versionY, 6, 8,
                          cursorOn ? Branding::muted : Branding::background);
         cursorOn = !cursorOn;
@@ -4770,9 +5657,63 @@ void showMinimalBoot(unsigned long durationMs = 700) {
     }
 }
 
+void showCipherHackBoot(unsigned long durationMs = 1800) {
+    auto& display = M5Cardputer.Display;
+    display.fillScreen(Branding::background);
+    display.setTextSize(1);
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(7, 7);
+    display.print("BREACH SEQUENCE // GHOSTWIRE");
+    display.drawFastHLine(7, 19, 226, Branding::panel);
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    static constexpr char kTarget[] = "B7A4";
+    const unsigned long started = millis();
+    int lastFrame = -1;
+    while (millis() - started < durationMs) {
+        const unsigned long elapsed = millis() - started;
+        const int locked = std::min(4, static_cast<int>(elapsed * 5 /
+                                                        std::max(1UL, durationMs)));
+        const int frame = static_cast<int>(elapsed / 70);
+        if (frame != lastFrame) {
+            lastFrame = frame;
+            for (int column = 0; column < 4; ++column) {
+                const int x = 24 + column * 54;
+                display.fillRoundRect(x, 32, 42, 48, 4, Branding::panel);
+                display.drawRoundRect(x, 32, 42, 48, 4,
+                                      column < locked ? Branding::accent
+                                                      : Branding::muted);
+                const char value = column < locked
+                                       ? kTarget[column]
+                                       : kHex[(frame + column * 5) & 0x0F];
+                display.setTextSize(2);
+                display.setTextColor(column < locked ? Branding::accent
+                                                     : Branding::text,
+                                     Branding::panel);
+                display.setCursor(x + 14, 48);
+                display.print(value);
+            }
+            display.setTextSize(1);
+            display.fillRect(7, 90, 226, 31, Branding::background);
+            display.setTextColor(locked == 4 ? Branding::accent
+                                              : Branding::warning,
+                                 Branding::background);
+            display.setCursor(7, 92);
+            display.printf("ICE: %s", locked == 4 ? "BREACHED" : "DECRYPTING");
+            display.setTextColor(Branding::muted, Branding::background);
+            display.setCursor(7, 108);
+            for (int index = 0; index < 20; ++index) {
+                display.print(index < locked * 5 ? '#' : '-');
+            }
+        }
+        if (bootTitleSkipRequested()) break;
+        delay(25);
+    }
+    display.setTextSize(1);
+}
+
 void showNeonBreachBoot(unsigned long durationMs = 1500) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0000);
+    display.fillScreen(Branding::background);
     const unsigned long started = millis();
     while (millis() - started < durationMs) {
         const int progress = static_cast<int>(
@@ -4781,20 +5722,23 @@ void showNeonBreachBoot(unsigned long durationMs = 1500) {
         for (int line = 0; line < 5; ++line) {
             const int y = random(8, display.height() - 8);
             display.drawFastHLine(random(0, 70), y, random(30, 170),
-                                  line & 1 ? 0xF81F : 0x07FF);
+                                  line & 1 ? Branding::warning
+                                           : Branding::accent);
         }
-        display.fillRect(18, 37, display.width() - 36, 54, 0x0000);
-        display.drawRect(18, 37, display.width() - 36, 54, 0xF81F);
+        display.fillRect(18, 37, display.width() - 36, 54,
+                         Branding::background);
+        display.drawRect(18, 37, display.width() - 36, 54,
+                         Branding::warning);
         display.setTextSize(2);
-        display.setTextColor(0x07FF, 0x0000);
+        display.setTextColor(Branding::accent, Branding::background);
         display.setCursor(38 + random(-2, 3), 48);
         display.print("NEON BREACH");
         display.setTextSize(1);
-        display.setTextColor(0xFFFF, 0x0000);
+        display.setTextColor(Branding::text, Branding::background);
         display.setCursor(67, 74);
         display.printf("LINK %03d%%", progress);
         display.fillRect(24, 96, (display.width() - 48) * progress / 100, 3,
-                         0x07FF);
+                         Branding::accent);
         if (bootTitleSkipRequested()) break;
         delay(65);
     }
@@ -4802,7 +5746,7 @@ void showNeonBreachBoot(unsigned long durationMs = 1500) {
 
 void showHackerBoot(unsigned long durationMs = 1600) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0000);
+    display.fillScreen(Branding::background);
     display.setTextSize(1);
     static const char* const lines[] = {
         "$ mount /dev/ghost", "[ok] entropy seeded", "[ok] radio isolated",
@@ -4814,14 +5758,16 @@ void showHackerBoot(unsigned long durationMs = 1600) {
         const size_t target = std::min<size_t>(
             sizeof(lines) / sizeof(lines[0]), 1 + (millis() - started) / 210);
         while (shown < target) {
-            display.setTextColor(shown == 5 ? Branding::warning : 0x07E0,
-                                 0x0000);
+            display.setTextColor(shown == 5 ? Branding::warning
+                                             : Branding::accent,
+                                 Branding::background);
             display.setCursor(7, 10 + static_cast<int>(shown) * 18);
             display.print(lines[shown]);
             ++shown;
         }
         display.fillRect(7, 120, 7, 8,
-                         ((millis() / 180) & 1) ? 0x07E0 : 0x0000);
+                         ((millis() / 180) & 1) ? Branding::accent
+                                                : Branding::background);
         if (bootTitleSkipRequested()) break;
         delay(35);
     }
@@ -4836,11 +5782,11 @@ void showSillyBoot(unsigned long durationMs = 1500) {
         const int x = 18 + (frame * 7) % (display.width() - 52);
         const int y = 54 + static_cast<int>(sinf(frame * 0.55F) * 22);
         display.fillRect(0, 24, display.width(), 88, Branding::background);
-        display.fillCircle(x + 14, y, 13, 0xFFE0);
-        display.fillCircle(x + 10, y - 4, 2, 0x0000);
-        display.fillCircle(x + 18, y - 4, 2, 0x0000);
+        display.fillCircle(x + 14, y, 13, Branding::accent);
+        display.fillCircle(x + 10, y - 4, 2, Branding::background);
+        display.fillCircle(x + 18, y - 4, 2, Branding::background);
         display.fillTriangle(x + 27, y, x + 36, y + 4, x + 27, y + 8,
-                             0xFD20);
+                             Branding::warning);
         display.setTextSize(1);
         display.setTextColor(Branding::accent, Branding::background);
         display.setCursor(67, 12);
@@ -4855,27 +5801,28 @@ void showSillyBoot(unsigned long durationMs = 1500) {
 
 void showSynthwaveBoot(unsigned long durationMs = 1500) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0008);
+    display.fillScreen(Branding::background);
     const int horizon = 72;
-    display.fillCircle(display.width() / 2, horizon - 12, 24, 0xFBE0);
+    display.fillCircle(display.width() / 2, horizon - 12, 24,
+                       Branding::warning);
     display.fillRect(0, horizon, display.width(), display.height() - horizon,
-                     0x0008);
+                     Branding::background);
     for (int y = horizon; y < display.height(); y += 11) {
-        display.drawFastHLine(0, y, display.width(), 0xF81F);
+        display.drawFastHLine(0, y, display.width(), Branding::warning);
     }
     for (int x = -120; x <= 360; x += 24) {
         display.drawLine(display.width() / 2, horizon, x, display.height() - 1,
-                         0x07FF);
+                         Branding::accent);
     }
     display.setTextSize(2);
-    display.setTextColor(0x07FF, 0x0008);
+    display.setTextColor(Branding::accent, Branding::background);
     display.setCursor(57, 22);
     display.print("GHOSTWIRE");
     const unsigned long started = millis();
     while (millis() - started < durationMs) {
         const int y = horizon + static_cast<int>((millis() - started) / 12) %
                                     (display.height() - horizon);
-        display.drawFastHLine(0, y, display.width(), 0xFFFF);
+        display.drawFastHLine(0, y, display.width(), Branding::text);
         if (bootTitleSkipRequested()) break;
         delay(35);
     }
@@ -4892,12 +5839,14 @@ void showSelectedStyledBoot(unsigned long durationMs) {
 }
 
 void previewBootAnimation() {
-    if (bootAnimationIndex == 2) {
-        showRadarBoot(1200);
+    if (bootAnimationIndex == 1) {
+        showCipherHackBoot(bootDuration(1800));
+    } else if (bootAnimationIndex == 2) {
+        showRadarBoot(bootDuration(1200));
     } else if (bootAnimationIndex == 3) {
-        showMinimalBoot(900);
+        showMinimalBoot(bootDuration(900));
     } else if (bootAnimationIndex >= 4) {
-        showSelectedStyledBoot(1300);
+        showSelectedStyledBoot(bootDuration(1300));
     } else {
         // A compact preview of the console/cipher styles without replaying
         // the full multi-second boot diagnostics sequence.
@@ -4918,7 +5867,7 @@ void previewBootAnimation() {
                            step < 4 ? "READY" : "WAIT");
             delay(100);
         }
-        delay(350);
+        delay(bootDuration(350));
     }
     recoverKeyboardAfterBlockingOperation();
 }
@@ -4926,7 +5875,7 @@ void previewBootAnimation() {
 void showBootSequence() {
     M5Cardputer.Display.fillScreen(Branding::background);
     const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
-    if (!fastBootEnabled && bootAnimationIndex == 0) {
+    if (bootAnimationIndex == 0) {
         M5Canvas console(&M5Cardputer.Display);
         if (!console.createSprite(M5Cardputer.Display.width(), 61)) {
             showBootSummary(diagnostics);
@@ -4936,9 +5885,12 @@ void showBootSequence() {
         size_t drawnEntries = 0;
         int drawnSpinner = -1;
         const unsigned long started = millis();
-        while (millis() - started < 3920) {
+        const unsigned long consoleDuration = bootDuration(3920);
+        while (millis() - started < consoleDuration) {
             const unsigned long elapsed = millis() - started;
-            drawBootConsole(elapsed, diagnostics, console, drawnEntries,
+            const unsigned long normalized = elapsed * 3920UL /
+                                             std::max(1UL, consoleDuration);
+            drawBootConsole(normalized, diagnostics, console, drawnEntries,
                             drawnSpinner);
             M5Cardputer.update();
             if (M5Cardputer.Keyboard.isChange() &&
@@ -4949,14 +5901,17 @@ void showBootSequence() {
         }
         console.deleteSprite();
     }
-    if (!fastBootEnabled && bootAnimationIndex == 2) {
-        showRadarBoot();
+    if (bootAnimationIndex == 1) {
+        showCipherHackBoot(bootDuration(1800));
     }
-    if (!fastBootEnabled && bootAnimationIndex >= 4) {
-        showSelectedStyledBoot(1700);
+    if (bootAnimationIndex == 2) {
+        showRadarBoot(bootDuration(1500));
     }
-    if (bootAnimationIndex == 3 || fastBootEnabled) {
-        showMinimalBoot(fastBootEnabled ? 180 : 700);
+    if (bootAnimationIndex >= 4) {
+        showSelectedStyledBoot(bootDuration(1700));
+    }
+    if (bootAnimationIndex == 3) {
+        showMinimalBoot(bootDuration(700));
         return;
     }
     showBootSummary(diagnostics);
@@ -4975,6 +5930,7 @@ bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
 }
 
 void stopAllActiveOperations() {
+    wifiGuardianService.stop();
     wifiSnifferService.end();
     bleSpamService.end();
     bleKeyboardService.end();
@@ -4983,6 +5939,7 @@ void stopAllActiveOperations() {
     warDriveService.stop();
     networkHostScanService.stop();
     networkPortScanService.stop();
+    familiarPatrolService.stop();
     chameleonContinuousScan = false;
     chameleonClient.disconnect();
     telnetClient.stop();
@@ -4993,8 +5950,10 @@ void stopAllActiveOperations() {
     gnssLogger.stop();
     loraLogger.stop();
     wifiSnifferLogger.stop();
+    guardianEventLogger.stop();
     bleCaptureLogger.stop();
     wifiPassiveCaptureLogger.stop();
+    guardianEvidenceLogger.stop();
     chameleonLogger.stop();
     warDriveWifiLogger.stop();
     warDriveBleLogger.stop();
@@ -5048,43 +6007,53 @@ void enterMenuItem() {
     listSelection = 0;
     listOffset = 0;
     switch (menuSelection) {
-        case 0: currentScreen = Screen::WifiMenu; break;
-        case 1: currentScreen = Screen::BleMenu; break;
-        case 2: currentScreen = Screen::GpsMenu; break;
-        case 3: currentScreen = Screen::MeshMenu; break;
-        case 4: currentScreen = Screen::WarDrive; break;
-        case 5: currentScreen = Screen::NetworkMenu; break;
-        case 6: currentScreen = Screen::DevicesMenu; break;
-        case 7:
-            currentScreen = Screen::AiChat;
-            aiNotice = "";
-            aiService.loadConfig();
-            break;
-        case 8:
+        case 0:
             currentScreen = Screen::CyberFamiliar;
             familiarPage = 0;
             break;
-        case 9: currentScreen = Screen::ToolsMenu; break;
-        case 10: currentScreen = Screen::Settings; break;
+        case 1: currentScreen = Screen::ObserveMenu; break;
+        case 2: currentScreen = Screen::NetworkMenu; break;
+        case 3:
+            currentScreen = Screen::LogSessions;
+            evidenceReturnScreen = Screen::MainMenu;
+            loadLogSessions();
+            break;
+        case 4: currentScreen = Screen::FieldKitMenu; break;
+        case 5: currentScreen = Screen::Settings; break;
     }
     drawCurrentScreen();
 }
 
 void goBack() {
-    if (currentScreen == Screen::AiChat) {
+    if (currentScreen == Screen::ObserveMenu ||
+        currentScreen == Screen::FieldKitMenu) {
+        const bool wasObserve = currentScreen == Screen::ObserveMenu;
         currentScreen = Screen::MainMenu;
-        menuSelection = 7;
+        menuSelection = wasObserve ? 1 : 4;
         drawMainMenu();
+        return;
+    }
+    if (currentScreen == Screen::AiChat) {
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 1;
+        drawFieldKitMenu();
         return;
     }
     if (currentScreen == Screen::CyberFamiliar) {
         currentScreen = Screen::MainMenu;
-        menuSelection = 8;
+        menuSelection = 0;
         drawMainMenu();
         return;
     }
     if (currentScreen == Screen::CyberFamiliarResetConfirm) {
         currentScreen = Screen::CyberFamiliar;
+        drawCyberFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarPatrol ||
+        currentScreen == Screen::FamiliarPatrolConfirm) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarPage = 0;
         drawCyberFamiliar();
         return;
     }
@@ -5102,6 +6071,7 @@ void goBack() {
         wifiPassiveCaptureLogger.stop();
         wifiSnifferService.end();
     }
+    if (currentScreen == Screen::WifiGuardian) stopWifiGuardian();
     if (currentScreen == Screen::BleDiscovery) {
         bleCaptureLogger.stop();
         bleScanner.stop();
@@ -5173,6 +6143,12 @@ void goBack() {
         drawQrEntry();
         return;
     }
+    if (currentScreen == Screen::TtsLab) {
+        currentScreen = Screen::Audio;
+        listSelection = 3;
+        drawAudio();
+        return;
+    }
     if (currentScreen == Screen::QrEntry) {
         currentScreen = Screen::ToolsMenu;
         listSelection = 6;
@@ -5193,6 +6169,17 @@ void goBack() {
     if (currentScreen == Screen::LogDetail) {
         currentScreen = Screen::LogSessions;
         drawLogSessions();
+        return;
+    }
+    if (currentScreen == Screen::LogSessions) {
+        currentScreen = evidenceReturnScreen;
+        if (currentScreen == Screen::MainMenu) {
+            menuSelection = 3;
+            drawMainMenu();
+        } else {
+            listSelection = 3;
+            drawToolsMenu();
+        }
         return;
     }
     if (currentScreen == Screen::LogDeleteConfirm) {
@@ -5253,7 +6240,8 @@ void goBack() {
     }
     if (currentScreen == Screen::WifiRecon ||
         currentScreen == Screen::WifiChannelAnalyzer ||
-        currentScreen == Screen::WifiSniffer) {
+        currentScreen == Screen::WifiSniffer ||
+        currentScreen == Screen::WifiGuardian) {
         currentScreen = Screen::WifiMenu;
         listSelection = 0;
         drawWifiMenu();
@@ -5261,7 +6249,7 @@ void goBack() {
     }
     if (currentScreen == Screen::WifiConnectSelect) {
         currentScreen = Screen::WifiMenu;
-        listSelection = 2;
+        listSelection = 4;
         drawWifiMenu();
         return;
     }
@@ -5349,7 +6337,7 @@ void goBack() {
     }
     if (currentScreen == Screen::Infrared || currentScreen == Screen::UsbHid ||
         currentScreen == Screen::Audio ||
-        currentScreen == Screen::LogSessions || currentScreen == Screen::Imu ||
+        currentScreen == Screen::Imu ||
         currentScreen == Screen::System || currentScreen == Screen::About ||
         currentScreen == Screen::Files) {
         // Files only reaches here when at "/" -- the case above already
@@ -5360,15 +6348,47 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::DevicesMenu) {
-        currentScreen = Screen::MainMenu;
-        menuSelection = 6;
-        drawMainMenu();
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 0;
+        drawFieldKitMenu();
         return;
     }
     if (currentScreen == Screen::WarDrive) {
         warDriveService.stop();
         if (warDriveWifiLogger.isActive()) warDriveWifiLogger.stop();
         if (warDriveBleLogger.isActive()) warDriveBleLogger.stop();
+        currentScreen = Screen::ObserveMenu;
+        listSelection = 4;
+        drawObserveMenu();
+        return;
+    }
+    if (currentScreen == Screen::WifiMenu || currentScreen == Screen::BleMenu ||
+        currentScreen == Screen::GpsMenu || currentScreen == Screen::MeshMenu) {
+        const Screen previous = currentScreen;
+        currentScreen = Screen::ObserveMenu;
+        listSelection = previous == Screen::WifiMenu ? 0
+                        : previous == Screen::BleMenu ? 1
+                        : previous == Screen::GpsMenu ? 2 : 3;
+        drawObserveMenu();
+        return;
+    }
+    if (currentScreen == Screen::ToolsMenu) {
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 2;
+        drawFieldKitMenu();
+        return;
+    }
+    if (currentScreen == Screen::NetworkMenu) {
+        currentScreen = Screen::MainMenu;
+        menuSelection = 2;
+        drawMainMenu();
+        return;
+    }
+    if (currentScreen == Screen::Settings) {
+        currentScreen = Screen::MainMenu;
+        menuSelection = 5;
+        drawMainMenu();
+        return;
     }
     currentScreen = Screen::MainMenu;
     drawMainMenu();
@@ -5407,6 +6427,39 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         } else if (keys.enter) {
             currentScreen = Screen::QrEntry;
             drawQrEntry();
+        }
+        return;
+    }
+    if (currentScreen == Screen::TtsLab) {
+        if (keys.esc) { goBack(); return; }
+        if (keys.tab) {
+            ttsLabPhrase = (ttsLabPhrase + 1) % kTtsLabPhraseCount;
+            drawTtsLab();
+            return;
+        }
+        if (keys.enter) {
+            const auto& phrase = kTtsLabPhrases[ttsLabPhrase];
+            drawHeader("Familiar: speaking");
+            M5Cardputer.Display.setCursor(8, 48);
+            M5Cardputer.Display.print(phrase.name);
+            const uint32_t started = millis();
+            bool success = true;
+            for (uint8_t i = 0; i < phrase.wordCount; ++i) {
+                const String path = familiarWordPath(phrase.words[i]);
+                // The normal player uses a conservative 150 ms decoder
+                // settling delay. A short gap makes adjacent word clips
+                // sound like a phrase while retaining an I2S handoff margin.
+                if (!audioService.startMp3(path.c_str(), 25)) {
+                    success = false;
+                    break;
+                }
+                while (audioService.isPlaying()) delay(2);
+            }
+            ttsLabPlaybackMs = millis() - started;
+            ttsLabStatus = success ? "Complete" : "Missing or invalid word MP3";
+            recoverKeyboardAfterBlockingOperation();
+            drawTtsLab();
+            return;
         }
         return;
     }
@@ -5780,7 +6833,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                               pressedLetter(keys, 'j') ||
                               pressedLetter(keys, '.');
         const bool menuClose = keys.esc || keys.backspace || keys.tab ||
-                               keys.left || pressedLetter(keys, 'q') ||
+                               keys.left || pressedLetter(keys, ',') ||
+                               pressedLetter(keys, 'q') ||
                                pressedLetter(keys, 'b');
         if (!actionMenuItems.empty()) {
             if (menuUp) {
@@ -5810,16 +6864,42 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         return;
     }
 
-    const bool up = keys.up || pressedLetter(keys, 'w') ||
+    bool up = keys.up || pressedLetter(keys, 'w') ||
                     pressedLetter(keys, 'k') || pressedLetter(keys, ';');
-    const bool down = keys.down || pressedLetter(keys, 's') ||
+    bool down = keys.down || pressedLetter(keys, 's') ||
                       pressedLetter(keys, 'j') || pressedLetter(keys, '.');
+    const bool navigationLeft = keys.left || pressedLetter(keys, ',');
+    const bool navigationRight = keys.right || pressedLetter(keys, '/');
     const bool back = keys.esc || keys.backspace;
+    const bool cardMenuScreen = cardNavigationEnabled &&
+        (currentScreen == Screen::MainMenu ||
+         currentScreen == Screen::ObserveMenu ||
+         currentScreen == Screen::FieldKitMenu ||
+         currentScreen == Screen::WifiMenu ||
+         currentScreen == Screen::BleMenu ||
+         currentScreen == Screen::GpsMenu ||
+         currentScreen == Screen::MeshMenu ||
+         currentScreen == Screen::NetworkMenu ||
+         currentScreen == Screen::DevicesMenu ||
+         currentScreen == Screen::ToolsMenu ||
+         currentScreen == Screen::Settings);
+    if (cardMenuScreen) {
+        up = up || navigationLeft;
+        down = down || navigationRight;
+    }
+    const bool settingsAdjustmentScreen =
+        currentScreen == Screen::SettingsDisplay ||
+        currentScreen == Screen::SettingsBoot ||
+        currentScreen == Screen::SettingsConnectivity;
     const bool alternateBack =
-        keys.left || pressedLetter(keys, 'q') || pressedLetter(keys, 'b');
+        (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
+        pressedLetter(keys, 'q') ||
+        pressedLetter(keys, 'b');
     const bool refresh = pressedLetter(keys, 'r');
-    const bool decrease = pressedLetter(keys, '-');
-    const bool increase = pressedLetter(keys, '=');
+    const bool decrease = pressedLetter(keys, '-') ||
+                          (settingsAdjustmentScreen && navigationLeft);
+    const bool increase = pressedLetter(keys, '=') ||
+                          (settingsAdjustmentScreen && navigationRight);
 
     if ((back || alternateBack) && currentScreen != Screen::MainMenu) {
         goBack();
@@ -5850,14 +6930,56 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             drawMainMenu();
             break;
 
+        case Screen::ObserveMenu:
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
+            if (keys.enter) {
+                const size_t mission = listSelection;
+                listSelection = 0;
+                listOffset = 0;
+                switch (mission) {
+                    case 0: currentScreen = Screen::WifiMenu; break;
+                    case 1: currentScreen = Screen::BleMenu; break;
+                    case 2: currentScreen = Screen::GpsMenu; break;
+                    case 3: currentScreen = Screen::MeshMenu; break;
+                    case 4: currentScreen = Screen::WarDrive; break;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            drawObserveMenu();
+            break;
+
+        case Screen::FieldKitMenu:
+            if (up) moveSelection(-1, 3);
+            if (down) moveSelection(1, 3);
+            if (keys.enter) {
+                const size_t tool = listSelection;
+                listSelection = 0;
+                listOffset = 0;
+                if (tool == 0) {
+                    currentScreen = Screen::DevicesMenu;
+                } else if (tool == 1) {
+                    currentScreen = Screen::AiChat;
+                    aiNotice = "";
+                    aiService.loadConfig();
+                } else {
+                    currentScreen = Screen::ToolsMenu;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            drawFieldKitMenu();
+            break;
+
         case Screen::AiChat:
             // Handled before global navigation so printable letters remain
             // prompt input rather than menu shortcuts.
             break;
 
         case Screen::WifiMenu:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::WifiRecon;
@@ -5871,6 +6993,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     currentScreen = Screen::WifiSniffer;
                     recentWifiProbes.clear();
                     wifiSnifferService.begin();
+                    drawCurrentScreen();
+                } else if (listSelection == 3) {
+                    currentScreen = Screen::WifiGuardian;
+                    startWifiGuardian();
                     drawCurrentScreen();
                 } else {
                     currentScreen = Screen::WifiConnectSelect;
@@ -6301,6 +7427,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'p')) cyberFamiliar.interact();
             if (pressedLetter(keys, 'n')) cyberFamiliar.cycleName();
             if (pressedLetter(keys, 'i')) cyberFamiliar.toggleIdleMode();
+            if (pressedLetter(keys, 'w')) {
+                screenSleeping = true;
+                familiarIdleActive = true;
+                familiarIdleDrawn = false;
+                cyberdeckIdleActive = false;
+                lastFamiliarDraw = 0;
+                drawCyberFamiliarIdle();
+                return;
+            }
             if (pressedLetter(keys, 'o')) familiarPage = 0;
             if (pressedLetter(keys, 't')) familiarPage = 1;
             if (pressedLetter(keys, 'j')) familiarPage = 2;
@@ -6317,7 +7452,54 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCyberFamiliarResetConfirm();
                 return;
             }
+            if (pressedLetter(keys, 'a')) {
+                currentScreen = familiarPatrolService.isActive()
+                                    ? Screen::FamiliarPatrol
+                                    : Screen::FamiliarPatrolConfirm;
+                drawCurrentScreen();
+                return;
+            }
             drawCyberFamiliar();
+            break;
+
+        case Screen::FamiliarPatrolConfirm:
+            if (pressedLetter(keys, 'c')) {
+                familiarPatrolContinuousChoice =
+                    !familiarPatrolContinuousChoice;
+                drawFamiliarPatrolConfirm();
+                return;
+            }
+            if (pressedLetter(keys, 'v')) {
+                familiarPatrolIntervalIndex = static_cast<uint8_t>(
+                    (familiarPatrolIntervalIndex + 1) %
+                    (sizeof(kFamiliarPatrolIntervals) /
+                     sizeof(kFamiliarPatrolIntervals[0])));
+                drawFamiliarPatrolConfirm();
+                return;
+            }
+            if (keys.enter && sdAvailable && WiFi.status() == WL_CONNECTED) {
+                if (familiarPatrolService.start(WiFi.localIP(),
+                        WiFi.subnetMask(), familiarPatrolContinuousChoice,
+                        kFamiliarPatrolIntervals[familiarPatrolIntervalIndex])) {
+                    cyberFamiliar.notePatrol("Patrol started. Mapping the deck.",
+                                             10, FamiliarMood::Excited);
+                    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+                    showFamiliarSpeech("Let's see who's here!", 2600);
+                    playFamiliarCue(FamiliarCue::Started);
+                    lastFamiliarPatrolState = familiarPatrolService.state();
+                    currentScreen = Screen::FamiliarPatrol;
+                }
+                drawCurrentScreen();
+            }
+            break;
+
+        case Screen::FamiliarPatrol:
+            if (pressedLetter(keys, 'x')) {
+                familiarPatrolService.stop();
+                cyberFamiliar.notePatrol("Patrol stopped by operator.", 0,
+                                         FamiliarMood::Content);
+            }
+            drawFamiliarPatrol();
             break;
 
         case Screen::CyberFamiliarResetConfirm:
@@ -6346,6 +7528,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     case 2: currentScreen = Screen::Audio; break;
                     case 3:
                         currentScreen = Screen::LogSessions;
+                        evidenceReturnScreen = Screen::ToolsMenu;
                         loadLogSessions();
                         break;
                     case 4:
@@ -6372,10 +7555,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::Infrared:
             if (keys.enter || refresh) {
-                transmitInfraredSelfTest();
+                irScreen.transmitSelfTest();
                 return;
             }
-            drawInfrared();
+            irScreen.draw();
             break;
 
         case Screen::UsbHid:
@@ -6430,8 +7613,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Audio:
-            if (up) moveSelection(-1, 3);
-            if (down) moveSelection(1, 3);
+            if (up) moveSelection(-1, 4);
+            if (down) moveSelection(1, 4);
             if (keys.enter) {
                 if (listSelection == 0) {
                     audioService.playToneTest();
@@ -6443,10 +7626,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         currentScreen = Screen::AudioMic;
                         drawMicrophone();
                     }
-                } else {
+                } else if (listSelection == 2) {
                     loadAudioFiles();
                     currentScreen = Screen::AudioFiles;
                     drawAudioFiles();
+                } else {
+                    currentScreen = Screen::TtsLab;
+                    drawTtsLab();
                 }
                 return;
             }
@@ -6454,6 +7640,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::AudioMic:
+            break;
+
+        case Screen::TtsLab:
+            // Text entry is handled before the general screen switch.
             break;
 
         case Screen::AudioFiles:
@@ -6547,10 +7737,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'd')) {
                 currentScreen = Screen::LogDeleteConfirm;
                 drawLogDeleteConfirm();
-            } else if (keys.enter) {
-                currentPath = "/ghostwire/logs";
-                files.clear();
+            } else if (keys.enter &&
+                       isPreviewableFile(logSessions[logSelection].name)) {
                 const auto& log = logSessions[logSelection];
+                const int slash = log.path.lastIndexOf('/');
+                currentPath = slash <= 0 ? "/" : log.path.substring(0, slash);
+                files.clear();
                 files.push_back({log.name, false, log.size});
                 listSelection = 0;
                 if (loadTextPreview()) {
@@ -6563,9 +7755,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::LogDeleteConfirm:
             if (keys.enter && !logSessions.empty()) {
-                const String path =
-                    "/ghostwire/logs/" + logSessions[logSelection].name;
-                SD.remove(path);
+                SD.remove(logSessions[logSelection].path);
                 loadLogSessions();
                 currentScreen = Screen::LogSessions;
                 drawLogSessions();
@@ -6835,6 +8025,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             drawWifiSniffer();
             break;
 
+        case Screen::WifiGuardian:
+            if (pressedLetter(keys, 's')) {
+                wifiGuardianService.cycleSensitivity();
+                guardianLastEvent = String("Sensitivity: ") +
+                                    wifiGuardianService.sensitivityName();
+            } else if (refresh) {
+                stopWifiGuardian();
+                startWifiGuardian();
+            }
+            drawWifiGuardian();
+            break;
+
         case Screen::Imu:
             if (pressedLetter(keys, 'l')) {
                 if (imuLogger.isActive()) {
@@ -6872,8 +8074,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::SettingsDisplay:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 8);
+            if (down) moveSelection(1, 8);
+            normalizeListPosition(8);
             if (decrease || increase) {
                 const int direction = increase ? 1 : -1;
                 if (listSelection == 0) {
@@ -6908,14 +8111,34 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                         1) %
                                            Branding::kThemeCount;
                     Branding::applyTheme(themeIndex);
+                } else if (listSelection == 5) {
+                    familiarCueIndex = static_cast<uint8_t>(
+                        increase
+                            ? (familiarCueIndex + 1) % kFamiliarCueCount
+                            : (familiarCueIndex + kFamiliarCueCount - 1) %
+                                  kFamiliarCueCount);
+                    playFamiliarCue(FamiliarCue::Host);
+                } else if (listSelection == 6) {
+                    cardNavigationEnabled = !cardNavigationEnabled;
+                } else if (listSelection == 7) {
+                    cyberdeckIdleStyle = static_cast<uint8_t>(
+                        increase
+                            ? (cyberdeckIdleStyle + 1) %
+                                  kCyberdeckIdleStyleCount
+                            : (cyberdeckIdleStyle +
+                               kCyberdeckIdleStyleCount - 1) %
+                                  kCyberdeckIdleStyleCount);
                 }
                 applySettings();
                 saveSettings();
                 lastUserActivity = millis();
             }
-            if (keys.enter && listSelection == 3) {
-                cyberdeckIdleEnabled = !cyberdeckIdleEnabled;
-                saveSettings();
+            if (keys.enter && listSelection == 7) {
+                screenSleeping = true;
+                familiarIdleActive = false;
+                beginCyberdeckIdle();
+                drawCyberdeckIdle();
+                return;
             }
             drawSettingsDisplay();
             break;
@@ -6937,27 +8160,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         : (bootAnimationIndex + kBootAnimationCount - 1) %
                               kBootAnimationCount);
                 } else if (listSelection == 3) {
-                    fastBootEnabled = !fastBootEnabled;
+                    bootSpeedIndex = static_cast<uint8_t>(
+                        increase ? (bootSpeedIndex + 1) % kBootSpeedCount
+                                 : (bootSpeedIndex + kBootSpeedCount - 1) %
+                                       kBootSpeedCount);
                 }
                 saveSettings();
             }
-            if (keys.enter && listSelection == 0) {
-                bootSoundEnabled = !bootSoundEnabled;
-                saveSettings();
-            }
             if (keys.enter && listSelection == 1) {
-                bootSoundIndex = static_cast<uint8_t>(
-                    (bootSoundIndex + 1) % kBootSoundCount);
-                saveSettings();
+                previewBootSound();
             }
             if (keys.enter && listSelection == 2) {
-                bootAnimationIndex = static_cast<uint8_t>(
-                    (bootAnimationIndex + 1) % kBootAnimationCount);
-                saveSettings();
-            }
-            if (keys.enter && listSelection == 3) {
-                fastBootEnabled = !fastBootEnabled;
-                saveSettings();
+                previewBootAnimation();
             }
             if (keys.enter && listSelection == 4) {
                 previewBootSound();
@@ -6971,7 +8185,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::SettingsConnectivity:
             if (up) moveSelection(-1, 2);
             if (down) moveSelection(1, 2);
-            if ((decrease || increase || keys.enter) && listSelection == 0) {
+            if ((decrease || increase) && listSelection == 0) {
                 saveWifiCredentials = !saveWifiCredentials;
                 if (!saveWifiCredentials) {
                     autoConnectWifi = false;
@@ -6982,7 +8196,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 saveSettings();
             }
-            if ((decrease || increase || keys.enter) && listSelection == 1) {
+            if ((decrease || increase) && listSelection == 1) {
                 if (saveWifiCredentials) autoConnectWifi = !autoConnectWifi;
                 saveSettings();
             }
@@ -7026,12 +8240,20 @@ void beginCyberdeckIdle() {
         cyberdeckRainHead[column] = random(-rows, rows);
         cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
     }
+    for (size_t node = 0; node < kIdleNodeCount; ++node) {
+        idleNodeX[node] = random(8, M5Cardputer.Display.width() - 8);
+        idleNodeY[node] = random(8, M5Cardputer.Display.height() - 26);
+        idleNodeDx[node] = random(0, 2) == 0 ? -1 : 1;
+        idleNodeDy[node] = random(0, 2) == 0 ? -1 : 1;
+    }
+    cyberdeckIdleCanvasReady = cyberdeckIdleCanvas.createSprite(
+        M5Cardputer.Display.width(), M5Cardputer.Display.height() - 18);
     M5Cardputer.Display.fillScreen(Branding::background);
 }
 
 void drawCyberdeckIdle() {
     const unsigned long now = millis();
-    if (now - lastCyberdeckDraw < 75) return;
+    if (now - lastCyberdeckDraw < 50) return;
     lastCyberdeckDraw = now;
 
     auto& display = M5Cardputer.Display;
@@ -7047,30 +8269,79 @@ void drawCyberdeckIdle() {
     cyberdeckLastWifiCount = wifiCount;
     cyberdeckLastBleCount = bleCount;
 
-    display.fillRect(0, 0, width, height - 18, Branding::background);
-    display.setTextSize(1);
+    if (!cyberdeckIdleCanvasReady) return;
+    auto& canvas = cyberdeckIdleCanvas;
+    const int contentHeight = height - 18;
+    canvas.fillSprite(Branding::background);
+    canvas.setTextSize(1);
     static constexpr char kGlyphs[] =
         "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<>/\\[]{}#@";
     static constexpr size_t kGlyphCount = sizeof(kGlyphs) - 1;
-    for (size_t column = 0; column < kCyberdeckColumns; ++column) {
-        if ((now / 75U) % cyberdeckRainSpeed[column] == 0) {
-            ++cyberdeckRainHead[column];
+    if (cyberdeckIdleStyle == 0) {
+        for (size_t column = 0; column < kCyberdeckColumns; ++column) {
+            if ((now / 50U) % cyberdeckRainSpeed[column] == 0) {
+                ++cyberdeckRainHead[column];
+            }
+            if (cyberdeckRainHead[column] - 6 > rows) {
+                cyberdeckRainHead[column] = random(-rows, 1);
+                cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
+            }
+            for (int tail = 6; tail >= 0; --tail) {
+                const int row = cyberdeckRainHead[column] - tail;
+                if (row < 0 || row >= rows) continue;
+                const uint16_t colour = tail == 0
+                    ? (radioPulse ? Branding::warning : Branding::text)
+                    : (tail <= 2 ? Branding::accent : Branding::muted);
+                canvas.setTextColor(colour, Branding::background);
+                canvas.setCursor(static_cast<int>(column) * columnWidth,
+                                 row * 8);
+                canvas.print(kGlyphs[random(kGlyphCount)]);
+            }
         }
-        if (cyberdeckRainHead[column] - 5 > rows) {
-            cyberdeckRainHead[column] = random(-rows, 1);
-            cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
+    } else if (cyberdeckIdleStyle == 1) {
+        const int cx = width / 2;
+        const int cy = contentHeight / 2;
+        const int radius = 43;
+        canvas.drawCircle(cx, cy, radius, Branding::muted);
+        canvas.drawCircle(cx, cy, 28, Branding::panel);
+        canvas.drawCircle(cx, cy, 14, Branding::panel);
+        const float angle = static_cast<float>(now % 4000UL) *
+                            6.2831853F / 4000.0F;
+        canvas.drawLine(cx, cy, cx + cosf(angle) * radius,
+                        cy + sinf(angle) * radius, Branding::accent);
+        for (size_t node = 0; node < 5; ++node) {
+            const float nodeAngle = node * 1.19F + 0.4F;
+            const int nodeRadius = 12 + static_cast<int>(node * 7);
+            canvas.fillCircle(cx + cosf(nodeAngle) * nodeRadius,
+                              cy + sinf(nodeAngle) * nodeRadius,
+                              radioPulse && node == 0 ? 3 : 2,
+                              radioPulse && node == 0 ? Branding::warning
+                                                       : Branding::text);
         }
-        for (int tail = 5; tail >= 0; --tail) {
-            const int row = cyberdeckRainHead[column] - tail;
-            if (row < 0 || row >= rows) continue;
-            const uint16_t colour =
-                tail == 0 ? (radioPulse ? Branding::warning : Branding::text)
-                          : (tail <= 2 ? Branding::accent : Branding::muted);
-            display.setTextColor(colour, Branding::background);
-            display.setCursor(static_cast<int>(column) * columnWidth, row * 8);
-            display.print(kGlyphs[random(kGlyphCount)]);
+    } else {
+        for (size_t node = 0; node < kIdleNodeCount; ++node) {
+            idleNodeX[node] += idleNodeDx[node];
+            idleNodeY[node] += idleNodeDy[node];
+            if (idleNodeX[node] <= 4 || idleNodeX[node] >= width - 4)
+                idleNodeDx[node] = -idleNodeDx[node];
+            if (idleNodeY[node] <= 4 || idleNodeY[node] >= contentHeight - 4)
+                idleNodeDy[node] = -idleNodeDy[node];
+            for (size_t other = node + 1; other < kIdleNodeCount; ++other) {
+                const int dx = idleNodeX[node] - idleNodeX[other];
+                const int dy = idleNodeY[node] - idleNodeY[other];
+                if (dx * dx + dy * dy < 1600) {
+                    canvas.drawLine(idleNodeX[node], idleNodeY[node],
+                                    idleNodeX[other], idleNodeY[other],
+                                    Branding::panel);
+                }
+            }
+            canvas.fillCircle(idleNodeX[node], idleNodeY[node],
+                              radioPulse && node == 0 ? 3 : 2,
+                              radioPulse && node == 0 ? Branding::warning
+                                                       : Branding::accent);
         }
     }
+    canvas.pushSprite(0, 0);
 
     display.fillRect(0, height - 18, width, 18, Branding::panel);
     display.drawFastHLine(0, height - 18, width,
@@ -7099,6 +8370,7 @@ void observeFamiliarToolScreen() {
         case Screen::WifiRecon: cyberFamiliar.observeTool(0, "Wi-Fi survey"); break;
         case Screen::WifiChannelAnalyzer: cyberFamiliar.observeTool(1, "channel map"); break;
         case Screen::WifiSniffer: cyberFamiliar.observeTool(2, "sniffer"); break;
+        case Screen::WifiGuardian: cyberFamiliar.observeTool(17, "guardian"); break;
         case Screen::WarDrive: cyberFamiliar.observeTool(3, "wardrive"); break;
         case Screen::NetworkHostScan: cyberFamiliar.observeTool(4, "host scan"); break;
         case Screen::NetworkPortScan: cyberFamiliar.observeTool(5, "port scan"); break;
@@ -7119,6 +8391,16 @@ void observeFamiliarToolScreen() {
 
 }  // namespace
 
+// Forwarders for extracted screen modules (see include/screen_chrome.h).
+// These call straight into the internal-linkage implementations above --
+// extracted .cpp files live in a different translation unit and cannot see
+// symbols inside this file's anonymous namespace directly.
+namespace ScreenChrome {
+void drawHeader(const char* title) { ::drawHeader(title); }
+void drawFooter(const char* text) { ::drawFooter(text); }
+void recoverKeyboard() { ::recoverKeyboardAfterBlockingOperation(); }
+}  // namespace ScreenChrome
+
 void setup() {
     auto config = M5.config();
     config.output_power = true;
@@ -7132,14 +8414,27 @@ void setup() {
         preferences.getUShort("timeout", kDefaultScreenTimeout);
     bootSoundEnabled =
         preferences.getBool("boot_sound", kDefaultBootSound);
-    fastBootEnabled =
-        preferences.getBool("fast_boot", kDefaultFastBoot);
+    if (preferences.isKey("boot_speed")) {
+        bootSpeedIndex = preferences.getUChar("boot_speed", kDefaultBootSpeed);
+    } else {
+        // Migrate the former binary Fast boot setting without changing the
+        // user's established startup preference.
+        bootSpeedIndex = preferences.getBool("fast_boot", false) ? 2 : 1;
+    }
+    if (bootSpeedIndex >= kBootSpeedCount) bootSpeedIndex = kDefaultBootSpeed;
     saveWifiCredentials =
         preferences.getBool("save_wifi", kDefaultSaveWifiCredentials);
     autoConnectWifi =
         preferences.getBool("auto_wifi", kDefaultAutoConnectWifi);
     cyberdeckIdleEnabled =
         preferences.getBool("cyber_idle", kDefaultCyberdeckIdle);
+    cyberdeckIdleStyle =
+        preferences.getUChar("idle_style", kDefaultCyberdeckIdleStyle);
+    if (cyberdeckIdleStyle >= kCyberdeckIdleStyleCount) {
+        cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
+    }
+    cardNavigationEnabled =
+        preferences.getBool("nav_cards", kDefaultCardNavigation);
     themeIndex = preferences.getUChar("theme", 0);
     if (themeIndex >= Branding::kThemeCount) themeIndex = 0;
     bootAnimationIndex = preferences.getUChar(
@@ -7151,6 +8446,11 @@ void setup() {
         "boot_tone", kDefaultBootSoundPreset);
     if (bootSoundIndex >= kBootSoundCount) {
         bootSoundIndex = kDefaultBootSoundPreset;
+    }
+    familiarCueIndex = preferences.getUChar(
+        "fam_cue", kDefaultFamiliarCue);
+    if (familiarCueIndex >= kFamiliarCueCount) {
+        familiarCueIndex = kDefaultFamiliarCue;
     }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
@@ -7171,6 +8471,7 @@ void setup() {
     gnssService.begin();
     initSd();
     recordBootTelemetry();
+    if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
@@ -7194,6 +8495,90 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     observeFamiliarToolScreen();
+    familiarPatrolService.update();
+    updateFamiliarVoice();
+    const uint32_t patrolHosts = familiarPatrolService.hostsFound();
+    const uint32_t patrolOpenPorts = familiarPatrolService.openPortsFound();
+    if (patrolHosts < familiarObservedPatrolHosts) {
+        familiarObservedPatrolHosts = patrolHosts;
+    } else if (patrolHosts > familiarObservedPatrolHosts) {
+        familiarObservedPatrolHosts = patrolHosts;
+        triggerFamiliarReaction(FamiliarReaction::HostFound, 1400);
+        showFamiliarSpeech("Oh! Found " + familiarHostLabel(
+                               familiarPatrolService.lastSeenHost()) + "!");
+        playFamiliarCue(FamiliarCue::Host);
+    }
+    if (patrolOpenPorts < familiarObservedOpenPorts) {
+        familiarObservedOpenPorts = patrolOpenPorts;
+    } else if (patrolOpenPorts > familiarObservedOpenPorts) {
+        familiarObservedOpenPorts = patrolOpenPorts;
+        triggerFamiliarReaction(
+            familiarSensitivePort(familiarPatrolService.lastOpenPort())
+                ? FamiliarReaction::Warning
+                : FamiliarReaction::ServiceFound,
+            1900);
+        const uint16_t foundPort = familiarPatrolService.lastOpenPort();
+        const String endpoint = familiarHostLabel(
+            familiarPatrolService.lastOpenHost());
+        if (familiarSensitivePort(foundPort)) {
+            showFamiliarSpeech(String("Careful: ") +
+                               familiarServiceName(foundPort) + " on " +
+                               endpoint + "!");
+            playFamiliarCue(FamiliarCue::Warning);
+        } else {
+            showFamiliarSpeech(String("Interesting: ") +
+                               familiarServiceName(foundPort) + " on " +
+                               endpoint + "!");
+            playFamiliarCue(FamiliarCue::Service);
+        }
+    }
+    const FamiliarPatrolState patrolState = familiarPatrolService.state();
+    if (patrolState != lastFamiliarPatrolState) {
+        if (patrolState == FamiliarPatrolState::CommonPorts) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            const String message =
+                fresh == 0 ? "Quiet map. No new hosts this pass."
+                           : "Map ready. " + String(fresh) +
+                                 (fresh == 1 ? " new host." : " new hosts.");
+            cyberFamiliar.notePatrol(
+                message, fresh == 0 ? 0 : 10,
+                fresh == 0 ? FamiliarMood::Content : FamiliarMood::Curious);
+        } else if (patrolState == FamiliarPatrolState::Complete) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            cyberFamiliar.notePatrol(
+                fresh == 0 ? "Quiet patrol. No new hosts."
+                           : "Patrol complete. New leads saved.",
+                fresh == 0 ? 5 : 30,
+                fresh == 0 ? FamiliarMood::Content : FamiliarMood::Proud);
+            triggerFamiliarReaction(FamiliarReaction::Complete, 4000);
+            showFamiliarSpeech(
+                fresh == 0 ? "All quiet. Nothing new."
+                           : "All done! " + String(fresh) +
+                                 (fresh == 1 ? " new host." : " new hosts."),
+                4000);
+            playFamiliarCue(FamiliarCue::Complete);
+        } else if (patrolState == FamiliarPatrolState::WatchWait) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            cyberFamiliar.notePatrol(
+                fresh == 0 ? "Quiet watch pass. Nothing changed."
+                           : "Scout pass found new company. Keeping watch.",
+                fresh == 0 ? 3 : 10,
+                fresh == 0 ? FamiliarMood::Sleepy : FamiliarMood::Proud);
+            triggerFamiliarReaction(FamiliarReaction::Complete, 3000);
+            showFamiliarSpeech(
+                fresh == 0 ? "Still quiet. I'll keep watch!"
+                           : "I found " + String(fresh) +
+                                 (fresh == 1 ? " new host!" : " new hosts!"),
+                3400);
+            playFamiliarCue(FamiliarCue::Complete);
+        } else if (patrolState == FamiliarPatrolState::Error) {
+            cyberFamiliar.notePatrol("Patrol needs operator attention.", 0,
+                                     FamiliarMood::Worried);
+            showFamiliarSpeech("I need some help!", 3500);
+            playFamiliarCue(FamiliarCue::Error);
+        }
+        lastFamiliarPatrolState = patrolState;
+    }
     static unsigned long lastFamiliarUpdate = 0;
     if (millis() - lastFamiliarUpdate >= 1000) {
         lastFamiliarUpdate = millis();
@@ -7329,6 +8714,19 @@ void loop() {
 
     WifiRawFrameRecord rawFrame;
     while (wifiSnifferService.nextRawFrame(rawFrame)) {
+        if (wifiGuardianService.isActive()) {
+            wifiGuardianService.ingest(rawFrame);
+            if (WifiGuardianService::isDisruptionFrame(rawFrame)) {
+                guardianLastChannel = rawFrame.channel;
+                guardianLastRssi = rawFrame.rssi;
+                if (guardianEvidenceLogger.isActive()) {
+                    guardianEvidenceLogger.append(
+                        rawFrame.data, rawFrame.length,
+                        static_cast<uint32_t>(time(nullptr)),
+                        static_cast<uint32_t>(micros() % 1000000UL));
+                }
+            }
+        }
         if (wifiPassiveCaptureLogger.isActive()) {
             wifiPassiveCaptureLogger.append(
                 rawFrame.data, rawFrame.length,
@@ -7361,18 +8759,43 @@ void loop() {
     }
     wifiPassiveCaptureLogger.update();
     handshakeCaptureLogger.update();
+    guardianEvidenceLogger.update();
+    wifiGuardianService.update();
+    String guardianAlert;
+    if (wifiGuardianService.takeAlert(guardianAlert)) {
+        guardianLastEvent = guardianAlert;
+        if (guardianEventLogger.isActive()) {
+            guardianEventLogger.append(
+                utcTimestamp() + "," + csvSafePayload(guardianAlert) + "," +
+                String(guardianLastChannel) + "," + String(guardianLastRssi) +
+                "," + String(wifiGuardianService.deauthFrames()) + "," +
+                String(wifiGuardianService.disassocFrames()));
+        }
+        cyberFamiliar.notePatrol(
+            "Guardian observed unusual disconnect traffic.", 8,
+            FamiliarMood::Worried);
+        triggerFamiliarReaction(FamiliarReaction::Warning, 4500);
+        showFamiliarSpeech("Warning! Disconnect burst observed.", 4500);
+        playFamiliarCue(FamiliarCue::Warning);
+    }
+    guardianEventLogger.update();
 
     if (screenSleeping) {
         if (M5Cardputer.Keyboard.isChange() &&
             M5Cardputer.Keyboard.isPressed()) {
             screenSleeping = false;
+            if (cyberdeckIdleCanvasReady) {
+                cyberdeckIdleCanvas.deleteSprite();
+                cyberdeckIdleCanvasReady = false;
+            }
             cyberdeckIdleActive = false;
             familiarIdleActive = false;
+            familiarIdleDrawn = false;
             M5Cardputer.Display.setBrightness(screenBrightness);
             lastUserActivity = millis();
             drawCurrentScreen();
         } else if (familiarIdleActive &&
-                   millis() - lastFamiliarDraw >= 500) {
+                   millis() - lastFamiliarDraw >= 180) {
             lastFamiliarDraw = millis();
             drawCyberFamiliarIdle();
         } else if (cyberdeckIdleActive) {
@@ -7394,7 +8817,7 @@ void loop() {
     }
 
     if (currentScreen == Screen::CyberFamiliar && !actionMenuOpen &&
-        millis() - lastFamiliarDraw >= 500) {
+        millis() - lastFamiliarDraw >= 180) {
         lastFamiliarDraw = millis();
         drawCyberFamiliar(false);
     }
@@ -7434,6 +8857,12 @@ void loop() {
         millis() - lastWifiSnifferDraw >= 500) {
         lastWifiSnifferDraw = millis();
         drawWifiSniffer(false);
+    }
+
+    if (currentScreen == Screen::WifiGuardian && !actionMenuOpen &&
+        millis() - lastGuardianDraw >= 500) {
+        lastGuardianDraw = millis();
+        drawWifiGuardian(false);
     }
 
     if (currentScreen == Screen::BleSpam && !actionMenuOpen &&
@@ -7494,6 +8923,12 @@ void loop() {
         millis() - lastWarDriveDraw >= 500) {
         lastWarDriveDraw = millis();
         drawWarDriveDynamic();
+    }
+
+    if (currentScreen == Screen::FamiliarPatrol && !actionMenuOpen &&
+        millis() - lastFamiliarPatrolDraw >= 500) {
+        lastFamiliarPatrolDraw = millis();
+        drawFamiliarPatrol(false);
     }
 
     networkHostScanService.update();
@@ -7648,6 +9083,7 @@ void loop() {
         screenSleeping = true;
         if (cyberFamiliar.idleMode()) {
             familiarIdleActive = true;
+            familiarIdleDrawn = false;
             cyberdeckIdleActive = false;
             lastFamiliarDraw = 0;
             drawCyberFamiliarIdle();

@@ -11,6 +11,7 @@ struct NetworkPortResult {
 class NetworkPortScanService {
 public:
     bool start(IPAddress target, uint16_t startPort, uint16_t endPort);
+    bool start(IPAddress target, const uint16_t* ports, size_t portCount);
     void stop();
     void update();
 
@@ -42,6 +43,9 @@ private:
     uint32_t endPort_ = 0;
     uint32_t scannedCount_ = 0;
     uint32_t totalCount_ = 0;
+    const uint16_t* portList_ = nullptr;
+    size_t portListCount_ = 0;
+    size_t nextListIndex_ = 0;
     bool active_ = false;
 
     std::vector<NetworkPortResult> pendingResults_;

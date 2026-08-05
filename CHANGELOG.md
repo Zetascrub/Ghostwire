@@ -6,6 +6,90 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Expand Cyberdeck Idle into three persistent styles: smoother Data Rain,
+  Signal Radar, and connected Node Drift. Compose the animated content in a
+  temporary off-screen canvas, push complete frames to reduce flicker, and
+  release the canvas immediately on wake. Radio activity produces themed pulse
+  highlights, and Enter on Idle animation starts an immediate preview.
+
+- Wrap long Cards-mode titles across two large-text lines instead of clipping
+  labels such as Observe signals.
+- Extend Cards navigation through Wi-Fi, BLE, GPS, Mesh, Scout Network,
+  Devices, Tools, and Settings category menus. Data-heavy results, telemetry,
+  terminal, evidence, and preference screens retain purpose-built dense views.
+
+- Redesign Cipher Reveal as a distinct themed breach/decryption sequence with
+  cycling hex columns, progressively locked code, ICE status, and completion
+  meter instead of a shortened variation of the System Console flow.
+- Replace the binary Fast boot toggle with persistent Slow, Normal, and Fast
+  speeds that scale animations, the title decrypt, status summary, and holds.
+  Existing Fast boot users migrate automatically to the new Fast speed.
+
+- Standardise Settings interaction around Up/Down selection and Left/Right
+  adjustment, including display, audio, navigation, boot, and connectivity
+  preferences. Enter remains reserved for preview or confirmation actions.
+- Add the Night City 2077 theme: near-black and dark-chrome surfaces with
+  electric-yellow controls, cyan text, and hot-magenta warnings.
+- Make Enter preview the selected boot sound or animation directly from its
+  style row. Convert Neon Breach, Hacker Terminal, Silly Bounce, and Synthwave
+  Grid from fixed RGB colours to the active theme palette so the complete boot
+  sequence matches the selected interface theme.
+
+- Add a persistent Compact/Cards navigation choice under Display & Audio.
+  Cards mode gives the home, Observe, and Field kit mission menus large
+  procedural theme-aware icons, one-at-a-time labels and descriptions,
+  Left/Right browsing, page dots, and live operation badges while preserving
+  the efficient list interface as Compact mode.
+- Keep the Cards-mode Observe radio glyph fully inside its icon frame.
+- Treat the physical `; , . /` cluster as Up/Left/Down/Right on navigation
+  screens without requiring Fn. Text entry, passwords, chat, and live terminal
+  sessions continue receiving the original punctuation characters.
+
+- Begin the Ghostwire 0.4 product overhaul. Replace the eleven-category home
+  menu with six mission-led paths: My Familiar, Observe signals, Scout network,
+  Evidence, Field kit, and Settings. The Familiar's chosen name and level now
+  appear at the front door, and active Guardian/Patrol/survey state is visible
+  before opening a subsystem.
+- Promote Evidence to a top-level workflow. Its unified SD browser indexes
+  ordinary logs and nested Familiar Patrol assessment output, filters recovery
+  checkpoints, identifies the source, and preserves preview and deletion
+  controls for individual files.
+- Refresh on-device and public-facing language around Ghostwire's intended
+  role: a pocket network and radio scout that observes, notices change, and
+  returns evidence for deeper analysis elsewhere.
+
+- Add Familiar Patrol, an explicitly confirmed unattended scout of the
+  connected subnet. It streams host/port evidence to microSD, progresses from
+  ICMP discovery through a prioritized 100-port TCP pass, resumes from atomic
+  checkpoints after reboot or Wi-Fi loss, rejects a changed subnet, runs in the
+  background, and emits CSV, JSON Lines, and Markdown reports. Exhaustive TCP
+  scanning remains a separate interactive per-host tool.
+- Replace the Familiar's static text face with lightweight procedural pixel
+  animation: breathing, blinking, moving ears/tail, discovery radar, and
+  distinct host, service, sensitive-service, completion, and idle reactions.
+- Add timed Familiar speech bubbles for host, recognised service, warning,
+  completion, and error events, using a reliable compact IP fallback such as
+  `.134`. Add persistent No sound, Subtle, Chirps, Arcade, and Mystic cue
+  themes; cues are rate-limited and suppressed during other audio playback.
+- Add Continuous Watch patrol mode with selectable 1-60 minute intervals,
+  SD-backed known-host filtering, new-host-only scout passes and reactions,
+  cycle tracking, and a visible next-scan countdown.
+- Add a Start idle watch now action and restrict live Familiar redraws to the
+  animated region, preventing static dashboard elements from flashing.
+- Add an isolated Familiar Phrase Lab under Audio. It composes representative
+  event phrases from individual SD-card MP3 word clips and reports total
+  sequence time before any Familiar integration is considered.
+- Add an optional Familiar Voice pack cue style with asynchronous word-bank
+  phrases for patrol events, priority-aware chatter suppression, visible patrol
+  mood, and different reactions for quiet versus changed watch cycles.
+- Add Familiar Guardian under Wi-Fi: a passive management-frame monitor with
+  three sensitivity levels, bounded disruption-burst detection, 30-second
+  alert cooldown, CSV event summaries, compact deauth/disassociation PCAP
+  evidence, live counters, and Familiar warning reactions.
+- Remove the 254-address ceiling for confirmed Familiar Patrol scopes while
+  retaining it for the existing interactive Host Discovery screen, and correct
+  the documented full-port-scan worst case to approximately 35 minutes per
+  heavily filtered host.
 - Replace the invalid bundled Claude fallback `claude-sonnet-5` with
   Anthropic's documented API model ID `claude-sonnet-4-20250514` in the
   firmware and example AI configuration.

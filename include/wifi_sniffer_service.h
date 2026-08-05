@@ -35,6 +35,7 @@ public:
     uint8_t currentChannel() const { return channel_; }
     WifiCaptureMode captureMode() const { return captureMode_; }
     const char* captureModeName() const;
+    void setCaptureMode(WifiCaptureMode mode);
     void cycleCaptureMode();
     bool channelLocked() const { return channelLocked_; }
     void toggleChannelLock();

@@ -1,5 +1,18 @@
 # Ghostwire roadmap
 
+## Product direction
+
+Ghostwire 0.4 moves from a collection of subsystem demos toward a coherent
+field companion. Its core loop is **Observe -> Scout -> Record**. The Familiar
+connects those stages by reacting to discoveries and changes; it is not merely
+another tool in the menu. Ghostwire should complement workstation tooling by
+collecting bounded, explainable evidence in the field.
+
+The mission-led home screen and unified Evidence browser are implemented in the
+current development build. The next product work is persistent named network
+profiles, a single operation/radio coordinator, first-run guidance, and gradual
+screen/controller extraction from `src/main.cpp`.
+
 This roadmap favours features that are useful during authorised assessment,
 network administration, or field diagnostics on the Cardputer ADV. Inspiration
 may come from projects such as Bruce, but features are designed for Ghostwire's
