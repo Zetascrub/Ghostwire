@@ -30,6 +30,8 @@ reliability testing is the remaining 0.5 release gate.
   dashboard, directory, detail, and inbox views.
 - [x] GNSS-relative mesh radar, node range/bearing, device-metrics decoding,
   and debounced microSD persistence for the bounded client state.
+- [x] Receive-only EU_868 channel profiles with public LongFast plus validated
+  SD-backed private AES-128/AES-256 keys and on-device hash/status visibility.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 
@@ -118,7 +120,8 @@ verified against test tags.
 - [x] Persist the bounded node database and message journal to microSD.
 - [x] Combine local GNSS with received positions for distance/bearing and a
   field radar view; decode device battery and channel telemetry.
-- Add deliberate region/channel/key configuration before any transmission.
+- [x] Add deliberate EU_868 receive channel/key configuration before any
+  transmission. Other regions remain unavailable on the 868 MHz cap.
 - Implement standards-compatible messages, acknowledgements, packet IDs, and
   position sharing only after duty-cycle and interoperability testing.
 

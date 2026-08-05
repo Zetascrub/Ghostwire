@@ -62,6 +62,12 @@ public:
     String nodeDisplayName(uint32_t id) const;
     void restoreNode(const MeshNode& node);
     void restoreMessage(const MeshMessage& message);
+    void setMeshChannels(const std::vector<MeshtasticChannel>& channels) {
+        decoder_.setChannels(channels);
+    }
+    const std::vector<MeshtasticChannel>& meshChannels() const {
+        return decoder_.channels();
+    }
 
 private:
     Module module_{5, 4, 3, 6};

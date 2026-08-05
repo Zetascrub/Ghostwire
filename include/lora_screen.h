@@ -20,6 +20,8 @@ public:
     void drawMessages(size_t selection, size_t offset);
     void drawMessageDetail(size_t selection);
     void drawRadar();
+    void drawChannels(size_t selection, size_t offset,
+                      const String& configurationStatus);
 
 private:
     LoRaService& service_;

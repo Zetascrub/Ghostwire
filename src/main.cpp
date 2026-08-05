@@ -16,6 +16,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <vector>
+#include <mbedtls/base64.h>
 
 #include "branding.h"
 #include "app_screen.h"
@@ -413,6 +414,7 @@ unsigned long lastLoRaDraw = 0;
 uint32_t lastLoggedLoRaPacket = 0;
 uint32_t lastPersistedMeshPacket = 0;
 unsigned long meshPersistDue = 0;
+String meshChannelStatus;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
@@ -967,6 +969,62 @@ void saveMeshState() {
     }
     SD.remove(kMeshStateBackupPath);
     lastPersistedMeshPacket = loraService.packetCount();
+}
+
+constexpr char kMeshChannelsPath[] = "/ghostwire/mesh/channels.json";
+
+void loadMeshChannels() {
+    static const uint8_t publicKey[] = {
+        0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
+        0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01,
+    };
+    std::vector<MeshtasticChannel> channels;
+    channels.push_back({"LongFast",
+                        std::vector<uint8_t>(publicKey,
+                                             publicKey + sizeof(publicKey)),
+                        0, true});
+    meshChannelStatus = "Public LongFast";
+    if (!sdAvailable || !SD.exists(kMeshChannelsPath)) {
+        loraService.setMeshChannels(channels);
+        meshChannelStatus += sdAvailable ? "; no private config" : "; SD unavailable";
+        return;
+    }
+    File file = SD.open(kMeshChannelsPath, FILE_READ);
+    JsonDocument document;
+    const DeserializationError error = deserializeJson(document, file);
+    file.close();
+    if (error) {
+        loraService.setMeshChannels(channels);
+        meshChannelStatus = "Invalid channels.json";
+        return;
+    }
+    size_t rejected = 0;
+    for (JsonObject value : document["channels"].as<JsonArray>()) {
+        if (channels.size() >= 4) break;
+        const String name = value["name"] | "";
+        const String encoded = value["psk_base64"] | "";
+        if (name.isEmpty() || name.length() > 12 || encoded.isEmpty()) {
+            ++rejected;
+            continue;
+        }
+        uint8_t decoded[32] = {};
+        size_t decodedLength = 0;
+        const int result = mbedtls_base64_decode(
+            decoded, sizeof(decoded), &decodedLength,
+            reinterpret_cast<const unsigned char*>(encoded.c_str()),
+            encoded.length());
+        if (result != 0 || (decodedLength != 16 && decodedLength != 32)) {
+            ++rejected;
+            continue;
+        }
+        channels.push_back({name,
+                            std::vector<uint8_t>(decoded,
+                                                 decoded + decodedLength),
+                            0, false});
+    }
+    loraService.setMeshChannels(channels);
+    meshChannelStatus = String(channels.size()) + " profiles loaded";
+    if (rejected > 0) meshChannelStatus += "; rejected " + String(rejected);
 }
 
 void drawHeaderStatus(bool force = false) {
@@ -3628,6 +3686,10 @@ void drawCurrentScreen() {
             loraScreen.drawMessageDetail(listSelection);
             break;
         case Screen::MeshRadar: loraScreen.drawRadar(); break;
+        case Screen::MeshChannels:
+            loraScreen.drawChannels(listSelection, listOffset,
+                                    meshChannelStatus);
+            break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
         case Screen::Imu: imuScreen.draw(); break;
@@ -4386,6 +4448,13 @@ void goBack() {
     if (currentScreen == Screen::MeshRadar) {
         currentScreen = Screen::MeshMenu;
         listSelection = 3;
+        listOffset = 0;
+        menuScreens.drawMesh();
+        return;
+    }
+    if (currentScreen == Screen::MeshChannels) {
+        currentScreen = Screen::MeshMenu;
+        listSelection = 4;
         listOffset = 0;
         menuScreens.drawMesh();
         return;
@@ -6314,14 +6383,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 const size_t destination = listSelection;
                 currentScreen = destination == 0 ? Screen::LoRa
                               : destination == 1 ? Screen::MeshNodes
                               : destination == 2 ? Screen::MeshMessages
-                                                 : Screen::MeshRadar;
+                              : destination == 3 ? Screen::MeshRadar
+                                                 : Screen::MeshChannels;
                 listSelection = 0;
                 listOffset = 0;
                 drawHeader("LoRa Receive");
@@ -6567,6 +6637,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::MeshRadar:
             loraScreen.drawRadar();
+            break;
+
+        case Screen::MeshChannels:
+            if (refresh) loadMeshChannels();
+            if (up) moveSelection(-1, loraService.meshChannels().size());
+            if (down) moveSelection(1, loraService.meshChannels().size());
+            normalizeListPosition(loraService.meshChannels().size());
+            loraScreen.drawChannels(listSelection, listOffset,
+                                    meshChannelStatus);
             break;
 
         case Screen::WifiSniffer:
@@ -7105,6 +7184,7 @@ void setup() {
     hidService.begin();
     gnssService.begin();
     initSd();
+    loadMeshChannels();
     loadMeshState();
     recordBootTelemetry();
     if (sdAvailable) familiarPatrolService.begin();

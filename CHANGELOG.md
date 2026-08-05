@@ -6,6 +6,12 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add receive-only Meshtastic Channel Profiles. Ghostwire always listens for
+  public LongFast and can validate/load three private AES-128/AES-256 profiles
+  from `/ghostwire/mesh/channels.json`, match frames using Meshtastic's actual
+  name-plus-PSK channel hash, and show loaded names/hashes without displaying
+  secret key material.
+
 - Begin the receive-side Mesh Field Client: retain a bounded 24-node directory
   and 32-message inbox, decode Meshtastic public-channel identity and position
   payloads, suppress repeated messages, and add dashboard, list, and readable

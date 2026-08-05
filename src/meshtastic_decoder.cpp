@@ -79,6 +79,22 @@ bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
     result.channelHash = packet[13];
     if (result.from == 0) return false;
 
+    const MeshtasticChannel* channel = nullptr;
+    for (const auto& candidate : channels_) {
+        if (candidate.hash == result.channelHash) {
+            channel = &candidate;
+            break;
+        }
+    }
+    std::vector<uint8_t> fallbackKey(kPublicKey, kPublicKey + sizeof(kPublicKey));
+    MeshtasticChannel fallback{"LongFast", fallbackKey,
+                               channelHash("LongFast", fallbackKey), true};
+    if (channel == nullptr && result.channelHash == fallback.hash) {
+        channel = &fallback;
+    }
+    if (channel == nullptr) return false;
+    result.channelName = channel->name;
+
     std::vector<uint8_t> plain(packet + kHeaderLength, packet + length);
     uint8_t nonce[16] = {};
     memcpy(nonce, &result.id, sizeof(result.id));
@@ -86,15 +102,19 @@ bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
 
     mbedtls_aes_context aes;
     mbedtls_aes_init(&aes);
-    if (mbedtls_aes_setkey_enc(&aes, kPublicKey, 128) != 0) {
+    if (!channel->key.empty() &&
+        mbedtls_aes_setkey_enc(&aes, channel->key.data(),
+                               channel->key.size() * 8) != 0) {
         mbedtls_aes_free(&aes);
         return false;
     }
     size_t nonceOffset = 0;
     uint8_t streamBlock[16] = {};
-    const int status =
-        mbedtls_aes_crypt_ctr(&aes, plain.size(), &nonceOffset, nonce,
-                              streamBlock, plain.data(), plain.data());
+    const int status = channel->key.empty()
+                           ? 0
+                           : mbedtls_aes_crypt_ctr(
+                                 &aes, plain.size(), &nonceOffset, nonce,
+                                 streamBlock, plain.data(), plain.data());
     mbedtls_aes_free(&aes);
     if (status != 0 || !decodeData(plain.data(), plain.size(), result)) {
         return false;
@@ -113,6 +133,31 @@ bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
         result.summary = portName(result.port);
     }
     return true;
+}
+
+uint8_t MeshtasticDecoder::channelHash(
+    const String& name, const std::vector<uint8_t>& key) {
+    uint8_t result = 0;
+    const String effectiveName = name.isEmpty() ? "X" : name;
+    for (size_t index = 0; index < effectiveName.length(); ++index) {
+        result ^= static_cast<uint8_t>(effectiveName[index]);
+    }
+    for (uint8_t value : key) result ^= value;
+    return result;
+}
+
+void MeshtasticDecoder::setChannels(
+    const std::vector<MeshtasticChannel>& channels) {
+    channels_.clear();
+    for (const auto& channel : channels) {
+        if (channels_.size() >= 4) break;
+        if (channel.name.isEmpty() ||
+            (!channel.key.empty() && channel.key.size() != 16 &&
+             channel.key.size() != 32)) continue;
+        MeshtasticChannel copy = channel;
+        copy.hash = channelHash(copy.name, copy.key);
+        channels_.push_back(copy);
+    }
 }
 
 

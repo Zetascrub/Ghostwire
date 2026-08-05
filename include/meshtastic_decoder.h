@@ -23,6 +23,14 @@ struct MeshtasticDecoded {
     float voltage = 0.0F;
     float channelUtilization = 0.0F;
     float airUtilTx = 0.0F;
+    String channelName;
+};
+
+struct MeshtasticChannel {
+    String name;
+    std::vector<uint8_t> key;
+    uint8_t hash = 0;
+    bool isPublic = false;
 };
 
 class MeshtasticDecoder {
@@ -30,6 +38,10 @@ public:
     bool decodePublic(const uint8_t* packet, size_t length,
                       MeshtasticDecoded& result) const;
     static const char* portName(uint32_t port);
+    void setChannels(const std::vector<MeshtasticChannel>& channels);
+    const std::vector<MeshtasticChannel>& channels() const { return channels_; }
+    static uint8_t channelHash(const String& name,
+                               const std::vector<uint8_t>& key);
     static bool readVarint(const uint8_t* data, size_t length, size_t& offset,
                            uint64_t& value);
 
@@ -37,4 +49,5 @@ private:
     static bool decodeData(const uint8_t* data, size_t length,
                            MeshtasticDecoded& result);
     static void decodeApplicationPayload(MeshtasticDecoded& result);
+    std::vector<MeshtasticChannel> channels_;
 };

@@ -43,7 +43,7 @@ void LoRaScreen::draw(bool fullDraw) {
         display.setCursor(8, 82);
         const auto& decoded = service_.lastDecoded();
         if (decoded.valid) {
-            display.printf("Mesh %08lX  %s",
+            display.printf("%s %08lX  %s", decoded.channelName.c_str(),
                            static_cast<unsigned long>(decoded.from),
                            MeshtasticDecoder::portName(decoded.port));
             display.setCursor(8, 99);
@@ -65,6 +65,37 @@ void LoRaScreen::draw(bool fullDraw) {
         }
     }
     if (fullDraw) ScreenChrome::drawFooter("N: nodes  M: messages  Tab: actions");
+}
+
+void LoRaScreen::drawChannels(size_t selection, size_t offset,
+                              const String& configurationStatus) {
+    const auto& channels = service_.meshChannels();
+    ScreenChrome::drawHeader("Mesh Channels");
+    ScreenChrome::drawHeaderPosition(channels.empty() ? 0 : selection + 1,
+                                     channels.size());
+    if (channels.empty()) {
+        auto& display = M5Cardputer.Display;
+        display.setTextColor(Branding::warning, Branding::background);
+        display.setCursor(8, 42);
+        display.print("Public LongFast fallback only");
+    } else {
+        const size_t end = std::min(channels.size(),
+                                    offset + ScreenChrome::kVisibleRows);
+        for (size_t i = offset; i < end; ++i) {
+            const auto& channel = channels[i];
+            char suffix[8];
+            snprintf(suffix, sizeof(suffix), "0x%02X", channel.hash);
+            ScreenChrome::drawListRow(static_cast<int>(i - offset),
+                                      channel.name, i == selection, suffix);
+        }
+    }
+    if (!configurationStatus.isEmpty()) {
+        auto& display = M5Cardputer.Display;
+        display.setTextColor(Branding::muted, Branding::background);
+        display.setCursor(8, 112);
+        display.print(configurationStatus.substring(0, 37));
+    }
+    ScreenChrome::drawFooter("R: reload SD config   Q: mesh menu");
 }
 
 void LoRaScreen::drawNodes(size_t selection, size_t offset) {

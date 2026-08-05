@@ -166,6 +166,12 @@ The detailed capabilities behind those missions are:
   radar plots received positions and node details calculate range/bearing;
   device battery telemetry is shown when broadcast. The bounded client state
   is restored from `/ghostwire/mesh/state.json` after reboot.
+- Channel Profiles always retains the public `LongFast` decoder and can load
+  up to three private receive-only channels from
+  `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name
+  and a Base64 AES-128/AES-256 PSK; malformed entries are rejected without
+  exposing their key material. The Cap LoRa-1262 remains fixed to the EU_868
+  LongFast carrier at 869.525 MHz.
 
 #### War Drive
 
