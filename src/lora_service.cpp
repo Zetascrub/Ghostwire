@@ -224,7 +224,7 @@ bool LoRaService::sendNodeInfo(const String& longName, const String& shortName,
         transmitStatus_ = "Invalid identity or channel";
         return false;
     }
-    return transmitPacket(packet, "Identity advertised");
+    return transmitPacket(packet, "Identity sent; requesting peer keys");
 }
 
 bool LoRaService::transmitPacket(const std::vector<uint8_t>& packet,

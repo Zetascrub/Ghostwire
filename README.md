@@ -182,9 +182,10 @@ The detailed capabilities behind those missions are:
   sender. Direct messages use Meshtastic-compatible Curve25519/AES-CCM PKI and
   request a mesh acknowledgement; they are not sent as legacy channel-encrypted
   DMs. Both peers must first learn one another's public key: let Ghostwire hear
-  the peer's NodeInfo, then use Mesh Settings -> Advertise identity so the peer
-  learns Ghostwire's persistent signed identity. Node detail reports when a
-  peer's key is ready. Broadcast composition remains available with `C`, and
+  the peer's NodeInfo. Mesh Settings -> Advertise identity sends Ghostwire's
+  persistent signed identity and requests NodeInfo replies from listening peers,
+  completing both sides of the key exchange. Node detail reports when a peer's
+  key is ready. Broadcast composition remains available with `C`, and
   the inbox distinguishes incoming peers from outgoing recipients.
 - Channel Profiles always retains the public `LongFast` decoder and can load
   up to three private receive/transmit channels from

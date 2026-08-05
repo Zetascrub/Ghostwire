@@ -11,7 +11,8 @@ assessment tools built on those verified foundations.
   request an acknowledgement, and are journalled with the actual recipient.
   Ghostwire now maintains a persistent mesh key pair, derives its node ID from
   the public key, signs broadcast identity/data with XEdDSA, learns peer keys
-  from NodeInfo, and shows whether a node is ready for direct messaging.
+  from NodeInfo, requests peer NodeInfo replies during identity advertisement,
+  and shows whether a node is ready for direct messaging.
   Message lists and details distinguish incoming senders, outgoing recipients,
   channel, and direct-versus-broadcast traffic.
 

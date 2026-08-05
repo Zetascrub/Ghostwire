@@ -248,8 +248,8 @@ bool MeshtasticDecoder::encodeText(const String& text, size_t channelIndex,
         text.length() > 180 || hopLimit < 1 || hopLimit > 7) return false;
     std::vector<uint8_t> payload(text.c_str(), text.c_str() + text.length());
     return encodeApplication(payload, 1, channelIndex, from, to, packetId,
-                             hopLimit, to != 0xffffffffU, recipientPublicKey,
-                             packet);
+                             hopLimit, to != 0xffffffffU, false,
+                             recipientPublicKey, packet);
 }
 
 bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
@@ -279,13 +279,14 @@ bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
     user.push_back(0x38);          // User.role
     user.push_back(0x01);          // CLIENT_MUTE
     return encodeApplication(user, 4, channelIndex, from, 0xffffffffU,
-                             packetId, hopLimit, false, nullptr, packet);
+                             packetId, hopLimit, false, true, nullptr, packet);
 }
 
 bool MeshtasticDecoder::encodeApplication(
     const std::vector<uint8_t>& payload, uint32_t port, size_t channelIndex,
     uint32_t from, uint32_t to, uint32_t packetId, uint8_t hopLimit,
     bool wantAck,
+    bool wantResponse,
     const std::vector<uint8_t>* recipientPublicKey,
     std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || payload.empty() ||
@@ -305,10 +306,18 @@ bool MeshtasticDecoder::encodeApplication(
         plain.push_back(static_cast<uint8_t>(payload.size() >> 7));
     }
     plain.insert(plain.end(), payload.begin(), payload.end());
+    if (wantResponse) {
+        plain.push_back(0x18);  // Data.want_response
+        plain.push_back(0x01);
+    }
     if (to != 0xffffffffU) {
         plain.push_back(0x48);  // Data.bitfield (present, value zero)
         plain.push_back(0x00);
-    } else if (signingPrivateKey_.size() == 32 &&
+    } else if (wantResponse) {
+        plain.push_back(0x48);  // Data.bitfield
+        plain.push_back(0x02);  // BITFIELD_WANT_RESPONSE_MASK
+    }
+    if (to == 0xffffffffU && signingPrivateKey_.size() == 32 &&
                signingPublicKey_.size() == 32) {
         uint8_t signature[64];
         esp_fill_random(signature, 32);

@@ -61,6 +61,7 @@ private:
                            size_t channelIndex, uint32_t from,
                            uint32_t to, uint32_t packetId, uint8_t hopLimit,
                            bool wantAck,
+                           bool wantResponse,
                            const std::vector<uint8_t>* recipientPublicKey,
                            std::vector<uint8_t>& packet) const;
     static bool decodeData(const uint8_t* data, size_t length,
