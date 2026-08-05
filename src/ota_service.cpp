@@ -6,6 +6,8 @@
 #include <WiFiClientSecure.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
+#include <memory>
+#include <new>
 
 #include "branding.h"
 #include "ota_root_certs.h"
@@ -145,9 +147,14 @@ OtaService::InstallResult OtaService::downloadAndInstall(
         return InstallResult::Failed;
     }
 
-    uint8_t signature[kMaxSignatureBytes];
+    std::unique_ptr<uint8_t[]> signature(
+        new (std::nothrow) uint8_t[kMaxSignatureBytes]);
+    if (!signature) {
+        status_ = "Not enough memory to verify update";
+        return InstallResult::Failed;
+    }
     size_t signatureLen = 0;
-    if (!fetchSmallAsset(signatureUrl_, signature, sizeof(signature),
+    if (!fetchSmallAsset(signatureUrl_, signature.get(), kMaxSignatureBytes,
                          signatureLen)) {
         status_ = "Could not download signature";
         return InstallResult::Failed;
@@ -186,7 +193,15 @@ OtaService::InstallResult OtaService::downloadAndInstall(
     mbedtls_sha256_starts_ret(&sha, 0);
 
     WiFiClient* stream = http.getStreamPtr();
-    uint8_t buf[kDownloadChunk];
+    std::unique_ptr<uint8_t[]> buf(
+        new (std::nothrow) uint8_t[kDownloadChunk]);
+    if (!buf) {
+        mbedtls_sha256_free(&sha);
+        Update.abort();
+        http.end();
+        status_ = "Not enough memory to buffer update";
+        return InstallResult::Failed;
+    }
     size_t downloaded = 0;
     downloadedBytes_ = 0;
     bool cancelled = false;
@@ -194,17 +209,19 @@ OtaService::InstallResult OtaService::downloadAndInstall(
     unsigned long lastByteAt = millis();
     while (downloaded < static_cast<size_t>(contentLength)) {
         const size_t remaining = static_cast<size_t>(contentLength) - downloaded;
-        const size_t want = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        const size_t want = remaining < kDownloadChunk ? remaining
+                                                        : kDownloadChunk;
         if (stream->available()) {
-            const int n = stream->read(buf, want);
+            const int n = stream->read(buf.get(), want);
             if (n > 0) {
                 const size_t written =
-                    Update.write(buf, static_cast<size_t>(n));
+                    Update.write(buf.get(), static_cast<size_t>(n));
                 if (written != static_cast<size_t>(n)) {
                     ioError = true;
                     break;
                 }
-                mbedtls_sha256_update_ret(&sha, buf, static_cast<size_t>(n));
+                mbedtls_sha256_update_ret(&sha, buf.get(),
+                                          static_cast<size_t>(n));
                 downloaded += static_cast<size_t>(n);
                 downloadedBytes_ = downloaded;
                 lastByteAt = millis();
@@ -245,7 +262,7 @@ OtaService::InstallResult OtaService::downloadAndInstall(
     if (mbedtls_pk_parse_public_key(&pk, kReleaseSigningPublicKeyDer,
                                     kReleaseSigningPublicKeyDerLen) == 0) {
         signatureValid = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, digest,
-                                           sizeof(digest), signature,
+                                           sizeof(digest), signature.get(),
                                            signatureLen) == 0;
     }
     mbedtls_pk_free(&pk);

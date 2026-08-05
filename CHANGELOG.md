@@ -6,6 +6,12 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+## 0.4.8 - 2026-08-05
+
+- Move OTA download/signature buffers from the loop-task stack to checked
+  heap allocations and increase the loop-task stack from 8 KiB to 16 KiB.
+  This prevents a panic when the installer begins its TLS connection.
+
 ## 0.4.7 - 2026-08-05
 
 - Prevent M5GFX's automatic wrapping from splitting the final letter of card
