@@ -1,11 +1,15 @@
 # Ghostwire
 
-Firmware for the M5Stack Cardputer ADV, built as a keyboard-driven field
-toolkit for authorized security assessment, network administration, radio
-diagnostics, and hardware experimentation.
+**A pocket network and radio scout for the M5Stack Cardputer ADV.**
 
-Current firmware: **Ghostwire 0.3.15.9**, with additional 0.3.x changes under
-active development. The firmware's canonical version string is maintained in
+Ghostwire helps an authorised operator observe nearby signals, scout a network,
+notice changes, and bring useful evidence back to a full workstation. Its
+persistent cyber familiar is the project's guide and memory: it reacts to what
+the deck discovers without pretending the Cardputer is a replacement for a
+laptop-class assessment suite.
+
+Current release firmware: **Ghostwire 0.4.8**. The firmware's
+canonical version string is maintained in
 [`include/branding.h`](include/branding.h).
 
 Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
@@ -44,22 +48,62 @@ before collecting radio, network, RFID, terminal, or location data.
 
 ## Current features
 
-The main menu is organized into **Wi-Fi / BLE / GPS / Mesh / War Drive /
-Network / Devices / AI Chat / Cyber Familiar / Tools / Settings**.
+The home screen is organised around intent rather than subsystems:
+**My Familiar / Observe signals / Scout network / Evidence / Field kit /
+Settings**. Subsystem tools still exist, but they now sit inside the mission
+where an operator would naturally look for them.
+
+`Settings > Display & Audio > Navigation style` switches between the efficient
+six-row **Compact** menus and a more characterful **Cards** interface. Cards
+shows one mission at a time with a large theme-aware icon, plain-language
+description, page indicators, and live operation badges. Left/Right browses and
+Enter opens; Compact retains the standard Up/Down list controls. The choice is
+stored across restarts and applies to the home, Observe, Field kit, Wi-Fi, BLE,
+GPS, Mesh, Scout Network, Devices, Tools, and Settings category menus. Results,
+telemetry, terminals, evidence, and editable preference screens retain their
+denser list or dashboard layouts.
+
+On navigation screens, the Cardputer's physical `; , . /` cluster acts as
+Up/Left/Down/Right directly, without holding Fn. In text fields, passwords,
+chat, and terminal sessions those keys remain normal punctuation.
+
+Settings use the same navigation language: Up/Down selects a row and
+Left/Right changes its value. Enter is reserved for actions such as previews
+and confirmed resets. The **Night City 2077** theme adds a near-black,
+electric-yellow, cyan, and danger-magenta palette alongside the existing
+Cyberpunk theme.
+
+Cyberdeck Idle offers three theme-aware screensavers under
+`Settings > Display & Audio > Idle animation`: Data Rain, Signal Radar, and
+Node Drift. Enter previews the selected style immediately and any key wakes the
+deck. Idle frames are composed off-screen and transferred atomically to reduce
+flicker; the temporary canvas is released on wake so active tools retain the
+memory.
 
 ### Feature map
 
+| Home mission | What it is for |
+| --- | --- |
+| My Familiar | Companion dashboard, Patrol, idle watch, journal and progression |
+| Observe signals | Wi-Fi, BLE, GPS, mesh and combined war-drive observation |
+| Scout network | Connected-network dashboard, host discovery and bounded service checks |
+| Evidence | One SD-backed view of captures, logs and Patrol assessment files |
+| Field kit | Connected accessories, AI field notes and supporting utilities |
+| Settings | Display, audio, boot, connectivity and safe reset controls |
+
+The detailed capabilities behind those missions are:
+
 | Area | Highlights |
 | --- | --- |
-| [Wi-Fi](#wi-fi) | Discovery, channel analysis, passive PCAP, handshake capture, connection tools |
+| [Wi-Fi](#wi-fi) | Discovery, channel analysis, passive PCAP, Guardian, handshake capture, connection tools |
 | [BLE](#ble) | Advertisement inspection, continuous capture, HID keyboard |
 | [GPS and Mesh](#gps-and-mesh) | GNSS logging, LoRa reception, Meshtastic decoding |
 | [War Drive](#war-drive) | GPS-tagged Wi-Fi and BLE capture |
 | [Network](#network) | Dashboard, host discovery, port scanning, Telnet, SSH |
 | [Devices](#devices) | Biscuit Pro and Chameleon Ultra workflows |
 | [AI Chat](#ai-chat) | OpenAI and Claude chat, voice tools, diagnostic logs |
-| [Cyber Familiar](#cyber-familiar) | Persistent companion driven by device activity |
-| [Tools](#tools) | IR, USB/HID, audio, QR, logs, IMU, files, diagnostics |
+| [Cyber Familiar](#cyber-familiar) | Persistent companion, network scout and change-aware guide |
+| [Tools](#tools) | IR, USB/HID, audio, QR, IMU, files and diagnostics |
 | [Settings](#settings) | Display, audio, boot experience, connectivity, themes |
 
 ### Feature details
@@ -74,6 +118,13 @@ Network / Devices / AI Chat / Cyber Familiar / Tools / Settings**.
     802.11 PCAP modes, probe CSV logging, channel hopping/lock, and live
     frame/size/drop telemetry. Management capture, channel locking, capture
     stop/save, and Wi-Fi radio restoration are hardware-validated.
+  - Familiar Guardian: passive channel-hopping management-frame watch with
+    Relaxed, Balanced, and Watchful thresholds for deauthentication/
+    disassociation bursts. It streams alert summaries to CSV and only the
+    relevant disruption frames to a compact PCAP, while surfacing conservative
+    Familiar warnings. Observations indicate unusual traffic, not proof of an
+    attack. Guardian requires microSD and temporarily owns the Wi-Fi radio, so
+    it cannot remain associated to an access point while watching channels.
   - Single-target deauthentication from an AP's detail view, gated behind
     an explicit confirm screen.
   - Targeted WPA2 handshake/PMKID capture to `.pcap`, chainable with
@@ -118,7 +169,7 @@ Network Dashboard provides live SSID/RSSI, IP, gateway, subnet, DNS, and MAC
 details. Host Discovery: ICMP ping sweep of the connected subnet,
   live progress, CSV export. Port Scan: pick a found host, scan either 13
   common ports (`Enter`, seconds) or a full 1-65535 range (`Tab` menu, up
-  to ~8-10 minutes worst case, 8 concurrent non-blocking connects), CSV
+  to ~35 minutes worst case per host, 8 concurrent non-blocking connects), CSV
   export. Telnet Client: connect to any host/port (manual entry, or
   pre-filled from a Host Discovery result), plain-text interactive
   session. It is not a full terminal emulator (no ANSI/VT100 or protocol
@@ -170,6 +221,53 @@ A passive virtual companion that develops through normal device use. It
   without retaining raw device identifiers. Counter growth, reboot persistence,
   and duplicate-resistant rescanning are hardware-validated.
 
+Familiar Patrol adds an explicitly confirmed, unattended assessment workflow
+for the connected subnet. It streams ICMP-responsive hosts and TCP observations
+to a dedicated microSD session, then checks 100 prioritized TCP ports on every
+responsive host. The bounded scout pass covers common web, remote-access,
+file-sharing, management, database, messaging, container, printer, and IoT
+services without attempting an automatic 1-65535 scan. Only the current
+operation is kept in RAM. The patrol pauses across Wi-Fi loss, refuses to resume
+on a different subnet, checkpoints progress for reboot recovery, runs in the
+background, and produces CSV, JSON Lines, and Markdown report files. It performs
+discovery and port assessment only; it does not guess credentials, exploit
+services, or extract data.
+
+The Familiar uses procedural pixel animation for breathing, blinking, ear/tail
+movement, and discovery radar. Host and service discoveries trigger short
+expressive reactions; ports commonly associated with remote administration,
+file sharing, databases, or exposed infrastructure trigger a warning reaction.
+Timed speech bubbles identify the endpoint using a compact final-octet label
+such as `.134`, and name recognised service types. These are investigation
+leads rather than vulnerability claims. `Settings > Display & Audio > Familiar
+cues` selects No sound, Subtle, Chirps, Arcade, or Mystic event tones. Cues are
+rate-limited and do not interrupt active audio playback.
+
+The Familiar action menu includes **Start idle watch now**, which enters the
+animated idle display immediately; any key wakes it. Animated dashboard and
+idle refreshes invalidate only their moving region, leaving static UI elements
+in place to reduce whole-screen flicker.
+
+Patrol confirmation can select a one-shot scout or **Continuous Watch**, with
+1, 5, 15, 30, or 60 minute intervals. After the first pass, the watch repeats
+host discovery but filters addresses already recorded in the SD-backed session
+baseline. Only newly observed addresses receive the 100-port scout pass and
+trigger new-host reactions. The patrol screen shows its cycle and countdown.
+
+An experimental **Familiar Phrase Lab** under Audio composes representative
+event phrases from individual MP3 word clips stored in
+`/ghostwire/audio/Familiar/`. It reports total sequence time and remains
+deliberately isolated from Familiar events while pacing and intelligibility are
+evaluated. The supplied SD-card template includes phrases such as New host
+discovered, Interesting service found, and Patrol completed.
+
+Selecting **Voice pack** under Settings > Display & Audio connects this word
+bank to patrol start, new-host, service, warning, completion, and error events.
+Announcements play asynchronously with rate limiting and a one-item priority
+queue, allowing warnings to replace stale routine chatter. The patrol view also
+shows the Familiar's current mood, and repeat watches react differently to a
+quiet cycle and one containing new hosts.
+
 #### Tools
 
   - Infrared: onboard 38 kHz transmitter self-test.
@@ -196,7 +294,8 @@ A passive virtual companion that develops through normal device use. It
 
 Grouped Display & Audio, Boot Experience, and Connectivity submenus contain
 persistent options for volume, brightness, screen timeout, eight boot animation
-styles, five boot sound styles with on-device previews, fast boot, Wi-Fi
+styles, five boot sound styles with on-device previews, Slow/Normal/Fast boot
+speed, Wi-Fi
 credential saving, boot auto-connect, the Cyberdeck idle mode, themes, and
 restoring defaults.
 
@@ -271,7 +370,8 @@ authorized security field toolkit. It includes:
 - A read-only microSD browser with details and direct MP3 playback.
 - Persistent volume, brightness, and screen-timeout settings.
 - Persistent boot-ready sound setting.
-- Persistent Fast boot setting to skip animated boot theatrics.
+- Persistent Slow, Normal, and Fast boot-speed settings scale the complete
+  animation, title reveal, summary, and hold sequence.
 - Battery percentage, charge status, and low-battery indication.
 - GNSS fix monitoring and passive SX1262 LoRa/Meshtastic packet reception.
 - Live accelerometer/gyroscope data, orientation, motion state, and stationary

@@ -213,6 +213,17 @@ void CyberFamiliar::noteRecovery() {
     addJournal("That reboot felt strange.");
 }
 
+void CyberFamiliar::notePatrol(const String& message, uint16_t xp,
+                               FamiliarMood mood) {
+    if (xp > 0) {
+        award(xp, mood, message);
+        return;
+    }
+    mood_ = mood;
+    lastMoodMs_ = millis();
+    addJournal(message);
+}
+
 void CyberFamiliar::resetProgress() {
     xp_ = 0;
     bond_ = 0;

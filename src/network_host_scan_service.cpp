@@ -5,7 +5,6 @@
 
 namespace {
 constexpr uint32_t kPingTimeoutMs = 300;
-constexpr size_t kMaxHosts = 254;
 
 uint32_t ipToUint32(const IPAddress& ip) {
     return (static_cast<uint32_t>(ip[0]) << 24) |
@@ -27,7 +26,7 @@ IPAddress NetworkHostScanService::candidateAt(uint32_t index) const {
     return uint32ToIp(network_ + 1 + index);
 }
 
-bool NetworkHostScanService::start() {
+bool NetworkHostScanService::start(uint32_t startIndex, uint32_t maxHosts) {
     if (WiFi.status() != WL_CONNECTED) return false;
 
     const IPAddress localIp = WiFi.localIP();
@@ -37,17 +36,16 @@ bool NetworkHostScanService::start() {
     const uint32_t network = ipValue & maskValue;
     const uint32_t broadcast = network | (~maskValue);
 
-    // Range is network+1 .. broadcast-1 (excludes network/broadcast
-    // addresses), capped at kMaxHosts -- almost all real networks are /24
-    // anyway, and scanning a much larger range sequentially at
-    // kPingTimeoutMs/host would take far too long on this hardware.
+    // Range is network+1 .. broadcast-1 (excludes network/broadcast). The
+    // caller is responsible for presenting and confirming this scope before
+    // starting unattended work; results are drained rather than retained.
     uint32_t available = 0;
     if (broadcast > network + 1) available = broadcast - network - 1;
-    hostCount_ = available > kMaxHosts ? kMaxHosts : available;
+    hostCount_ = std::min(available, maxHosts);
 
     network_ = network;
     ownIp_ = ipValue;
-    currentIndex_ = 0;
+    currentIndex_ = std::min(startIndex, hostCount_);
     foundCount_ = 0;
     pendingResults_.clear();
     active_ = true;

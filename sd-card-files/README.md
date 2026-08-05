@@ -3,8 +3,12 @@
 Copy the contents of this directory to the root of the Cardputer's microSD
 card. The directory structure here mirrors the intended paths on the card.
 
-- `ghostwire/audio`: MP3 format and placement guidance.
+- `ghostwire/audio`: MP3 format and placement guidance. Familiar voice-bank
+  clips are optional and must be supplied under terms that permit your use and
+  redistribution; selecting **No sound** requires no audio assets.
 - `ghostwire/scripts`: guarded DuckyScript placement and supported commands.
 - `ghostwire/secrets`: blank AI configuration example and credential guidance.
 
-Runtime log and saved-tag directories are created by the firmware as needed.
+Runtime log, assessment, and saved-tag directories are created by the firmware
+as needed. Their contents appear together under the on-device **Evidence**
+mission, while the raw **Files** utility remains available in the Field kit.

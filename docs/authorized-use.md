@@ -18,3 +18,12 @@ Logs on the microSD card are unencrypted. Treat network identifiers, device
 addresses, packet captures, RFID identifiers, terminal history, and GPS
 coordinates as sensitive assessment data. Transfer them only to approved
 storage and delete them when the retention period ends.
+
+Familiar Patrol is intended for explicitly scoped, unattended discovery and a
+bounded 100-port TCP scout pass. Confirm the detected subnet and usable-address
+count before starting it, obtain permission to leave the device connected and
+powered for the full assessment window, and ensure monitoring contacts know
+where it is deployed. Exhaustive scanning is not part of the unattended
+patrol. A response does not itself establish authorization. Retrieve or
+securely erase its assessment directory when the engagement's retention period
+ends.

@@ -10,14 +10,14 @@ struct NetworkHostResult {
 
 class NetworkHostScanService {
 public:
-    bool start();
+    bool start(uint32_t startIndex = 0, uint32_t maxHosts = 254);
     void stop();
     void update();
 
     bool isActive() const { return active_; }
-    size_t scannedCount() const { return currentIndex_; }
-    size_t totalCount() const { return hostCount_; }
-    size_t foundCount() const { return foundCount_; }
+    uint32_t scannedCount() const { return currentIndex_; }
+    uint32_t totalCount() const { return hostCount_; }
+    uint32_t foundCount() const { return foundCount_; }
 
     // Drain-style, same idiom as WifiSnifferService::nextRecord().
     bool nextHostResult(NetworkHostResult& result);
@@ -33,9 +33,9 @@ private:
     bool active_ = false;
     uint32_t network_ = 0;
     uint32_t ownIp_ = 0;
-    size_t hostCount_ = 0;
-    size_t currentIndex_ = 0;
-    size_t foundCount_ = 0;
+    uint32_t hostCount_ = 0;
+    uint32_t currentIndex_ = 0;
+    uint32_t foundCount_ = 0;
     void* currentHandle_ = nullptr;
     unsigned long currentPingStartMs_ = 0;
 

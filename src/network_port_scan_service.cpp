@@ -21,11 +21,34 @@ bool NetworkPortScanService::start(IPAddress target, uint16_t startPort,
     if (active_) stop();
 
     target_ = target;
+    portList_ = nullptr;
+    portListCount_ = 0;
+    nextListIndex_ = 0;
     nextPort_ = startPort;
     endPort_ = endPort;
     scannedCount_ = 0;
     totalCount_ = static_cast<uint32_t>(endPort) -
                   static_cast<uint32_t>(startPort) + 1;
+    pendingResults_.clear();
+    for (auto& slot : slots_) slot = Slot{};
+    active_ = true;
+    fillSlots();
+    return true;
+}
+
+bool NetworkPortScanService::start(IPAddress target, const uint16_t* ports,
+                                   size_t portCount) {
+    if (active_) stop();
+    if (ports == nullptr || portCount == 0) return false;
+
+    target_ = target;
+    portList_ = ports;
+    portListCount_ = portCount;
+    nextListIndex_ = 0;
+    nextPort_ = 0;
+    endPort_ = 0;
+    scannedCount_ = 0;
+    totalCount_ = portCount;
     pendingResults_.clear();
     for (auto& slot : slots_) slot = Slot{};
     active_ = true;
@@ -51,15 +74,25 @@ void NetworkPortScanService::closeSlot(size_t index) {
 void NetworkPortScanService::fillSlots() {
     for (size_t i = 0; i < kMaxConcurrent; ++i) {
         if (slots_[i].inUse) continue;
-        if (nextPort_ > endPort_) continue;
+        const bool hasNext = portList_ != nullptr
+                                 ? nextListIndex_ < portListCount_
+                                 : nextPort_ <= endPort_;
+        if (!hasNext) continue;
+
+        const uint16_t port = portList_ != nullptr
+                                  ? portList_[nextListIndex_++]
+                                  : static_cast<uint16_t>(nextPort_++);
 
         const int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) continue;
+        if (fd < 0) {
+            ++scannedCount_;
+            continue;
+        }
         const int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
         const sockaddr_in addr =
-            makeSockAddr(target_, static_cast<uint16_t>(nextPort_));
+            makeSockAddr(target_, port);
         const int rc =
             connect(fd, reinterpret_cast<const sockaddr*>(&addr),
                    sizeof(addr));
@@ -68,15 +101,13 @@ void NetworkPortScanService::fillSlots() {
             // move on rather than leaving the slot stuck.
             close(fd);
             ++scannedCount_;
-            ++nextPort_;
             continue;
         }
 
         slots_[i].fd = fd;
-        slots_[i].port = static_cast<uint16_t>(nextPort_);
+        slots_[i].port = port;
         slots_[i].startMs = millis();
         slots_[i].inUse = true;
-        ++nextPort_;
     }
 }
 
@@ -139,7 +170,10 @@ void NetworkPortScanService::update() {
             break;
         }
     }
-    if (nextPort_ > endPort_ && !anyInUse) {
+    const bool allAssigned = portList_ != nullptr
+                                 ? nextListIndex_ >= portListCount_
+                                 : nextPort_ > endPort_;
+    if (allAssigned && !anyInUse) {
         active_ = false;
     }
 }

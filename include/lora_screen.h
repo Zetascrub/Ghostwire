@@ -1,0 +1,25 @@
+#pragma once
+
+#include "lora_service.h"
+#include "sd_logger.h"
+
+// LoRa Receive screen: radio status, packet/RSSI/SNR readout, and decoded
+// Meshtastic summary when available. Draw-only extraction (see
+// docs/screen-extraction.md and include/gnss_screen.h for the pattern this
+// follows) -- input handling (log toggle, profile toggle, restart) and the
+// packet-driven CSV log rows stay in main.cpp.
+class LoRaScreen {
+public:
+    LoRaScreen(LoRaService& service, SdLogger& logger)
+        : service_(service), logger_(logger) {}
+
+    void draw(bool fullDraw = true);
+
+private:
+    LoRaService& service_;
+    SdLogger& logger_;
+    // Skips redundant partial redraws when nothing shown on screen has
+    // changed since the last tick (was a function-static in main.cpp;
+    // equivalent here since exactly one LoRaScreen instance exists).
+    uint32_t lastSignature_ = UINT32_MAX;
+};

@@ -16,7 +16,13 @@ public:
 
     bool begin() override { return true; }
 
+    void setSettleDelayMs(uint16_t delayMs) { settleDelayMs_ = delayMs; }
+
     bool ConsumeSample(int16_t sample[2]) override {
+        // ESP8266Audio only guarantees the left sample for mono sources.
+        // Normalize it to stereo before sending interleaved PCM to M5Unified;
+        // otherwise the uninitialized right sample is heard as a loud tone.
+        MakeSampleStereo16(sample);
         if (used_ + 2 > kBufferSamples) {
             flush();
         }
@@ -51,8 +57,9 @@ public:
         while (speaker_->isPlaying(0) && millis() - waitStarted < 2000) {
             vTaskDelay(1);
         }
-        // Give I2S one final DMA interval before the next playRaw submission.
-        vTaskDelay(pdMS_TO_TICKS(150));
+        // Ordinary playback keeps a generous settling interval. Word-bank
+        // phrases can request a shorter interval for more natural pacing.
+        if (settleDelayMs_ > 0) vTaskDelay(pdMS_TO_TICKS(settleDelayMs_));
         return true;
     }
 
@@ -63,6 +70,7 @@ private:
     int16_t buffers_[3][kBufferSamples]{};
     size_t buffer_ = 0;
     size_t used_ = 0;
+    uint16_t settleDelayMs_ = 150;
 };
 
 void AudioService::setVolume(uint8_t volume) {
@@ -184,7 +192,7 @@ bool AudioService::recordWav(const char* path, uint32_t durationMs,
     return writtenSamples > 0;
 }
 
-bool AudioService::startMp3(const char* path) {
+bool AudioService::startMp3(const char* path, uint16_t settleDelayMs) {
     endMicrophone();
     stopPlayback();
     M5Cardputer.Speaker.begin();
@@ -203,6 +211,7 @@ bool AudioService::startMp3(const char* path) {
         output_ =
             new GhostwireAudioOutput(&M5Cardputer.Speaker, &stopRequested_);
     }
+    output_->setSettleDelayMs(settleDelayMs);
     decoder_ = new AudioGeneratorMP3();
     if (!decoder_->begin(id3_, output_)) {
         releasePlayback();

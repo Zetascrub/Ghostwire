@@ -28,6 +28,24 @@ jobs:
           pio pkg list -e cardputer_adv > dist/DEPENDENCIES.txt
           sha256sum dist/*.bin > dist/SHA256SUMS
           (cd sd-card-files && zip -r ../dist/ghostwire-${GITHUB_REF_NAME}-sd-card.zip .)
+      - name: Sign firmware for OTA
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::RELEASE_SIGNING_PRIVATE_KEY secret is not set; OTA-capable devices will refuse this release." >&2
+            exit 1
+          fi
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$RELEASE_SIGNING_PRIVATE_KEY" > "$key_file"
+          openssl dgst -sha256 -sign "$key_file" \
+            -out "dist/ghostwire-${GITHUB_REF_NAME}-firmware.bin.sig" \
+            "dist/ghostwire-${GITHUB_REF_NAME}-firmware.bin"
+          openssl dgst -sha256 -verify <(openssl ec -in "$key_file" -pubout 2>/dev/null) \
+            -signature "dist/ghostwire-${GITHUB_REF_NAME}-firmware.bin.sig" \
+            "dist/ghostwire-${GITHUB_REF_NAME}-firmware.bin"
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

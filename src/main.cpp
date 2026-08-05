@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
 #include <sys/time.h>
@@ -17,27 +18,56 @@
 
 #include "branding.h"
 #include "app_screen.h"
+#include "file_screens.h"
 #include "ble_scanner.h"
 #include "ble_keyboard_service.h"
+#include "ble_screens.h"
 #include "ble_spam_service.h"
+#include "ble_spam_screen.h"
 #include "biscuit_pro_client.h"
 #include "chameleon_ultra_client.h"
+#include "device_screens.h"
 #include "cyber_familiar.h"
+#include "familiar_screens.h"
+#include "menu_screens.h"
+#include "settings_names.h"
+#include "settings_screens.h"
+#include "ota_service.h"
+#include "ota_screens.h"
+#include "system_screens.h"
 #include "eapol_parser.h"
+#include "familiar_patrol_service.h"
 #include "ir_service.h"
+#include "ir_screen.h"
+#include "screen_chrome.h"
 #include "hid_service.h"
+#include "hid_presets.h"
+#include "usb_hid_screens.h"
+#include "audio_screens.h"
+#include "familiar_phrases.h"
+#include "qr_screens.h"
 #include "audio_service.h"
 #include "ai_service.h"
 #include "gnss_service.h"
+#include "gnss_screen.h"
 #include "lora_service.h"
+#include "lora_screen.h"
 #include "network_host_scan_service.h"
 #include "network_port_scan_service.h"
+#include "network_scan_screens.h"
 #include "ssh_service.h"
+#include "ssh_screens.h"
+#include "telnet_screens.h"
 #include "terminal_buffer.h"
 #include "pcap_logger.h"
 #include "sd_logger.h"
+#include "imu_screen.h"
 #include "war_drive_service.h"
 #include "wifi_sniffer_service.h"
+#include "wifi_sniffer_screen.h"
+#include "wifi_screens.h"
+#include "wifi_guardian_service.h"
+#include "wifi_guardian_screen.h"
 
 namespace {
 
@@ -50,17 +80,7 @@ constexpr int kSdCompatibilityPin = 5;
 constexpr uint32_t kSdFrequency = 4000000;
 constexpr size_t kVisibleRows = 6;
 
-struct FileEntry {
-    String name;
-    bool directory;
-    uint64_t size;
-};
-
-struct LogEntry {
-    String name;
-    String type;
-    uint64_t size;
-};
+// FileEntry / LogEntry: see include/file_screens.h.
 
 // One-off per-screen actions (export, deauth, disconnect, etc.) live in a
 // Tab-triggered menu instead of individually memorized letters -- see
@@ -70,18 +90,8 @@ struct ActionMenuItem {
     String label;
 };
 
-const char* const kMenuItems[] = {
-    "Wi-Fi", "BLE", "GPS", "Mesh", "War Drive", "Network", "Devices",
-    "AI Chat", "Cyber Familiar", "Tools", "Settings",
-};
-constexpr size_t kMenuCount = sizeof(kMenuItems) / sizeof(kMenuItems[0]);
-const char* const kHidPresetNames[] = {
-    "Ghostwire signature",
-    "Keyboard layout sample",
-    "Slow typing cadence",
-};
-constexpr size_t kHidPresetCount =
-    sizeof(kHidPresetNames) / sizeof(kHidPresetNames[0]);
+// Main menu items: see MenuScreens::kMenuItems/kMenuCount.
+// HID preset labels: see include/hid_presets.h.
 
 Screen currentScreen = Screen::MainMenu;
 size_t menuSelection = 0;
@@ -96,6 +106,7 @@ uint64_t sdCardSizeMiB = 0;
 String currentPath = "/";
 Screen audioReturnScreen = Screen::AudioFiles;
 Screen textPreviewReturnScreen = Screen::FileDetail;
+Screen evidenceReturnScreen = Screen::MainMenu;
 String nowPlayingName;
 String nowPlayingSource;
 String qrText;
@@ -118,6 +129,11 @@ uint32_t bootCount = 0;
 uint32_t abnormalResetCount = 0;
 bool bootHistorySaved = false;
 bool bootChimePending = false;
+// True when the running OTA partition is still in the bootloader's
+// ESP_OTA_IMG_PENDING_VERIFY state (see verifyOtaBootOrRollback()/
+// markBootHealthy() in setup()).
+bool otaPendingVerify = false;
+constexpr uint8_t kMaxBootAttemptsBeforeRollback = 3;
 unsigned long bootChimeDeadlineMs = 0;
 unsigned long nextBootChimeAttemptMs = 0;
 String bootChimeStatus = "Disabled";
@@ -130,12 +146,21 @@ std::vector<String> previewLines;
 size_t previewTopLine = 0;
 size_t previewColumn = 0;
 bool previewTruncated = false;
+FileScreens fileScreens(files, listSelection, listOffset, currentPath,
+                        sdAvailable, previewLines, previewTopLine,
+                        previewColumn, previewTruncated, currentScreen);
+LogScreens logScreens(logSessions, logSelection, logOffset, sdAvailable,
+                      selectedLogRows, currentScreen);
 std::vector<wifi_ap_record_t> accessPoints;
 std::vector<BleDeviceInfo> bleDevices;
 std::vector<WifiProbeRecord> recentWifiProbes;
 BleScanner bleScanner;
 BleKeyboardService bleKeyboardService;
+BleScreens bleScreens(bleDevices, listSelection, listOffset, currentScreen,
+                      bleStatus, bleExportStatus, bleScanner,
+                      bleKeyboardService);
 BleSpamService bleSpamService;
+BleSpamScreen bleSpamScreen(bleSpamService);
 BiscuitProClient biscuitClient;
 String biscuitResultTitle;
 std::vector<String> biscuitResultLines;
@@ -143,6 +168,10 @@ size_t biscuitResultOffset = 0;
 bool biscuitWardriveActive = false;
 uint32_t biscuitWardriveApCount = 0;
 uint32_t biscuitWardriveBleCount = 0;
+BiscuitScreens biscuitScreens(biscuitClient, listSelection, listOffset,
+                              biscuitWardriveActive, biscuitWardriveApCount,
+                              biscuitWardriveBleCount, biscuitResultTitle,
+                              biscuitResultLines, biscuitResultOffset);
 std::vector<String> biscuitWardriveBssids;
 std::vector<String> biscuitWardriveBleMacs;
 String biscuitWardriveParseTail;
@@ -190,6 +219,9 @@ uint16_t telnetPort = 23;
 std::vector<String> telnetLines;
 String telnetPendingLine;
 String telnetStatus;
+TelnetScreens telnetScreens(telnetHostInput, telnetStatus, telnetClient,
+                            telnetHost, telnetPort, telnetLines,
+                            telnetPendingLine);
 unsigned long lastTelnetDraw = 0;
 TerminalEscState telnetEscState = TerminalEscState::None;
 constexpr size_t kMaxSshLines = 64;
@@ -202,6 +234,8 @@ String sshPasswordInput;
 String sshStatus;
 std::vector<String> sshLines;
 String sshPendingLine;
+SshScreens sshScreens(sshHostInput, sshStatus, sshUsername, sshHost, sshPort,
+                      sshPasswordInput, sshService, sshLines, sshPendingLine);
 TerminalEscState sshEscState = TerminalEscState::None;
 unsigned long lastSshDraw = 0;
 bool sshTrustPending = false;
@@ -209,30 +243,85 @@ String sshLocalEchoPending;
 String sshHistory[3];
 size_t sshHistoryIndex = 0;
 IrService irService;
+IrScreen irScreen(irService);
 HidService hidService;
 AudioService audioService;
 AiService aiService;
 CyberFamiliar cyberFamiliar;
+FamiliarPatrolService familiarPatrolService;
+FamiliarPatrolState lastFamiliarPatrolState = FamiliarPatrolState::Idle;
+unsigned long lastFamiliarPatrolDraw = 0;
+bool familiarPatrolContinuousChoice = false;
+uint8_t familiarPatrolIntervalIndex = 1;
+// kFamiliarPatrolIntervals / FamiliarReaction: see include/familiar_screens.h.
 uint8_t familiarPage = 0;
 unsigned long lastFamiliarDraw = 0;
 bool familiarIdleActive = false;
+bool familiarIdleDrawn = false;
+FamiliarReaction familiarReaction = FamiliarReaction::None;
+unsigned long familiarReactionUntil = 0;
+uint32_t familiarObservedPatrolHosts = 0;
+uint32_t familiarObservedOpenPorts = 0;
+String familiarSpeechBubble;
+unsigned long familiarSpeechBubbleUntil = 0;
+unsigned long lastFamiliarCueMs = 0;
+void triggerFamiliarReaction(FamiliarReaction reaction, uint32_t durationMs);
+void showFamiliarSpeech(const String& message, uint32_t durationMs);
 Screen lastFamiliarObservedScreen = Screen::MainMenu;
 String aiPrompt;
+String ttsLabStatus = "Word bank ready";
+uint8_t ttsLabPhrase = 0;
+uint32_t ttsLabPlaybackMs = 0;
 String aiNotice;
 size_t aiScrollLines = 0;
 String familiarWorkflowStatus;
+AiChatScreen aiChatScreen(aiService, aiPrompt, aiNotice, aiScrollLines);
+FamiliarScreens familiarScreens(
+    cyberFamiliar, familiarPatrolService, familiarPage, familiarWorkflowStatus,
+    familiarReaction, familiarReactionUntil, familiarSpeechBubble,
+    familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
+    familiarPatrolIntervalIndex, sdAvailable);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
+// Familiar phrase word bank: see include/familiar_phrases.h.
+constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
+String familiarWordPath(const char* word) {
+    return String(kFamiliarAudioPath) + word + ".mp3";
+}
+int8_t familiarVoicePhrase = -1;
+int8_t familiarVoicePending = -1;
+uint8_t familiarVoiceWord = 0;
+unsigned long familiarVoiceReadyMs = 0;
 constexpr char kAiRecordingPath[] = "/ghostwire/ai_voice.wav";
 GnssService gnssService;
+SdLogger gnssLogger;
+GnssScreen gnssScreen(gnssService, gnssLogger);
+NetworkScanScreens networkScanScreens(
+    warDriveService, gnssService, listSelection, listOffset,
+    networkHostScanService, networkHostResults, networkHostScanExportStatus,
+    networkPortScanService, networkPortResults, networkPortScanExportStatus,
+    networkPortScanTarget, networkPortScanIsFull);
 LoRaService loraService;
 WifiSnifferService wifiSnifferService;
+WifiGuardianService wifiGuardianService;
 SdLogger imuLogger;
-SdLogger gnssLogger;
 SdLogger loraLogger;
+LoRaScreen loraScreen(loraService, loraLogger);
 SdLogger wifiSnifferLogger;
+SdLogger guardianEventLogger;
 SdLogger chameleonLogger;
+ChameleonScreen chameleonScreen(chameleonClient, chameleonHasReadings,
+                                chameleonAppMajor, chameleonAppMinor,
+                                chameleonBatteryMv, chameleonBatteryPct,
+                                chameleonScanAttempted, chameleonHfFound,
+                                chameleonHfTag, chameleonLfFound, chameleonLfId,
+                                chameleonWorkflowStatus, chameleonContinuousScan,
+                                chameleonLogger);
 SdLogger bleCaptureLogger;
 PcapLogger wifiPassiveCaptureLogger;
+WifiSnifferScreen wifiSnifferScreen(wifiSnifferService,
+                                    wifiPassiveCaptureLogger,
+                                    recentWifiProbes);
+PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
 Preferences preferences;
 std::vector<String> audioFiles;
@@ -242,6 +331,12 @@ size_t duckyUnsupportedCount = 0;
 uint32_t duckyDeclaredDelayMs = 0;
 String duckyRunStatus;
 uint16_t microphoneLevel = 0;
+UsbHidScreens usbHidScreens(listSelection, listOffset, duckyScripts,
+                           duckyCommandCount, duckyUnsupportedCount,
+                           duckyDeclaredDelayMs, duckyRunStatus);
+AudioScreens audioScreens(listSelection, listOffset, ttsLabPhrase, ttsLabStatus,
+                          ttsLabPlaybackMs, microphoneLevel, audioFiles);
+QrScreens qrScreens(qrText);
 int bleCaptureRssiFilter = -100;
 unsigned long lastBleCaptureDraw = 0;
 bool bleCaptureUiDirty = false;
@@ -251,13 +346,26 @@ uint8_t speakerVolume = 96;
 uint8_t screenBrightness = 128;
 uint16_t screenTimeoutSeconds = 30;
 bool bootSoundEnabled = true;
-bool fastBootEnabled = false;
+uint8_t bootSpeedIndex = 1;
 bool saveWifiCredentials = false;
 bool autoConnectWifi = false;
 bool cyberdeckIdleEnabled = false;
+uint8_t cyberdeckIdleStyle = 0;
+bool cardNavigationEnabled = false;
+MenuScreens menuScreens(listSelection, listOffset, menuSelection,
+                        cardNavigationEnabled, cyberFamiliar,
+                        wifiGuardianService, familiarPatrolService,
+                        warDriveService, sdAvailable);
 size_t themeIndex = 0;
 uint8_t bootAnimationIndex = 0;
 uint8_t bootSoundIndex = 0;
+uint8_t familiarCueIndex = 0;
+SettingsScreens settingsScreens(
+    listSelection, listOffset, speakerVolume, screenBrightness,
+    screenTimeoutSeconds, cyberdeckIdleEnabled, themeIndex, familiarCueIndex,
+    cardNavigationEnabled, cyberdeckIdleStyle, bootSoundEnabled,
+    bootSoundIndex, bootAnimationIndex, bootSpeedIndex, saveWifiCredentials,
+    autoConnectWifi, placeholderTitle);
 bool screenSleeping = false;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
@@ -266,8 +374,19 @@ uint8_t cyberdeckRainSpeed[kCyberdeckColumns]{};
 unsigned long lastCyberdeckDraw = 0;
 uint32_t cyberdeckLastWifiCount = 0;
 uint32_t cyberdeckLastBleCount = 0;
+M5Canvas cyberdeckIdleCanvas(&M5Cardputer.Display);
+bool cyberdeckIdleCanvasReady = false;
+constexpr size_t kIdleNodeCount = 12;
+int16_t idleNodeX[kIdleNodeCount]{};
+int16_t idleNodeY[kIdleNodeCount]{};
+int8_t idleNodeDx[kIdleNodeCount]{};
+int8_t idleNodeDy[kIdleNodeCount]{};
 bool clockSynced = false;
 String clockStatus = "Waiting for GNSS UTC";
+SystemScreens systemScreens(listSelection, listOffset, diagnosticExportStatus,
+                            clockSynced, clockStatus);
+OtaService otaService;
+OtaScreens otaScreens(otaService);
 unsigned long lastClockSyncAttempt = 0;
 unsigned long lastHeaderStatusDraw = 0;
 unsigned long lastTimeStatusDraw = 0;
@@ -279,6 +398,13 @@ unsigned long lastGnssLog = 0;
 unsigned long lastLoRaDraw = 0;
 uint32_t lastLoggedLoRaPacket = 0;
 unsigned long lastWifiSnifferDraw = 0;
+unsigned long lastGuardianDraw = 0;
+String guardianLastEvent = "No alerts observed";
+WifiGuardianScreen wifiGuardianScreen(wifiGuardianService, wifiSnifferService,
+                                      guardianEvidenceLogger,
+                                      guardianLastEvent);
+uint8_t guardianLastChannel = 0;
+int8_t guardianLastRssi = 0;
 unsigned long lastBleSpamDraw = 0;
 unsigned long lastBleKeyboardDraw = 0;
 constexpr size_t kMaxRecentWifiProbes = 8;
@@ -287,6 +413,13 @@ uint32_t handshakeEapolFrameCount = 0;
 bool handshakeMessageSeen[5] = {};  // Index 1-4 used; 0 unused.
 bool handshakePmkidFound = false;
 uint8_t handshakePmkid[16] = {};
+WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
+                        wifiStatus, wifiExportStatus, wifiDeauthStatus,
+                        wifiSnifferService, handshakeEapolFrameCount,
+                        handshakeMessageSeen, handshakePmkidFound,
+                        handshakePmkid, handshakeCaptureLogger,
+                        wifiConnectSavedSsid, wifiConnectSsid,
+                        wifiConnectPasswordInput, wifiConnectStatusText);
 unsigned long lastImuDraw = 0;
 unsigned long lastImuLog = 0;
 m5::imu_data_t imuData{};
@@ -296,6 +429,9 @@ uint16_t imuCalibrationSamples = 0;
 float gyroOffsetX = 0.0F;
 float gyroOffsetY = 0.0F;
 float gyroOffsetZ = 0.0F;
+ImuScreen imuScreen(imuAvailable, imuData, imuCalibrating,
+                    imuCalibrationSamples, gyroOffsetX, gyroOffsetY,
+                    gyroOffsetZ, imuLogger);
 float gyroCalibrationSumX = 0.0F;
 float gyroCalibrationSumY = 0.0F;
 float gyroCalibrationSumZ = 0.0F;
@@ -304,30 +440,24 @@ constexpr uint8_t kDefaultVolume = 96;
 constexpr uint8_t kDefaultBrightness = 128;
 constexpr uint16_t kDefaultScreenTimeout = 30;
 constexpr bool kDefaultBootSound = true;
-constexpr bool kDefaultFastBoot = false;
+constexpr uint8_t kDefaultBootSpeed = 1;
 constexpr bool kDefaultSaveWifiCredentials = false;
 constexpr bool kDefaultAutoConnectWifi = false;
 constexpr bool kDefaultCyberdeckIdle = false;
+constexpr uint8_t kDefaultCyberdeckIdleStyle = 0;
+constexpr bool kDefaultCardNavigation = false;
 constexpr uint8_t kDefaultBootAnimation = 0;
 constexpr uint8_t kDefaultBootSoundPreset = 0;
+constexpr uint8_t kDefaultFamiliarCue = 0;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 constexpr size_t kSystemDiagnosticCount = 22;
-const char* const kBootAnimationNames[] = {
-    "System Console", "Cipher Reveal", "Radar Sweep", "Minimal",
-    "Neon Breach", "Hacker Terminal", "Silly Bounce", "Synthwave Grid",
-};
-constexpr size_t kBootAnimationCount =
-    sizeof(kBootAnimationNames) / sizeof(kBootAnimationNames[0]);
-const char* const kBootSoundNames[] = {
-    "Classic Chime", "Hero Signal", "Arcade Ready",
-    "Starship", "Mystic Spark",
-};
-constexpr size_t kBootSoundCount =
-    sizeof(kBootSoundNames) / sizeof(kBootSoundNames[0]);
+// Boot/settings name tables: see include/settings_names.h.
 
 String csvSafePayload(const String& payload);
 String utcTimestamp();
 void drawCurrentScreen();
+void beginCyberdeckIdle();
+void drawCyberdeckIdle();
 
 void applySettings() {
     audioService.setVolume(speakerVolume);
@@ -339,13 +469,17 @@ void saveSettings() {
     preferences.putUChar("brightness", screenBrightness);
     preferences.putUShort("timeout", screenTimeoutSeconds);
     preferences.putBool("boot_sound", bootSoundEnabled);
-    preferences.putBool("fast_boot", fastBootEnabled);
+    preferences.putUChar("boot_speed", bootSpeedIndex);
+    preferences.remove("fast_boot");
     preferences.putBool("save_wifi", saveWifiCredentials);
     preferences.putBool("auto_wifi", autoConnectWifi);
     preferences.putBool("cyber_idle", cyberdeckIdleEnabled);
+    preferences.putUChar("idle_style", cyberdeckIdleStyle);
+    preferences.putBool("nav_cards", cardNavigationEnabled);
     preferences.putUChar("theme", static_cast<uint8_t>(themeIndex));
     preferences.putUChar("boot_anim", bootAnimationIndex);
     preferences.putUChar("boot_tone", bootSoundIndex);
+    preferences.putUChar("fam_cue", familiarCueIndex);
 }
 
 void restoreDefaultSettings() {
@@ -353,10 +487,12 @@ void restoreDefaultSettings() {
     screenBrightness = kDefaultBrightness;
     screenTimeoutSeconds = kDefaultScreenTimeout;
     bootSoundEnabled = kDefaultBootSound;
-    fastBootEnabled = kDefaultFastBoot;
+    bootSpeedIndex = kDefaultBootSpeed;
     saveWifiCredentials = kDefaultSaveWifiCredentials;
     autoConnectWifi = kDefaultAutoConnectWifi;
     cyberdeckIdleEnabled = kDefaultCyberdeckIdle;
+    cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
+    cardNavigationEnabled = kDefaultCardNavigation;
     preferences.remove("wifi_ssid");
     preferences.remove("wifi_pass");
     wifiConnectSavedSsid = "";
@@ -364,6 +500,7 @@ void restoreDefaultSettings() {
     themeIndex = 0;
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
+    familiarCueIndex = kDefaultFamiliarCue;
     Branding::applyTheme(themeIndex);
     applySettings();
     saveSettings();
@@ -378,6 +515,61 @@ void recoverKeyboardAfterBlockingOperation() {
         M5Cardputer.update();
         delay(10);
     }
+}
+
+// Queries the public repo's latest release (see OtaService::checkForUpdate)
+// and lands on Screen::OtaCheck either way -- same "please wait" blocking
+// convention as scanWifiNetworks()/connectSsh().
+void checkForFirmwareUpdate() {
+    currentScreen = Screen::OtaCheck;
+    ScreenChrome::drawHeader("Firmware Update");
+    M5Cardputer.Display.setTextColor(Branding::warning, Branding::background);
+    M5Cardputer.Display.setCursor(8, 36);
+    M5Cardputer.Display.print("Checking for updates...");
+    ScreenChrome::drawFooter("Please wait");
+    otaService.checkForUpdate(Branding::version);
+    recoverKeyboardAfterBlockingOperation();
+    drawCurrentScreen();
+}
+
+// Downloads, verifies, and flashes the release found by a prior
+// checkForFirmwareUpdate(). Blocking, with periodic progress redraws and
+// Esc-to-cancel polling inside the progress callback -- same pattern as
+// waitDuckyDelay(). Reboots on success; otherwise returns to Screen::OtaCheck
+// with the failure reason so the operator can retry or back out.
+void installFirmwareUpdate() {
+    currentScreen = Screen::OtaInstalling;
+    otaScreens.drawInstalling();
+    unsigned long lastRedrawMs = 0;
+    const OtaService::InstallResult result = otaService.downloadAndInstall(
+        [&](size_t /*downloaded*/, size_t /*total*/) -> bool {
+            M5Cardputer.update();
+            if (M5Cardputer.Keyboard.isChange() &&
+                M5Cardputer.Keyboard.isPressed() &&
+                M5Cardputer.Keyboard.keysState().esc) {
+                return false;
+            }
+            const unsigned long now = millis();
+            if (now - lastRedrawMs >= 150) {
+                lastRedrawMs = now;
+                otaScreens.drawInstalling(false);
+            }
+            return true;
+        });
+    recoverKeyboardAfterBlockingOperation();
+    if (result == OtaService::InstallResult::Success) {
+        ScreenChrome::drawHeader("Firmware Update");
+        M5Cardputer.Display.setTextColor(Branding::accent, Branding::background);
+        M5Cardputer.Display.setCursor(8, 40);
+        M5Cardputer.Display.print("Update installed.");
+        M5Cardputer.Display.setCursor(8, 58);
+        M5Cardputer.Display.print("Restarting...");
+        delay(1500);
+        ESP.restart();
+        return;
+    }
+    currentScreen = Screen::OtaCheck;
+    drawCurrentScreen();
 }
 
 float sampleBatteryVoltage() {
@@ -472,9 +664,15 @@ void drawHeaderStatus(bool force = false) {
     auto& display = M5Cardputer.Display;
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
     const bool captureActive = wifiSnifferService.isActive() ||
+                               wifiGuardianService.isActive() ||
                                bleSpamService.isActive() ||
                                warDriveService.isActive() ||
-                               handshakeCaptureLogger.isActive();
+                               handshakeCaptureLogger.isActive() ||
+                               bleCaptureLogger.isActive() ||
+                               gnssLogger.isActive() ||
+                               loraLogger.isActive() ||
+                               imuLogger.isActive() ||
+                               familiarPatrolService.isActive();
     const uint8_t battery = batteryPercentage();
     const uint32_t clockMinute =
         clockSynced ? static_cast<uint32_t>(time(nullptr) / 60) : 0;
@@ -671,13 +869,22 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'f', "Cycle RSSI filter (" +
                               String(bleCaptureRssiFilter) + " dBm)"}};
         case Screen::CyberFamiliar:
-            return {{'p', "Pet familiar"},
+            return {{'a', familiarPatrolService.isActive()
+                              ? "Open active patrol"
+                              : "Start Familiar Patrol"},
+                    {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
                                                    : "Enable idle watch"},
+                    {'w', "Start idle watch now"},
                     {'x', "Export familiar record"},
                     {'g', "Import capture logs"},
                     {'z', "Reset familiar progress"}};
+        case Screen::FamiliarPatrol:
+            if (familiarPatrolService.isActive()) {
+                return {{'x', "Stop patrol"}};
+            }
+            return {};
         case Screen::System:
             return {{'e', "Export diagnostics"}};
         case Screen::TimeStatus:
@@ -729,17 +936,22 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
 void drawActionMenu() {
     auto& display = M5Cardputer.Display;
     const int itemCount = static_cast<int>(actionMenuItems.size());
+    const int visibleCount = std::min(itemCount, 6);
+    const int firstVisible = std::max(
+        0, std::min(static_cast<int>(actionMenuSelection) - visibleCount + 1,
+                    itemCount - visibleCount));
     const int rowHeight = 16;
-    const int boxHeight = itemCount * rowHeight + 10;
+    const int boxHeight = visibleCount * rowHeight + 10;
     const int boxWidth = display.width() - 40;
     const int boxX = 20;
     const int boxY = std::max(22, (display.height() - boxHeight) / 2);
 
     display.fillRect(boxX, boxY, boxWidth, boxHeight, Branding::panel);
     display.drawRect(boxX, boxY, boxWidth, boxHeight, Branding::accent);
-    for (int i = 0; i < itemCount; ++i) {
+    for (int row = 0; row < visibleCount; ++row) {
+        const int i = firstVisible + row;
         const bool selected = static_cast<size_t>(i) == actionMenuSelection;
-        const int rowY = boxY + 5 + i * rowHeight;
+        const int rowY = boxY + 5 + row * rowHeight;
         display.fillRect(boxX + 2, rowY, boxWidth - 4, rowHeight - 2,
                          selected ? Branding::accent : Branding::panel);
         display.setTextColor(selected ? Branding::background : Branding::text,
@@ -749,243 +961,156 @@ void drawActionMenu() {
     }
 }
 
-void drawMainMenu() {
-    drawHeader(Branding::productName);
-    drawHeaderPosition(menuSelection + 1, kMenuCount);
-    const size_t offset =
-        menuSelection >= kVisibleRows ? menuSelection - kVisibleRows + 1 : 0;
-    for (size_t row = 0; row < kVisibleRows && row + offset < kMenuCount;
-         ++row) {
-        drawListRow(row, kMenuItems[row + offset],
-                    row + offset == menuSelection);
-    }
-    drawFooter("Fn+;/.: move   Enter: open");
-}
-
-void appendWrappedAiLines(std::vector<String>& lines, const String& prefix,
-                          const String& text) {
-    constexpr size_t width = 38;
-    String remaining = prefix + text;
-    remaining.replace("\r", "");
-    while (!remaining.isEmpty()) {
-        int newline = remaining.indexOf('\n');
-        size_t take = std::min(width, remaining.length());
-        if (newline >= 0 && static_cast<size_t>(newline) < take) {
-            take = static_cast<size_t>(newline);
-        } else if (take < remaining.length()) {
-            const int space = remaining.substring(0, take + 1).lastIndexOf(' ');
-            if (space > 4) take = static_cast<size_t>(space);
-        }
-        lines.push_back(remaining.substring(0, take));
-        size_t remove = take;
-        while (remove < remaining.length() &&
-               (remaining[remove] == ' ' || remaining[remove] == '\n')) {
-            ++remove;
-        }
-        remaining.remove(0, remove);
-        if (take == 0 && remove == 0) break;
-    }
-}
-
-void drawAiComposer() {
+void drawNavigationIcon(uint8_t icon, int cx, int cy) {
     auto& display = M5Cardputer.Display;
-    display.fillRect(4, 86, display.width() - 8, 31,
-                     Branding::background);
-    display.drawFastHLine(4, 85, display.width() - 8, Branding::panel);
+    const uint16_t color = Branding::accent;
+    display.drawRoundRect(cx - 26, cy - 26, 52, 52, 9, Branding::muted);
+    switch (icon) {
+        case 0:  // Familiar face
+            display.fillTriangle(cx - 18, cy - 10, cx - 11, cy - 23,
+                                 cx - 4, cy - 9, color);
+            display.fillTriangle(cx + 4, cy - 9, cx + 11, cy - 23,
+                                 cx + 18, cy - 10, color);
+            display.drawRoundRect(cx - 19, cy - 12, 38, 30, 8, color);
+            display.fillCircle(cx - 8, cy, 2, color);
+            display.fillCircle(cx + 8, cy, 2, color);
+            display.drawFastHLine(cx - 5, cy + 9, 10, color);
+            break;
+        case 1:  // Radio waves
+            display.fillCircle(cx, cy + 6, 3, color);
+            display.drawCircle(cx, cy + 6, 10, color);
+            display.drawCircle(cx, cy + 6, 17, color);
+            display.drawFastVLine(cx, cy - 17, 23, color);
+            break;
+        case 2:  // Network nodes
+            display.fillCircle(cx, cy - 15, 5, color);
+            display.fillCircle(cx - 17, cy + 14, 5, color);
+            display.fillCircle(cx + 17, cy + 14, 5, color);
+            display.drawLine(cx, cy - 10, cx - 14, cy + 10, color);
+            display.drawLine(cx, cy - 10, cx + 14, cy + 10, color);
+            display.drawFastHLine(cx - 12, cy + 14, 24, color);
+            break;
+        case 3:  // Evidence folder
+            display.fillRect(cx - 20, cy - 10, 40, 27, color);
+            display.fillRect(cx - 17, cy - 16, 17, 7, color);
+            display.drawFastHLine(cx - 13, cy - 2, 26,
+                                  Branding::background);
+            display.drawFastHLine(cx - 13, cy + 5, 20,
+                                  Branding::background);
+            break;
+        case 4:  // Field kit
+            display.drawRoundRect(cx - 20, cy - 11, 40, 29, 4, color);
+            display.drawRect(cx - 9, cy - 18, 18, 8, color);
+            display.drawFastHLine(cx - 19, cy, 38, color);
+            display.fillRect(cx - 4, cy - 3, 8, 7, color);
+            break;
+        case 5:  // Settings cog
+            display.drawCircle(cx, cy, 17, color);
+            display.drawCircle(cx, cy, 7, color);
+            display.drawFastHLine(cx - 24, cy, 48, color);
+            display.drawFastVLine(cx, cy - 24, 48, color);
+            display.drawLine(cx - 17, cy - 17, cx + 17, cy + 17, color);
+            display.drawLine(cx + 17, cy - 17, cx - 17, cy + 17, color);
+            break;
+        case 6:  // Bluetooth
+            display.drawFastVLine(cx, cy - 22, 44, color);
+            display.drawLine(cx, cy - 22, cx + 14, cy - 9, color);
+            display.drawLine(cx + 14, cy - 9, cx - 10, cy + 12, color);
+            display.drawLine(cx - 10, cy - 12, cx + 14, cy + 9, color);
+            display.drawLine(cx + 14, cy + 9, cx, cy + 22, color);
+            break;
+        case 7:  // Position marker
+            display.drawCircle(cx, cy - 5, 16, color);
+            display.fillCircle(cx, cy - 5, 5, color);
+            display.fillTriangle(cx - 12, cy + 5, cx + 12, cy + 5,
+                                 cx, cy + 23, color);
+            break;
+        case 8:  // AI notes
+            display.drawRoundRect(cx - 20, cy - 19, 40, 37, 5, color);
+            display.fillCircle(cx - 8, cy - 4, 2, color);
+            display.fillCircle(cx + 8, cy - 4, 2, color);
+            display.drawFastHLine(cx - 10, cy + 7, 20, color);
+            break;
+        default:  // Utilities
+            display.drawLine(cx - 17, cy + 17, cx + 17, cy - 17, color);
+            display.drawCircle(cx - 13, cy + 13, 7, color);
+            display.drawCircle(cx + 13, cy - 13, 7, color);
+            break;
+    }
+}
+
+void drawNavigationCard(const char* header, const String& label,
+                        const String& description, size_t selected,
+                        size_t count, uint8_t icon,
+                        const String& badge = "") {
+    drawHeader(header);
+    drawHeaderPosition(selected + 1, count);
+    auto& display = M5Cardputer.Display;
+    drawNavigationIcon(icon, 39, 65);
+    // Titles are wrapped deliberately below. M5GFX's implicit wrapping can
+    // otherwise push a final character onto an extra line at the right edge.
+    display.setTextWrap(false);
+    display.setTextSize(2);
+    display.setTextColor(Branding::text, Branding::background);
+    String titleFirst = label;
+    String titleSecond;
+    int descriptionY = 57;
+    if (titleFirst.length() > 13) {
+        int split = titleFirst.substring(0, 14).lastIndexOf(' ');
+        if (split < 5) split = 13;
+        titleSecond = titleFirst.substring(split + 1);
+        titleFirst = titleFirst.substring(0, split);
+        descriptionY = 68;
+    }
+    display.setCursor(76, titleSecond.isEmpty() ? 31 : 25);
+    display.print(titleFirst.substring(0, 13));
+    if (!titleSecond.isEmpty()) {
+        display.setCursor(76, 43);
+        display.print(titleSecond.substring(0, 13));
+    }
     display.setTextSize(1);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(6, 91);
-    const String promptLine = "> " + aiPrompt;
-    display.print(promptLine.substring(
-        promptLine.length() > 38 ? promptLine.length() - 38 : 0));
     display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(6, 106);
-    const String notice = aiNotice.isEmpty() ? aiService.status() : aiNotice;
-    display.print(notice.substring(0, 39));
+    String firstLine = description;
+    String secondLine;
+    if (firstLine.length() > 25) {
+        int split = firstLine.substring(0, 26).lastIndexOf(' ');
+        if (split < 8) split = 25;
+        secondLine = firstLine.substring(split + 1);
+        firstLine = firstLine.substring(0, split);
+    }
+    if (!titleSecond.isEmpty() && !badge.isEmpty()) secondLine = "";
+    display.setCursor(77, descriptionY);
+    display.print(firstLine.substring(0, 25));
+    display.setCursor(77, descriptionY + 13);
+    display.print(secondLine.substring(0, 25));
+    if (!badge.isEmpty()) {
+        const int width = static_cast<int>(badge.length()) * 6 + 10;
+        display.fillRoundRect(77, 88, width, 15, 4, Branding::accent);
+        display.setTextColor(Branding::background, Branding::accent);
+        display.setCursor(82, 92);
+        display.print(badge);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const int x = 120 - static_cast<int>(count * 5) +
+                      static_cast<int>(i * 10);
+        if (i == selected) display.fillCircle(x, 108, 3, Branding::accent);
+        else display.drawCircle(x, 108, 2, Branding::muted);
+    }
+    drawFooter("Left/Right: browse   Enter: open");
+    display.setTextWrap(true);
 }
 
-void drawAiChat() {
-    String title = "AI: " + String(aiService.providerName());
-    drawHeader(title.c_str());
-    auto& display = M5Cardputer.Display;
-    display.setTextSize(1);
-    std::vector<String> lines;
-    for (const auto& turn : aiService.history()) {
-        appendWrappedAiLines(lines, turn.role == "user" ? "> " : "< ",
-                             turn.text);
-    }
-    constexpr size_t shown = 4;
-    const size_t maxScroll = lines.size() > shown ? lines.size() - shown : 0;
-    if (aiScrollLines > maxScroll) aiScrollLines = maxScroll;
-    const size_t end = lines.size() > aiScrollLines
-                           ? lines.size() - aiScrollLines
-                           : 0;
-    const size_t start = end > shown ? end - shown : 0;
-    for (size_t index = start; index < end; ++index) {
-        display.setTextColor(lines[index].startsWith("> ")
-                                 ? Branding::accent
-                                 : Branding::text,
-                             Branding::background);
-        display.setCursor(6, 27 + (index - start) * 14);
-        display.print(lines[index].substring(0, 39));
-    }
-    drawAiComposer();
-    drawFooter("Up/Down scroll Enter send Tab provider");
-}
+// Main/Observe/Field kit menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-const char* authName(wifi_auth_mode_t mode) {
-    switch (mode) {
-        case WIFI_AUTH_OPEN: return "OPEN";
-        case WIFI_AUTH_WEP: return "WEP";
-        case WIFI_AUTH_WPA_PSK: return "WPA";
-        case WIFI_AUTH_WPA2_PSK: return "WPA2";
-        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA+2";
-        case WIFI_AUTH_WPA3_PSK: return "WPA3";
-        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2+3";
-        default: return "SEC";
-    }
-}
+// AI Chat screen: see include/familiar_screens.h/src/familiar_screens.cpp.
 
-void drawWifiRecon() {
-    drawHeader("Wi-Fi Discovery");
-    normalizeListPosition(accessPoints.size());
-    drawHeaderPosition(listSelection + 1, accessPoints.size());
-    if (accessPoints.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(wifiStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < accessPoints.size();
-             ++row) {
-            const auto& ap = accessPoints[row + listOffset];
-            String ssid = reinterpret_cast<const char*>(ap.ssid);
-            if (ssid.isEmpty()) ssid = "<hidden>";
-            String suffix = String(ap.primary) + "/" + String(ap.rssi);
-            drawListRow(row, ssid, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter(wifiExportStatus.isEmpty()
-                   ? "R: scan  Enter: details  Tab: actions  Q: back"
-                   : wifiExportStatus.c_str());
-}
+// Wi-Fi auth-mode label: see WifiScreens::authName.
 
-void drawWifiChannelAnalyzer() {
-    drawHeader("2.4 GHz Channels");
-    auto& display = M5Cardputer.Display;
-    uint8_t counts[14]{};
-    int strongest[14];
-    for (int channel = 0; channel < 14; ++channel) strongest[channel] = -100;
-    for (const auto& ap : accessPoints) {
-        if (ap.primary < 1 || ap.primary > 13) continue;
-        ++counts[ap.primary];
-        strongest[ap.primary] = std::max(strongest[ap.primary],
-                                         static_cast<int>(ap.rssi));
-    }
+// Wi-Fi Discovery / Channel Analyzer screens: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-    int bestChannel = 1;
-    int bestScore = INT_MAX;
-    static constexpr int candidates[] = {1, 6, 11};
-    for (int candidate : candidates) {
-        int score = 0;
-        for (int channel = 1; channel <= 13; ++channel) {
-            const int distance = abs(candidate - channel);
-            if (distance > 4) continue;
-            const int signal = strongest[channel] <= -100
-                                   ? 0
-                                   : std::max(1, strongest[channel] + 101);
-            score += counts[channel] * signal * (5 - distance);
-        }
-        if (score < bestScore) {
-            bestScore = score;
-            bestChannel = candidate;
-        }
-    }
-
-    const int baseline = 103;
-    const int barWidth = 13;
-    const int gap = 4;
-    const int startX = 9;
-    display.drawFastHLine(startX, baseline, 13 * (barWidth + gap) - gap,
-                          Branding::muted);
-    for (int channel = 1; channel <= 13; ++channel) {
-        const int x = startX + (channel - 1) * (barWidth + gap);
-        const int height = std::min(62, static_cast<int>(counts[channel]) * 9);
-        const uint16_t colour = channel == bestChannel
-                                    ? Branding::accent
-                                    : (counts[channel] >= 4 ? Branding::warning
-                                                            : Branding::text);
-        if (height > 0) display.fillRect(x, baseline - height, barWidth, height,
-                                         colour);
-        display.setTextColor(channel == bestChannel ? Branding::accent
-                                                    : Branding::muted,
-                             Branding::background);
-        display.setCursor(x + (channel < 10 ? 4 : 1), baseline + 4);
-        display.print(channel);
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 27);
-    if (accessPoints.empty()) {
-        display.print("No scan data - press R");
-    } else {
-        display.printf("%u APs  Suggested channel: %d",
-                       static_cast<unsigned>(accessPoints.size()), bestChannel);
-    }
-    drawFooter("R: rescan   Q: back");
-}
-
-void drawWifiDetail() {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    drawHeader("Access Point");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 32);
-    display.printf("SSID: %s",
-                   ap.ssid[0] ? reinterpret_cast<const char*>(ap.ssid)
-                              : "<hidden>");
-    display.setCursor(8, 50);
-    display.printf("Channel: %u   RSSI: %d", ap.primary, ap.rssi);
-    display.setCursor(8, 68);
-    display.printf("Security: %s", authName(ap.authmode));
-    display.setCursor(8, 86);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    drawFooter(wifiDeauthStatus.isEmpty() ? "Tab: actions   Esc: back"
-                                         : wifiDeauthStatus.c_str());
-}
-
-void drawWifiDeauthConfirm() {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    String ssid = reinterpret_cast<const char*>(ap.ssid);
-    if (ssid.isEmpty()) ssid = "<hidden>";
-    drawHeader("Deauth AP?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 32);
-    display.print(ssid.substring(0, 30));
-    display.setCursor(8, 50);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 72);
-    display.print("Sends deauth frames to this AP.");
-    display.setCursor(8, 88);
-    display.print("Authorized targets only.");
-    drawFooter("Enter: DEAUTH   Backspace/Q: cancel");
-}
+// Wi-Fi Detail / Deauth Confirm screens: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
 void transmitWifiDeauth(const wifi_ap_record_t& ap) {
     drawHeader("Deauth AP?");
@@ -1054,75 +1179,13 @@ void transmitWifiDeauth(const wifi_ap_record_t& ap) {
                   " (ch " + String(static_cast<int>(channelResult)) + ")";
 }
 
-void drawWifiHandshakeCapture(bool fullDraw = true) {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    String ssid = reinterpret_cast<const char*>(ap.ssid);
-    if (ssid.isEmpty()) ssid = "<hidden>";
-    beginContentUpdate("Handshake Capture", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(
-        wifiSnifferService.isActive() ? Branding::accent : Branding::warning,
-        Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s  CH %u", ssid.substring(0, 20).c_str(), ap.primary);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    display.setCursor(8, 63);
-    display.printf(
-        "EAPOL frames: %lu",
-        static_cast<unsigned long>(handshakeEapolFrameCount));
-
-    display.setCursor(8, 80);
-    display.setTextColor(Branding::text, Branding::background);
-    display.print("Messages: ");
-    for (uint8_t message = 1; message <= 4; ++message) {
-        display.setTextColor(handshakeMessageSeen[message] ? Branding::accent
-                                                           : Branding::muted,
-                             Branding::background);
-        display.printf("M%u ", message);
-    }
-
-    display.setCursor(8, 97);
-    if (handshakePmkidFound) {
-        String pmkidHex;
-        pmkidHex.reserve(32);
-        for (uint8_t index = 0; index < 16; ++index) {
-            char byteText[3];
-            snprintf(byteText, sizeof(byteText), "%02X", handshakePmkid[index]);
-            pmkidHex += byteText;
-        }
-        display.setTextColor(Branding::accent, Branding::background);
-        display.printf("PMKID: %s", pmkidHex.c_str());
-    } else {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print("PMKID: none yet");
-    }
-
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 114);
-    if (handshakeCaptureLogger.isActive()) {
-        display.printf(
-            "REC %lu frames",
-            static_cast<unsigned long>(handshakeCaptureLogger.rowCount()));
-    } else {
-        display.print("Not recording");
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: stop");
-}
+// Handshake Capture screen: see include/wifi_screens.h/src/wifi_screens.cpp.
 
 void exportWifiResults() {
     if (!sdAvailable || accessPoints.empty()) {
         wifiExportStatus =
             sdAvailable ? "Nothing to export" : "Export failed: no SD card";
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     SdLogger logger;
@@ -1130,7 +1193,7 @@ void exportWifiResults() {
             "wifi",
             "timestamp_utc,ssid,bssid,channel,rssi_dbm,security")) {
         wifiExportStatus = "Export failed: " + logger.status();
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     for (const auto& ap : accessPoints) {
@@ -1142,7 +1205,7 @@ void exportWifiResults() {
                  ap.bssid[4], ap.bssid[5]);
         const String row = utcTimestamp() + "," + csvSafePayload(ssid) + "," +
                            bssid + "," + String(ap.primary) + "," +
-                           String(ap.rssi) + "," + authName(ap.authmode);
+                           String(ap.rssi) + "," + WifiScreens::authName(ap.authmode);
         if (!logger.append(row)) break;
     }
     String name = logger.path();
@@ -1152,7 +1215,7 @@ void exportWifiResults() {
     logger.stop();
     wifiExportStatus =
         success ? "Saved " + name : "Export failed: " + logger.status();
-    drawWifiRecon();
+    wifiScreens.drawRecon();
 }
 
 void scanWifiNetworks() {
@@ -1217,30 +1280,7 @@ void scanWifiNetworks() {
     drawCurrentScreen();
 }
 
-void drawWifiConnectSelect() {
-    drawHeader("Wi-Fi Connect");
-    normalizeListPosition(accessPoints.size());
-    drawHeaderPosition(listSelection + 1, accessPoints.size());
-    if (accessPoints.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(wifiStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < accessPoints.size();
-             ++row) {
-            const auto& ap = accessPoints[row + listOffset];
-            String ssid = reinterpret_cast<const char*>(ap.ssid);
-            if (ssid.isEmpty()) ssid = "<hidden>";
-            String suffix = String(ap.primary) + "/" + String(ap.rssi);
-            drawListRow(row, ssid, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter(wifiConnectSavedSsid.isEmpty()
-                   ? "R: rescan   Enter: select   Backspace/Q: back"
-                   : "R: rescan  Enter: select  Tab: actions  Q: back");
-}
+// Wi-Fi Connect picker: see include/wifi_screens.h/src/wifi_screens.cpp.
 
 void drawTextEntryRow(int y, const char* label, const String& value,
                       bool masked = false) {
@@ -1264,73 +1304,19 @@ void drawTextEntryRow(int y, const char* label, const String& value,
     }
 }
 
-void drawWifiConnectPassword() {
-    drawHeader("Wi-Fi Connect");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 36);
-    display.printf("SSID: %s", wifiConnectSsid.c_str());
-    drawTextEntryRow(54, "Password: ", wifiConnectPasswordInput, true);
-    drawFooter("Enter: connect   Esc: cancel");
-}
+// Wi-Fi Connect password screen: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-void drawWifiConnectStatus(bool fullDraw = true) {
-    beginContentUpdate("Wi-Fi Connect", fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool connected = WiFi.status() == WL_CONNECTED;
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("SSID: %s", wifiConnectSsid.c_str());
-    display.setCursor(8, 44);
-    display.print(wifiConnectStatusText);
-    display.setTextColor(Branding::text, Branding::background);
-    if (connected) {
-        display.setCursor(8, 58);
-        display.printf("IP: %s", WiFi.localIP().toString().c_str());
-        display.setCursor(8, 72);
-        display.printf("Gateway: %s", WiFi.gatewayIP().toString().c_str());
-        display.setCursor(8, 86);
-        display.printf("RSSI: %d dBm", WiFi.RSSI());
-    }
-    drawFooter("Tab: actions   Backspace/Q: back");
-}
+// Wi-Fi Connect status screen: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-void drawBleDiscovery() {
-    drawHeader("BLE Advertisement Sniffer");
-    normalizeListPosition(bleDevices.size());
-    drawHeaderPosition(listSelection + 1, bleDevices.size());
-    if (bleDevices.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(bleStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < bleDevices.size();
-             ++row) {
-            const BleDeviceInfo& device = bleDevices[row + listOffset];
-            drawListRow(row, device.name,
-                        row + listOffset == listSelection,
-                        String(device.rssi));
-        }
-    }
-    if (bleScanner.isContinuous()) {
-        drawFooter(("Tab: actions LIVE:" +
-                    String(bleScanner.advertisementCount()) + " D:" +
-                    String(bleScanner.droppedCount())).c_str());
-    } else {
-        drawFooter(bleExportStatus.isEmpty()
-                       ? "R: scan  Enter: details  Tab: actions  Q: back"
-                       : bleExportStatus.c_str());
-    }
-}
+// BLE Discovery screen: see include/ble_screens.h/src/ble_screens.cpp.
 
 void exportBleResults() {
     if (!sdAvailable || bleDevices.empty()) {
         bleExportStatus =
             sdAvailable ? "Nothing to export" : "Export failed: no SD card";
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     SdLogger logger;
@@ -1340,7 +1326,7 @@ void exportBleResults() {
             "advertisement_type,payload_bytes,service_count,service_uuids,"
             "manufacturer,manufacturer_data_hex,payload_hex")) {
         bleExportStatus = "Export failed: " + logger.status();
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     for (const auto& device : bleDevices) {
@@ -1364,7 +1350,7 @@ void exportBleResults() {
     logger.stop();
     bleExportStatus =
         success ? "Saved " + name : "Export failed: " + logger.status();
-    drawBleDiscovery();
+    bleScreens.drawDiscovery();
 }
 
 void scanBleDevices() {
@@ -1385,7 +1371,7 @@ void scanBleDevices() {
     recoverKeyboardAfterBlockingOperation();
     listSelection = 0;
     listOffset = 0;
-    drawBleDiscovery();
+    bleScreens.drawDiscovery();
 }
 
 // War Driving intentionally logs every scan result every phase, unlike the
@@ -1405,7 +1391,7 @@ void logWarDriveWifiResult(const WarDriveWifiResult& ap) {
     // WiGLE CSV 1.6: directly importable without a desktop conversion step.
     const String row =
         String(bssid) + "," + csvSafePayload(ssid) + "," +
-        csvSafePayload(String("[") + authName(ap.authmode) + "]") + "," +
+        csvSafePayload(String("[") + WifiScreens::authName(ap.authmode) + "]") + "," +
         utcTimestamp() + "," + String(ap.channel) + "," + String(ap.rssi) +
         "," + String(fix ? gnssService.latitude() : 0.0, 6) + "," +
         String(fix ? gnssService.longitude() : 0.0, 6) + "," +
@@ -1429,52 +1415,11 @@ void logWarDriveBleResult(const WarDriveBleResult& device) {
 }
 
 // Redraws only the lines that actually change, via targeted fillRect calls
-// instead of drawWarDrive()'s full drawHeader()-triggered screen clear --
+// instead of networkScanScreens.drawWarDrive()'s full drawHeader()-triggered screen clear --
 // called on every periodic tick, so a full-screen flicker there would be
 // very noticeable (and was, before this split).
-void drawWarDriveDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int width = display.width();
-
-    display.fillRect(0, 27, width, 13, Branding::background);
-    display.setTextColor(warDriveService.isActive() ? Branding::accent
-                                                     : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(warDriveService.isActive() ? "ACTIVE" : "STOPPED");
-
-    display.fillRect(0, 42, width, 13, Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 44);
-    if (gnssService.hasFix()) {
-        display.printf("Lat: %.6f  Lon: %.6f", gnssService.latitude(),
-                       gnssService.longitude());
-    } else {
-        display.print("GPS: no fix yet");
-    }
-
-    display.fillRect(0, 56, width, 13, Branding::background);
-    display.setCursor(8, 58);
-    display.printf("Phase: %s", warDriveService.currentPhaseName());
-
-    display.fillRect(0, 70, width, 13, Branding::background);
-    display.setCursor(8, 72);
-    display.printf(
-        "Unique APs: %lu",
-        static_cast<unsigned long>(warDriveService.wifiUniqueCount()));
-
-    display.fillRect(0, 84, width, 13, Branding::background);
-    display.setCursor(8, 86);
-    display.printf(
-        "Unique devices: %lu",
-        static_cast<unsigned long>(warDriveService.bleUniqueCount()));
-}
-
-void drawWarDrive() {
-    drawHeader("War Drive");
-    drawWarDriveDynamic();
-    drawFooter("R: start/stop   Backspace/Q: back");
-}
+// War Drive screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
 void exportNetworkHostResults() {
     if (!sdAvailable || networkHostResults.empty()) {
@@ -1499,62 +1444,8 @@ void exportNetworkHostResults() {
         success ? "Saved " + name : "Export failed: " + logger.status();
 }
 
-void drawNetworkHostScan(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(WiFi.status()) << 28) ^
-        (static_cast<uint32_t>(networkHostScanService.isActive()) << 27) ^
-        (static_cast<uint32_t>(networkHostScanService.scannedCount()) << 12) ^
-        static_cast<uint32_t>(networkHostResults.size());
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("Host Discovery", fullDraw);
-    auto& display = M5Cardputer.Display;
-    if (WiFi.status() != WL_CONNECTED) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 36);
-        display.print("Connect to Wi-Fi first");
-        drawFooter("Wi-Fi > Connect   Backspace/Q: back");
-        return;
-    }
-    normalizeListPosition(networkHostResults.size());
-    if (!networkHostScanService.isActive()) {
-        drawHeaderPosition(listSelection + 1, networkHostResults.size());
-    }
-    if (networkHostResults.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 36);
-        if (networkHostScanService.isActive()) {
-            display.printf(
-                "Scanning... %u/%u",
-                static_cast<unsigned>(networkHostScanService.scannedCount()),
-                static_cast<unsigned>(networkHostScanService.totalCount()));
-        } else {
-            display.print("No hosts found. Press R to scan.");
-        }
-    } else {
-        for (size_t row = 0; row < kVisibleRows &&
-                             row + listOffset < networkHostResults.size();
-             ++row) {
-            const auto& host = networkHostResults[row + listOffset];
-            drawListRow(row, host.ip.toString(),
-                       row + listOffset == listSelection);
-        }
-    }
-    String footer;
-    if (!networkHostScanExportStatus.isEmpty()) {
-        footer = networkHostScanExportStatus;
-    } else if (networkHostScanService.isActive()) {
-        footer = "Scanning " + String(networkHostScanService.scannedCount()) +
-                 "/" + String(networkHostScanService.totalCount()) +
-                 "  Found: " + String(networkHostResults.size());
-    } else {
-        footer = networkHostResults.empty()
-                     ? "R: start/stop  Backspace/Q: back"
-                     : "Enter: scan  Tab: actions  Q: back";
-    }
-    drawFooter(footer.c_str());
-}
+// Host Discovery screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
 const uint16_t kNetworkPortScanPorts[] = {21,  22,  23,  25,   53,  80,
                                           110, 139, 143, 443, 445, 3389,
@@ -1611,96 +1502,10 @@ void exportNetworkPortResults() {
         success ? "Saved " + name : "Export failed: " + logger.status();
 }
 
-void drawNetworkPortScan(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(networkPortScanService.isActive()) << 31) ^
-        (static_cast<uint32_t>(networkPortScanService.scannedCount()) << 12) ^
-        static_cast<uint32_t>(networkPortResults.size());
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    const String title = "Port Scan " + networkPortScanTarget.toString();
-    beginContentUpdate(title.c_str(), fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool fullActive =
-        networkPortScanIsFull && networkPortScanService.isActive();
-    if (networkPortResults.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 36);
-        if (fullActive) {
-            display.printf(
-                "Scanning... %u/%u",
-                static_cast<unsigned>(networkPortScanService.scannedCount()),
-                static_cast<unsigned>(networkPortScanService.totalCount()));
-        } else {
-            display.print("No open ports found");
-        }
-    } else {
-        normalizeListPosition(networkPortResults.size());
-        for (size_t row = 0; row < kVisibleRows &&
-                             row + listOffset < networkPortResults.size();
-             ++row) {
-            drawListRow(row, String(networkPortResults[row + listOffset]),
-                       row + listOffset == listSelection);
-        }
-    }
-    String footer;
-    if (!networkPortScanExportStatus.isEmpty()) {
-        footer = networkPortScanExportStatus;
-    } else if (fullActive) {
-        footer = "Scanning " + String(networkPortScanService.scannedCount()) +
-                 "/" + String(networkPortScanService.totalCount()) +
-                 "  Found: " + String(networkPortResults.size()) +
-                 "  Q: stop";
-    } else {
-        footer = "R: rescan  Tab: actions  Backspace/Q: back";
-    }
-    drawFooter(footer.c_str());
-}
+// Port Scan screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
-void drawTelnetConnect() {
-    drawHeader("Telnet Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    drawTextEntryRow(36, "Host: ", telnetHostInput);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 54);
-    display.print("Format: host or host:port (default 23)");
-    drawFooter(telnetStatus.isEmpty() ? "Enter: connect   Esc: cancel"
-                                      : telnetStatus.c_str());
-}
-
-// Redraws just the scrolling text area (content between header and
-// footer) -- called on every new byte from the remote host, so it must
-// not touch drawHeader()'s fillScreen()/drawFooter() or the whole
-// screen would flicker on every incoming character, the same lesson
-// drawWarDriveDynamic() already established.
-void drawTelnetSessionDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int top = 24;
-    const int bottom = display.height() - 15;
-    display.fillRect(0, top, display.width(), bottom - top,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-
-    std::vector<const String*> visible;
-    for (const auto& line : telnetLines) visible.push_back(&line);
-    visible.push_back(&telnetPendingLine);
-    const size_t total = visible.size();
-    const size_t shown = std::min(kVisibleRows, total);
-    for (size_t row = 0; row < shown; ++row) {
-        const String& line = *visible[total - shown + row];
-        display.setCursor(4, top + 2 + static_cast<int>(row) * 15);
-        display.print(line.substring(0, 39));
-    }
-}
-
-void drawTelnetSession() {
-    drawHeader(("Telnet " + telnetHost + ":" + String(telnetPort)).c_str());
-    drawTelnetSessionDynamic();
-    drawFooter(telnetClient.connected() ? "Esc: disconnect"
-                                        : "Disconnected   Esc: back");
-}
+// Telnet Client screens: see include/telnet_screens.h/src/telnet_screens.cpp.
 
 // Parses the optional ":port" suffix off telnetHostInput (defaulting to
 // 23), then does a single bounded blocking connect -- same
@@ -1724,7 +1529,7 @@ void connectTelnet() {
     }
     if (host.isEmpty()) {
         telnetStatus = "Enter a host";
-        drawTelnetConnect();
+        telnetScreens.drawConnect();
         return;
     }
 
@@ -1748,21 +1553,11 @@ void connectTelnet() {
         drawCurrentScreen();
     } else {
         telnetStatus = "Connection failed";
-        drawTelnetConnect();
+        telnetScreens.drawConnect();
     }
 }
 
-void drawSshConnect() {
-    drawHeader("SSH Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    drawTextEntryRow(36, "Target: ", sshHostInput);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 54);
-    display.print("Format: user@host or user@host:port");
-    drawFooter(sshStatus.isEmpty() ? "Enter: next   Tab: history"
-                                  : sshStatus.c_str());
-}
+// SSH Client screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 // Parses "user@host" or "user@host:port" (default 22) out of
 // sshHostInput. Returns false (and sets sshStatus) on a bad format
@@ -1834,47 +1629,7 @@ String sshFingerprintPreferenceKey() {
     return String(key);
 }
 
-void drawSshPassword() {
-    drawHeader("SSH Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 36);
-    display.printf("%s@%s:%u", sshUsername.c_str(), sshHost.c_str(), sshPort);
-    drawTextEntryRow(54, "Password: ", sshPasswordInput, true);
-    drawFooter(sshStatus.isEmpty() ? "Enter: connect   Esc: back"
-                                  : sshStatus.c_str());
-}
-
-// Redraws just the scrolling text area, same split/reasoning as
-// drawTelnetSessionDynamic() -- must not touch drawHeader()'s
-// fillScreen()/drawFooter() or the screen flickers on every incoming
-// byte.
-void drawSshSessionDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int top = 24;
-    const int bottom = display.height() - 15;
-    display.fillRect(0, top, display.width(), bottom - top,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-
-    std::vector<const String*> visible;
-    for (const auto& line : sshLines) visible.push_back(&line);
-    visible.push_back(&sshPendingLine);
-    const size_t total = visible.size();
-    const size_t shown = std::min(kVisibleRows, total);
-    for (size_t row = 0; row < shown; ++row) {
-        const String& line = *visible[total - shown + row];
-        display.setCursor(4, top + 2 + static_cast<int>(row) * 15);
-        display.print(line.substring(0, 39));
-    }
-}
-
-void drawSshSession() {
-    drawHeader(("SSH " + sshUsername + "@" + sshHost).c_str());
-    drawSshSessionDynamic();
-    drawFooter(sshService.isConnected() ? "Esc: disconnect"
-                                        : "Disconnected   Esc: back");
-}
+// SSH Password/Session screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 void connectSsh() {
     preferences.putUChar("ssh_stage", 4);
@@ -1907,7 +1662,7 @@ void connectSsh() {
         sshStatus = "Unknown host - Enter to trust/connect";
         preferences.putUChar("ssh_stage", 3);
         currentScreen = Screen::SshPassword;
-        drawSshPassword();
+        sshScreens.drawPassword();
         return;
     }
     struct SshConnectWork {
@@ -1978,92 +1733,17 @@ void connectSsh() {
         sshStatus = sshService.statusMessage();
         sshTrustPending = sshService.needsHostTrust();
         currentScreen = Screen::SshPassword;
-        drawSshPassword();
+        sshScreens.drawPassword();
     }
 }
 
-void drawBleDetail() {
-    if (bleDevices.empty() || listSelection >= bleDevices.size()) {
-        currentScreen = Screen::BleDiscovery;
-        drawBleDiscovery();
-        return;
-    }
-    const BleDeviceInfo& device = bleDevices[listSelection];
-    drawHeader("BLE Device");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 27);
-    display.printf("Name: %s", device.name.substring(0, 31).c_str());
-    display.setCursor(8, 42);
-    display.printf("%s  %d dBm", device.address.c_str(), device.rssi);
-    display.setCursor(8, 57);
-    display.printf("Addr type: %u  ADV: %u  %s", device.addressType,
-                   device.advertisementType,
-                   device.connectable ? "CONNECT" : "BEACON");
-    display.setCursor(8, 72);
-    display.printf("Mfr: %s", device.manufacturer.c_str());
-    display.setCursor(8, 87);
-    display.printf("Services (%u): %s", device.serviceCount,
-                   device.service.isEmpty()
-                       ? "none"
-                       : device.service.substring(0, 22).c_str());
-    display.setCursor(8, 102);
-    display.printf("Payload %uB: %s", device.payloadLength,
-                   device.payloadData.isEmpty()
-                       ? "not available"
-                       : device.payloadData.substring(0, 24).c_str());
-    drawFooter("Backspace/Q: results");
-}
+// BLE Device detail screen: see include/ble_screens.h/src/ble_screens.cpp.
 
-void drawInfrared() {
-    drawHeader("Infrared Self-Test");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 32);
-    display.printf("Onboard TX: GPIO %u", IrService::kTransmitPin);
-    display.setCursor(8, 49);
-    display.printf("Carrier:    %u kHz", IrService::kCarrierKhz);
-    display.setCursor(8, 66);
-    display.printf("Tests sent: %lu",
-                   static_cast<unsigned long>(irService.transmissionCount()));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 86);
-    display.print("RX requires an external receiver.");
-    display.setCursor(8, 102);
-    display.print("View emitter through phone camera.");
-    drawFooter("Enter/R: emit test burst  Backspace/Q: back");
-}
+// Infrared self-test screen: see include/ir_screen.h/src/ir_screen.cpp.
+// (First screen extracted out of this file -- see docs/screen-extraction.md.)
 
-void transmitInfraredSelfTest() {
-    drawHeader("Infrared Self-Test");
-    M5Cardputer.Display.setTextColor(Branding::warning,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 45);
-    M5Cardputer.Display.print("Transmitting test pattern...");
-    drawFooter("Point the IR end toward a camera");
-    irService.sendSelfTest();
-    recoverKeyboardAfterBlockingOperation();
-    Serial.printf("[ir] self-test burst=%lu pin=%u carrier=%u kHz\n",
-                  static_cast<unsigned long>(irService.transmissionCount()),
-                  IrService::kTransmitPin,
-                  IrService::kCarrierKhz);
-    drawInfrared();
-}
-
-void drawUsbHid() {
-    drawHeader("USB / HID");
-    constexpr size_t kUsbHidItemCount = kHidPresetCount + 1;
-    normalizeListPosition(kUsbHidItemCount);
-    for (size_t row = 0;
-         row < kVisibleRows && row + listOffset < kUsbHidItemCount; ++row) {
-        const size_t item = row + listOffset;
-        drawListRow(row,
-                    item < kHidPresetCount ? kHidPresetNames[item]
-                                           : "Run DuckyScript",
-                    item == listSelection);
-    }
-    drawFooter("Enter: review test  Backspace/Q: back");
-}
+// USB/HID and DuckyScript screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 void loadDuckyScripts() {
     duckyScripts.clear();
@@ -2126,48 +1806,8 @@ void preflightDuckyScript() {
     if (file) file.close();
 }
 
-void drawDuckyScripts() {
-    drawHeader("DuckyScript Files");
-    normalizeListPosition(duckyScripts.size());
-    drawHeaderPosition(listSelection + 1, duckyScripts.size());
-    if (duckyScripts.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                         Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print("No .txt/.duck scripts in");
-        M5Cardputer.Display.setCursor(8, 53);
-        M5Cardputer.Display.print("/ghostwire/scripts");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < duckyScripts.size();
-             ++row) {
-            drawListRow(row, duckyScripts[row + listOffset],
-                        row + listOffset == listSelection);
-        }
-    }
-    drawFooter("Enter: inspect  R: reload  Q: back");
-}
-
-void drawDuckyConfirm() {
-    drawHeader("Confirm DuckyScript");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 28);
-    display.print(duckyScripts[listSelection].substring(0, 35));
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 47);
-    display.printf("Commands: %u  Unsupported: %u",
-                   static_cast<unsigned>(duckyCommandCount),
-                   static_cast<unsigned>(duckyUnsupportedCount));
-    display.setCursor(8, 65);
-    display.printf("Declared delays: %lus",
-                   static_cast<unsigned long>(duckyDeclaredDelayMs / 1000));
-    display.setCursor(8, 83);
-    display.print("Focus the authorized USB host.");
-    display.setCursor(8, 101);
-    display.print("3 second cancelable countdown.");
-    drawFooter("Enter: RUN   Esc: cancel");
-}
+// DuckyScript Files/Confirm screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 bool waitDuckyDelay(uint32_t durationMs) {
     const unsigned long started = millis();
@@ -2245,32 +1885,8 @@ void runSelectedDuckyScript() {
     drawCurrentScreen();
 }
 
-void drawDuckyResult() {
-    drawHeader("DuckyScript Result");
-    M5Cardputer.Display.setTextColor(Branding::text, Branding::background);
-    M5Cardputer.Display.setCursor(8, 42);
-    M5Cardputer.Display.print(duckyRunStatus);
-    M5Cardputer.Display.setTextColor(Branding::muted, Branding::background);
-    M5Cardputer.Display.setCursor(8, 65);
-    M5Cardputer.Display.print("All HID keys released.");
-    drawFooter("Enter/Esc: scripts");
-}
-
-void drawUsbHidConfirmation() {
-    drawHeader("Confirm HID Test");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 31);
-    display.print("Focus a blank text editor now.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 51);
-    display.printf("Preset: %s", kHidPresetNames[listSelection]);
-    display.setCursor(8, 70);
-    display.print("This sends text only.");
-    display.setCursor(8, 88);
-    display.print("No commands or shortcuts.");
-    drawFooter("Enter: TYPE NOW  Backspace/Q: cancel");
-}
+// DuckyScript Result / USB HID Confirm screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 void runUsbHidPreset() {
     drawHeader("USB / HID Self-Test");
@@ -2285,52 +1901,13 @@ void runUsbHidPreset() {
     Serial.printf("[usb] HID preset=%u sent\n",
                   static_cast<unsigned>(listSelection));
     currentScreen = Screen::UsbHid;
-    drawUsbHid();
+    usbHidScreens.drawUsbHid();
 }
 
-void drawAudio() {
-    static const char* const items[] = {
-        "Speaker tone test", "Microphone level", "Play MP3 from SD",
-    };
-    drawHeader("Audio Self-Test");
-    normalizeListPosition(3);
-    for (size_t row = 0; row < 3; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open/run  Backspace/Q: back");
-}
+// Audio Self-Test / Familiar Phrase Lab screens: see
+// include/audio_screens.h/src/audio_screens.cpp.
 
-void drawMicrophone() {
-    drawHeader("Microphone Level");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 35);
-    display.printf("Input level: %u%%", microphoneLevel);
-    display.drawRect(8, 58, display.width() - 16, 22, Branding::muted);
-    display.fillRect(10, 60,
-                     (display.width() - 20) * microphoneLevel / 100, 18,
-                     microphoneLevel > 75 ? Branding::warning
-                                          : Branding::accent);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 93);
-    display.print("Speak or tap near the microphone.");
-    drawFooter("Backspace/Q: stop and return");
-}
-
-void updateMicrophoneMeter() {
-    auto& display = M5Cardputer.Display;
-    display.fillRect(8, 32, display.width() - 16, 18,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 35);
-    display.printf("Input level: %u%%", microphoneLevel);
-    display.fillRect(9, 59, display.width() - 18, 20,
-                     Branding::background);
-    display.fillRect(10, 60,
-                     (display.width() - 20) * microphoneLevel / 100, 18,
-                     microphoneLevel > 75 ? Branding::warning
-                                          : Branding::accent);
-}
+// Microphone Level screen: see include/audio_screens.h/src/audio_screens.cpp.
 
 void loadAudioFiles() {
     audioFiles.clear();
@@ -2356,27 +1933,7 @@ void loadAudioFiles() {
     listOffset = 0;
 }
 
-void drawAudioFiles() {
-    drawHeader("MP3 Files");
-    normalizeListPosition(audioFiles.size());
-    drawHeaderPosition(listSelection + 1, audioFiles.size());
-    if (audioFiles.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("No MP3 files in");
-        M5Cardputer.Display.setCursor(8, 55);
-        M5Cardputer.Display.print("/ghostwire/audio");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < audioFiles.size();
-             ++row) {
-            drawListRow(row, audioFiles[row + listOffset],
-                        row + listOffset == listSelection);
-        }
-    }
-    drawFooter("Enter: play  R: reload  Backspace/Q: back");
-}
+// MP3 Files screen: see include/audio_screens.h/src/audio_screens.cpp.
 
 void startSelectedMp3() {
     if (audioFiles.empty() || listSelection >= audioFiles.size()) return;
@@ -2395,40 +1952,12 @@ void startSelectedMp3() {
     nowPlayingName = audioFiles[listSelection];
     nowPlayingSource = "/ghostwire/audio";
     currentScreen = Screen::AudioPlaying;
-    drawHeader("Now Playing");
-    M5Cardputer.Display.setTextColor(Branding::text, Branding::background);
-    M5Cardputer.Display.setCursor(8, 40);
-    M5Cardputer.Display.print(audioFiles[listSelection].substring(0, 34));
-    M5Cardputer.Display.setTextColor(Branding::muted,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 64);
-    M5Cardputer.Display.print("MP3 from /ghostwire/audio");
-    drawFooter("Enter/Backspace/Q: stop");
+    audioScreens.drawNowPlaying(audioFiles[listSelection],
+                                "MP3 from /ghostwire/audio");
 }
 
-String formatFileSize(uint64_t bytes) {
-    if (bytes >= 1024ULL * 1024ULL) {
-        return String(static_cast<double>(bytes) / (1024.0 * 1024.0), 1) +
-               " MiB";
-    }
-    if (bytes >= 1024ULL) {
-        return String(static_cast<double>(bytes) / 1024.0, 1) + " KiB";
-    }
-    return String(bytes) + " bytes";
-}
-
-bool isMp3File(const String& name) {
-    String lower = name;
-    lower.toLowerCase();
-    return lower.endsWith(".mp3");
-}
-
-bool isPreviewableFile(const String& name) {
-    String lower = name;
-    lower.toLowerCase();
-    return lower.endsWith(".csv") || lower.endsWith(".txt") ||
-           lower.endsWith(".log");
-}
+// formatFileSize/isMp3File/isPreviewableFile: see
+// FileScreens::formatFileSize/isMp3File/isPreviewableFile.
 
 String selectedFilePath() {
     if (files.empty() || listSelection >= files.size()) return "";
@@ -2466,38 +1995,7 @@ void loadDirectory() {
     listOffset = 0;
 }
 
-void drawFiles() {
-    drawHeader("Files");
-    if (!sdAvailable) {
-        M5Cardputer.Display.setTextColor(Branding::warning,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 35);
-        M5Cardputer.Display.print("microSD unavailable");
-        M5Cardputer.Display.setCursor(8, 52);
-        M5Cardputer.Display.print("Press R to retry");
-    } else if (files.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 35);
-        M5Cardputer.Display.print("This folder is empty");
-    } else {
-        normalizeListPosition(files.size());
-        drawHeaderPosition(listSelection + 1, files.size());
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < files.size(); ++row) {
-            const auto& entry = files[row + listOffset];
-            String label = entry.directory ? "[" + entry.name + "]" : entry.name;
-            String suffix;
-            if (!entry.directory) {
-                suffix = entry.size >= 1024
-                             ? String(entry.size / 1024) + "K"
-                             : String(entry.size) + "B";
-            }
-            drawListRow(row, label, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter((currentPath + "   R: remount  Esc: up/back").c_str());
-}
+// Files browser screen: see include/file_screens.h/src/file_screens.cpp.
 
 String logTypeFromName(const String& name) {
     String lower = name;
@@ -2510,26 +2008,48 @@ String logTypeFromName(const String& name) {
     return "Other";
 }
 
+String evidenceTypeFromPath(const String& path, const String& name) {
+    if (path.startsWith("/ghostwire/assessments/")) return "Patrol";
+    return logTypeFromName(name);
+}
+
+void collectEvidenceFiles(const String& directoryPath, uint8_t depth) {
+    if (depth > 3 || logSessions.size() >= 256) return;
+    File directory = SD.open(directoryPath);
+    if (!directory || !directory.isDirectory()) return;
+    File entry = directory.openNextFile();
+    while (entry && logSessions.size() < 256) {
+        String name = entry.name();
+        const int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        String path = directoryPath;
+        if (!path.endsWith("/")) path += "/";
+        path += name;
+        if (entry.isDirectory()) {
+            entry.close();
+            collectEvidenceFiles(path, depth + 1);
+        } else {
+            // Temporary checkpoints are recovery state, not operator evidence.
+            if (!name.endsWith(".tmp") && !name.endsWith(".bak") &&
+                name != "active.json") {
+                logSessions.push_back(
+                    {name, evidenceTypeFromPath(path, name), path,
+                     entry.size()});
+            }
+            entry.close();
+        }
+        entry = directory.openNextFile();
+    }
+    directory.close();
+}
+
 void loadLogSessions() {
     logSessions.clear();
     logSelection = 0;
     logOffset = 0;
     if (!sdAvailable) return;
-    File directory = SD.open("/ghostwire/logs");
-    if (!directory || !directory.isDirectory()) return;
-    File entry = directory.openNextFile();
-    while (entry && logSessions.size() < 256) {
-        if (!entry.isDirectory()) {
-            String name = entry.name();
-            const int slash = name.lastIndexOf('/');
-            if (slash >= 0) name = name.substring(slash + 1);
-            logSessions.push_back(
-                {name, logTypeFromName(name), entry.size()});
-        }
-        entry.close();
-        entry = directory.openNextFile();
-    }
-    directory.close();
+    collectEvidenceFiles("/ghostwire/logs", 0);
+    collectEvidenceFiles("/ghostwire/assessments", 0);
     std::sort(logSessions.begin(), logSessions.end(),
               [](const LogEntry& left, const LogEntry& right) {
                   String a = left.name;
@@ -2540,49 +2060,11 @@ void loadLogSessions() {
               });
 }
 
-void normalizeLogPosition() {
-    if (logSessions.empty()) {
-        logSelection = 0;
-        logOffset = 0;
-        return;
-    }
-    if (logSelection >= logSessions.size()) {
-        logSelection = logSessions.size() - 1;
-    }
-    if (logSelection < logOffset) logOffset = logSelection;
-    if (logSelection >= logOffset + kVisibleRows) {
-        logOffset = logSelection - kVisibleRows + 1;
-    }
-}
+// Evidence/log sessions screen: see
+// include/file_screens.h/src/file_screens.cpp.
 
-void drawLogSessions() {
-    drawHeader("Logs / Sessions");
-    normalizeLogPosition();
-    drawHeaderPosition(logSelection + 1, logSessions.size());
-    if (!sdAvailable) {
-        M5Cardputer.Display.setTextColor(Branding::warning,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("microSD unavailable");
-    } else if (logSessions.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("No saved sessions");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && logOffset + row < logSessions.size();
-             ++row) {
-            const auto& entry = logSessions[logOffset + row];
-            drawListRow(row, entry.name,
-                        logOffset + row == logSelection, entry.type);
-        }
-    }
-    drawFooter("Enter: details   R: refresh   Q: back");
-}
-
-uint32_t countCsvRows(const String& name) {
-    File file = SD.open("/ghostwire/logs/" + name, FILE_READ);
+uint32_t countCsvRows(const String& path) {
+    File file = SD.open(path, FILE_READ);
     if (!file) return 0;
     uint32_t lines = 0;
     uint8_t buffer[256];
@@ -2604,73 +2086,18 @@ void openLogDetail() {
                                     Branding::background);
     M5Cardputer.Display.setCursor(8, 44);
     M5Cardputer.Display.print("Reading session metadata...");
-    selectedLogRows = countCsvRows(logSessions[logSelection].name);
+    String lower = logSessions[logSelection].name;
+    lower.toLowerCase();
+    selectedLogRows = lower.endsWith(".csv")
+                          ? countCsvRows(logSessions[logSelection].path)
+                          : 0;
     currentScreen = Screen::LogDetail;
 }
 
-void drawLogDetail() {
-    if (logSessions.empty() || logSelection >= logSessions.size()) {
-        currentScreen = Screen::LogSessions;
-        drawLogSessions();
-        return;
-    }
-    const auto& entry = logSessions[logSelection];
-    drawHeader("Session Details");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 31);
-    display.print(entry.name.substring(0, 37));
-    display.setCursor(8, 50);
-    display.printf("Subsystem: %s", entry.type.c_str());
-    display.setCursor(8, 69);
-    display.printf("Size: %s", formatFileSize(entry.size).c_str());
-    display.setCursor(8, 88);
-    display.printf("CSV data rows: %lu",
-                   static_cast<unsigned long>(selectedLogRows));
-    drawFooter("Enter: preview   Tab: actions   Q: sessions");
-}
+// Session Details screen: see include/file_screens.h/src/file_screens.cpp.
 
-void drawLogDeleteConfirm() {
-    drawHeader("Delete Session?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 40);
-    display.print(logSessions[logSelection].name.substring(0, 37));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 65);
-    display.print("This cannot be undone.");
-    drawFooter("Enter: DELETE   Backspace/Q: cancel");
-}
-
-void drawFileDetail() {
-    if (files.empty() || listSelection >= files.size()) {
-        currentScreen = Screen::Files;
-        drawFiles();
-        return;
-    }
-    const FileEntry& entry = files[listSelection];
-    drawHeader("File Details");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 31);
-    display.print(entry.name.substring(0, 36));
-    display.setCursor(8, 49);
-    display.printf("Type: %s", isMp3File(entry.name)
-                                   ? "MP3 audio"
-                                   : (isPreviewableFile(entry.name)
-                                          ? "Text / CSV"
-                                          : "File"));
-    display.setCursor(8, 67);
-    display.printf("Size: %s", formatFileSize(entry.size).c_str());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 85);
-    display.print(currentPath.substring(0, 36));
-    drawFooter(isMp3File(entry.name)
-                   ? "Enter: play   Backspace/Q: files"
-                   : (isPreviewableFile(entry.name)
-                          ? "Enter: preview   Backspace/Q: files"
-                          : "Backspace/Q: files"));
-}
+// Log Delete Confirm / File Details screens: see
+// include/file_screens.h/src/file_screens.cpp.
 
 bool loadTextPreview() {
     previewLines.clear();
@@ -2700,36 +2127,11 @@ bool loadTextPreview() {
     return true;
 }
 
-void drawTextPreview() {
-    drawHeader("Text Preview");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    if (previewLines.empty()) {
-        display.setCursor(8, 38);
-        display.print("(empty file)");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && previewTopLine + row < previewLines.size();
-             ++row) {
-            const String& source = previewLines[previewTopLine + row];
-            display.setCursor(4, 27 + row * 15);
-            if (previewColumn < source.length()) {
-                display.print(source.substring(previewColumn,
-                                               previewColumn + 39));
-            }
-        }
-    }
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(125, 7);
-    display.printf("%u/%u%s", static_cast<unsigned>(previewTopLine + 1),
-                   static_cast<unsigned>(previewLines.size()),
-                   previewTruncated ? "+" : "");
-    drawFooter("W/S: lines  A/D: columns  Q: back");
-}
+// Text Preview screen: see include/file_screens.h/src/file_screens.cpp.
 
 void playSelectedBrowserMp3() {
     if (files.empty() || listSelection >= files.size() ||
-        !isMp3File(files[listSelection].name)) {
+        !FileScreens::isMp3File(files[listSelection].name)) {
         return;
     }
     String path = currentPath;
@@ -2742,15 +2144,7 @@ void playSelectedBrowserMp3() {
     nowPlayingName = files[listSelection].name;
     nowPlayingSource = currentPath;
     currentScreen = Screen::AudioPlaying;
-    drawHeader("Now Playing");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 40);
-    display.print(nowPlayingName.substring(0, 34));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 64);
-    display.print(nowPlayingSource.substring(0, 36));
-    drawFooter("Enter/Backspace/Q: stop");
+    audioScreens.drawNowPlaying(nowPlayingName, nowPlayingSource);
 }
 
 const char* resetReasonName(esp_reset_reason_t reason) {
@@ -2808,6 +2202,64 @@ void recordBootTelemetry() {
     bootHistorySaved = true;
 }
 
+// Call as early in setup() as preferences.begin() allows (before anything
+// that could itself crash/hang). Two independent, layered safety nets for
+// a bad OTA update:
+//
+// 1. ESP-IDF's own pending-verify mechanism, if the bootloader has app
+//    rollback enabled -- harmless no-op read if it isn't. Catches a crash
+//    at literally any point after boot, including before this function
+//    returns, since the bootloader itself reboots into the previous
+//    partition after enough failed boot attempts. Confirmed valid (this
+//    boot counts as healthy) by markBootHealthy() once setup() finishes.
+// 2. An app-level boot-attempt counter in NVS, independent of whether (1)
+//    is actually enabled on this board. Catches the more common real-world
+//    case: the new firmware boots far enough to run setup() but hangs,
+//    watchdog-resets, or panics before reaching a healthy checkpoint.
+//    Falls back to the other OTA partition after kMaxBootAttemptsBeforeRollback
+//    consecutive attempts that never reached markBootHealthy().
+void verifyOtaBootOrRollback() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t otaState;
+    if (running &&
+        esp_ota_get_state_partition(running, &otaState) == ESP_OK &&
+        otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+        otaPendingVerify = true;
+    }
+
+    const uint8_t attempts = preferences.getUChar("boot_attempts", 0);
+    if (attempts >= kMaxBootAttemptsBeforeRollback) {
+        preferences.putUChar("boot_attempts", 0);
+        const esp_partition_t* other =
+            esp_ota_get_next_update_partition(nullptr);
+        if (other && other != running) {
+            Serial.println(
+                "[ota] repeated failed boots after an update -- "
+                "rolling back to the previous firmware");
+            esp_ota_set_boot_partition(other);
+            esp_restart();
+        }
+        // No other OTA partition to fall back to (e.g. very first boot
+        // before any update has ever happened) -- nothing more we can do
+        // here; the counter is already cleared above.
+    } else {
+        preferences.putUChar("boot_attempts", attempts + 1);
+    }
+}
+
+// Call once setup() has reached a point that's a meaningful sign of a
+// healthy boot (SD/display/core services initialized, main menu drawn).
+// Clears the boot-attempt counter and, if this boot was pending bootloader
+// verification, confirms the partition so the bootloader stops treating it
+// as provisional.
+void markBootHealthy() {
+    preferences.putUChar("boot_attempts", 0);
+    if (otaPendingVerify) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        otaPendingVerify = false;
+    }
+}
+
 String formatUptime() {
     const uint32_t totalSeconds = millis() / 1000;
     const uint32_t days = totalSeconds / 86400;
@@ -2820,25 +2272,7 @@ String formatUptime() {
     return String(value);
 }
 
-enum class DiagnosticState {
-    Information,
-    Ready,
-    Warning,
-};
-
-struct SystemDiagnostic {
-    String label;
-    String value;
-    DiagnosticState state;
-
-    SystemDiagnostic(const String& diagnosticLabel,
-                     const String& diagnosticValue,
-                     DiagnosticState diagnosticState =
-                         DiagnosticState::Information)
-        : label(diagnosticLabel),
-          value(diagnosticValue),
-          state(diagnosticState) {}
-};
+// DiagnosticState / SystemDiagnostic: see include/system_screens.h.
 
 std::vector<SystemDiagnostic> systemDiagnostics() {
     std::vector<SystemDiagnostic> rows;
@@ -2974,23 +2408,7 @@ bool exportSystemDiagnostics() {
     return true;
 }
 
-void drawSystem() {
-    drawHeader("System Diagnostics");
-    const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
-    normalizeListPosition(diagnostics.size());
-    drawHeaderPosition(listSelection + 1, diagnostics.size());
-    for (size_t row = 0;
-         row < kVisibleRows && row + listOffset < diagnostics.size(); ++row) {
-        const auto& diagnostic = diagnostics[row + listOffset];
-        String label = diagnostic.label;
-        while (label.length() < 13) label += ' ';
-        label += diagnostic.value;
-        drawListRow(row, label, row + listOffset == listSelection);
-    }
-    drawFooter(diagnosticExportStatus.isEmpty()
-                   ? "W/S: browse  Enter: clock  Tab: actions  Q: back"
-                   : diagnosticExportStatus.c_str());
-}
+// System Diagnostics screen: see include/system_screens.h/src/system_screens.cpp.
 
 String utcTimestamp() {
     if (!clockSynced) return "";
@@ -3051,162 +2469,66 @@ bool syncClockFromNtp() {
     return true;
 }
 
-void drawTimeReadouts() {
-    auto& display = M5Cardputer.Display;
-    display.fillRect(0, 45, display.width(), 40, Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 52);
-    if (clockSynced) {
-        const time_t now = time(nullptr);
-        struct tm local {};
-        localtime_r(&now, &local);
-        char localValue[32];
-        strftime(localValue, sizeof(localValue), "%Y-%m-%d %H:%M:%S %Z",
-                 &local);
-        display.printf("Local: %s", localValue);
-        display.setCursor(8, 69);
-        display.printf("UTC:   %s", utcTimestamp().c_str());
-    } else {
-        display.print("Local: ----/--/-- --:--:--");
-        display.setCursor(8, 69);
-        display.print("UTC:   ----/--/-- --:--:--");
+// System Clock screen: see include/system_screens.h/src/system_screens.cpp.
+
+// GNSS screen: see include/gnss_screen.h/src/gnss_screen.cpp.
+
+bool startWifiGuardian() {
+    guardianLastEvent = "Starting passive watch...";
+    if (!sdAvailable) {
+        guardianLastEvent = "microSD required for evidence";
+        return false;
+    }
+    wifiPassiveCaptureLogger.stop();
+    wifiSnifferLogger.stop();
+    wifiSnifferService.end();
+    WiFi.disconnect(false, false);
+    delay(50);
+    wifiSnifferService.setCaptureMode(WifiCaptureMode::Management);
+    if (!guardianEventLogger.begin(
+            "guardian_events",
+            "timestamp_utc,event,channel,rssi,deauth_total,disassoc_total")) {
+        guardianLastEvent = guardianEventLogger.status();
+        return false;
+    }
+    if (!guardianEvidenceLogger.begin("guardian_evidence")) {
+        guardianEventLogger.stop();
+        guardianLastEvent = guardianEvidenceLogger.status();
+        return false;
+    }
+    if (!wifiSnifferService.begin()) {
+        guardianEventLogger.stop();
+        guardianEvidenceLogger.stop();
+        guardianLastEvent = "Unable to start Wi-Fi monitor";
+        return false;
+    }
+    wifiGuardianService.begin(wifiGuardianService.sensitivity());
+    guardianLastEvent = "Watching; observations are not proof";
+    cyberFamiliar.notePatrol("Guardian watch started.", 5,
+                             FamiliarMood::Curious);
+    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+    showFamiliarSpeech("I'll keep an eye on things.", 2800);
+    return true;
+}
+
+void stopWifiGuardian() {
+    const bool wasActive = wifiGuardianService.isActive();
+    wifiGuardianService.stop();
+    wifiSnifferService.end();
+    guardianEventLogger.stop();
+    guardianEvidenceLogger.stop();
+    if (wasActive) {
+        cyberFamiliar.notePatrol("Guardian watch ended. Evidence saved.", 3,
+                                 FamiliarMood::Content);
     }
 }
 
-void drawTimeStatus() {
-    drawHeader("System Clock");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(clockSynced ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 32);
-    display.print(clockSynced ? "System clock synchronized"
-                              : "System clock not synchronized");
-    drawTimeReadouts();
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 87);
-    display.print(clockStatus.substring(0, 37));
-    display.setCursor(8, 103);
-    display.print("Clock resets after full power-off.");
-    drawFooter("Tab: actions   Q: back");
-}
+// Familiar Guardian screen: see
+// include/wifi_guardian_screen.h/src/wifi_guardian_screen.cpp.
 
-void drawGnss(bool fullDraw = true) {
-    beginContentUpdate("GNSS Foundation", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(gnssService.hasFix() ? Branding::accent
-                                              : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    if (!gnssService.hasData()) {
-        display.print("UART: waiting for NMEA data");
-    } else if (!gnssService.hasFix()) {
-        display.print("GNSS: data received, no fix");
-    } else {
-        display.printf("GNSS: position fix%s",
-                       gnssLogger.isActive() ? "  REC" : "");
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Sat: %lu  HDOP: %.1f  UTC: %s",
-                   static_cast<unsigned long>(gnssService.satellites()),
-                   gnssService.hdop(),
-                   gnssService.utcTime().c_str());
-    display.setCursor(8, 64);
-    if (gnssService.hasFix()) {
-        display.printf("Lat: %.6f", gnssService.latitude());
-        display.setCursor(8, 81);
-        display.printf("Lon: %.6f", gnssService.longitude());
-        display.setCursor(8, 98);
-        display.printf("Altitude: %.1f m", gnssService.altitudeMetres());
-        if (gnssLogger.isActive()) {
-            display.printf("  REC %lu",
-                           static_cast<unsigned long>(gnssLogger.rowCount()));
-        }
-    } else {
-        display.printf(
-            "NMEA bytes: %lu",
-            static_cast<unsigned long>(gnssService.charactersProcessed()));
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 82);
-        display.print("Move outdoors for first fix.");
-        if (gnssLogger.isActive()) {
-            display.setCursor(8, 98);
-            display.printf("REC %lu rows",
-                           static_cast<unsigned long>(gnssLogger.rowCount()));
-        }
-    }
-    if (fullDraw) drawFooter("R: restart GNSS   Tab: actions   Q: back");
-}
+// Wi-Fi/BLE/Devices menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawWifiMenu() {
-    static const char* const items[] = {
-        "Discovery", "Channel Analyzer", "Sniffer", "Connect",
-    };
-    drawHeader("Wi-Fi");
-    normalizeListPosition(4);
-    for (size_t row = 0; row < 4; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-void drawBleMenu() {
-    static const char* const items[] = {
-        "Advertisement Sniffer", "BLE Keyboard", "Spam",
-    };
-    drawHeader("BLE");
-    normalizeListPosition(3);
-    for (size_t row = 0; row < 3; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-void drawDevicesMenu() {
-    drawHeader("Devices");
-    static const char* const items[] = {"Biscuit Pro", "Chameleon Ultra"};
-    normalizeListPosition(2);
-    for (size_t row = 0; row < 2; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-void drawBiscuit() {
-    drawHeader("Biscuit Pro");
-    auto& display = M5Cardputer.Display;
-    const bool connected = biscuitClient.isConnected();
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(connected ? "CONNECTED - READY" :
-                              biscuitClient.lastStatus());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 52);
-    display.printf("%s  FW %s", biscuitClient.model().c_str(),
-                   biscuitClient.firmware().c_str());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 72);
-    display.printf("C5 %s", biscuitClient.c5Firmware().c_str());
-    display.setCursor(8, 92);
-    display.printf("Device: %s", biscuitClient.deviceStatus().c_str());
-    drawFooter(connected ? "Enter: tools   R: reconnect   Q: back"
-                         : "Enter/R: connect   Q: back");
-}
-
-void drawBiscuitTools() {
-    static const char* const items[] = {
-        "Device information", "Wi-Fi AP scan", "Station scan",
-        "Packet count", "Current channel", "Node list", "Wardrive monitor",
-    };
-    drawHeader("Biscuit: Read-only tools");
-    normalizeListPosition(7);
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < 7; ++row) {
-        const size_t index = row + listOffset;
-        drawListRow(row, items[index], index == listSelection);
-    }
-    drawFooter("Enter: run   Backspace/Q: back");
-}
+// Biscuit Pro screens: see include/device_screens.h/src/device_screens.cpp.
 
 void appendBiscuitWardriveData(const String& raw) {
     // Both payloads begin "name,MAC,..." (AP uses SSID,BSSID). A record may
@@ -3271,32 +2593,7 @@ void stopBiscuitWardrive() {
     biscuitWardriveActive = false;
 }
 
-void drawBiscuitWardrive(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(biscuitWardriveActive) << 31) ^
-        (biscuitWardriveApCount * 2654435761UL) ^ biscuitWardriveBleCount;
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("Biscuit Wardrive", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(biscuitWardriveActive ? Branding::accent
-                                               : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 28);
-    display.print(biscuitWardriveActive ? "MONITORING" : "STOPPED");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setTextSize(2);
-    display.setCursor(18, 54);
-    display.printf("AP  %lu", static_cast<unsigned long>(
-                                  biscuitWardriveApCount));
-    display.setCursor(18, 82);
-    display.printf("BLE %lu", static_cast<unsigned long>(
-                                  biscuitWardriveBleCount));
-    display.setTextSize(1);
-    drawFooter(biscuitWardriveActive ? "Enter: stop   Q: back"
-                                     : "Enter: start   Q: back");
-}
+// Biscuit Wardrive screen: see include/device_screens.h/src/device_screens.cpp.
 
 void prepareBiscuitResult(const String& raw) {
     biscuitResultLines.clear();
@@ -3322,111 +2619,15 @@ void prepareBiscuitResult(const String& raw) {
     if (biscuitResultLines.empty()) biscuitResultLines.push_back("No data");
 }
 
-void drawBiscuitResult() {
-    drawHeader(biscuitResultTitle.c_str());
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    for (size_t row = 0; row < kVisibleRows &&
-                         biscuitResultOffset + row < biscuitResultLines.size();
-         ++row) {
-        display.setCursor(8, 29 + row * 15);
-        display.print(biscuitResultLines[biscuitResultOffset + row]);
-    }
-    drawFooter("Up/Down: scroll   Backspace/Q: tools");
-}
+// Biscuit Result screen: see include/device_screens.h/src/device_screens.cpp.
 
-void drawBleKeyboard(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(bleKeyboardService.isActive()) << 31) ^
-        (static_cast<uint32_t>(bleKeyboardService.isConnected()) << 30) ^
-        bleKeyboardService.charactersSent();
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("BLE Keyboard", fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool connected = bleKeyboardService.isConnected();
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 30);
-    if (!bleKeyboardService.isActive()) {
-        display.print("STOPPED");
-    } else if (connected) {
-        display.print("CONNECTED - LIVE INPUT");
-    } else {
-        display.print("ADVERTISING / WAITING");
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 49);
-    display.print("Device: Ghostwire Keyboard");
-    display.setCursor(8, 67);
-    display.printf("Characters sent: %lu",
-                   static_cast<unsigned long>(
-                       bleKeyboardService.charactersSent()));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 86);
-    display.print(bleKeyboardService.isActive()
-                      ? "Typed keys go to the paired host."
-                      : "Enter starts pairing/advertising.");
-    display.setCursor(8, 102);
-    display.print("Use only on a device you control.");
-    drawFooter(bleKeyboardService.isActive()
-                   ? "Esc: stop/disconnect"
-                   : "Enter: start   Esc: back");
-}
+// BLE Keyboard screen: see include/ble_screens.h/src/ble_screens.cpp.
 
-void drawBleSpamSelect() {
-    static const char* const items[] = {
-        "Apple", "Fast Pair", "Swift Pair", "All",
-    };
-    drawHeader("BLE Spam");
-    normalizeListPosition(4);
-    for (size_t row = 0; row < 4; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: start   Backspace/Q: back");
-}
+// BLE Spam screens: see include/ble_spam_screen.h/src/ble_spam_screen.cpp.
 
-void drawBleSpam(bool fullDraw = true) {
-    beginContentUpdate("BLE Spam", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(bleSpamService.isActive() ? Branding::accent
-                                                    : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s", bleSpamService.isActive() ? "SPAMMING" : "STOPPED");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Type: %s", bleSpamService.currentTypeName());
-    display.setCursor(8, 64);
-    display.printf("Sent: %lu",
-                   static_cast<unsigned long>(bleSpamService.packetsSent()));
-    const uint8_t* mac = bleSpamService.currentAddress();
-    display.setCursor(8, 81);
-    display.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4],
-                   mac[3], mac[2], mac[1], mac[0]);
-    if (fullDraw) drawFooter("Q: stop");
-}
+// RFID menu: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawRfidMenu() {
-    static const char* const items[] = {
-        "Chameleon Ultra",
-    };
-    drawHeader("RFID");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-String chameleonHexId(const uint8_t* data, size_t len) {
-    String hex;
-    for (size_t i = 0; i < len; ++i) {
-        if (i > 0) hex += ':';
-        if (data[i] < 0x10) hex += '0';
-        hex += String(data[i], HEX);
-    }
-    return hex;
-}
+// Chameleon hex ID formatting: see ChameleonScreen::hexId.
 
 bool saveChameleonIdentity() {
     if (!sdAvailable || (!chameleonHfFound && !chameleonLfFound)) {
@@ -3457,12 +2658,12 @@ bool saveChameleonIdentity() {
     }
     if (chameleonHfFound) {
         file.printf("HF14A,%s,%04X,%02X\n",
-                    chameleonHexId(chameleonHfTag.uid,
+                    ChameleonScreen::hexId(chameleonHfTag.uid,
                                    chameleonHfTag.uidLen).c_str(),
                     chameleonHfTag.atqa, chameleonHfTag.sak);
     } else {
         file.printf("EM410X,%s,,\n",
-                    chameleonHexId(chameleonLfId, 5).c_str());
+                    ChameleonScreen::hexId(chameleonLfId, 5).c_str());
     }
     file.close();
     chameleonSavedPath = path;
@@ -3541,70 +2742,7 @@ bool loadChameleonIdentity() {
     return true;
 }
 
-void drawChameleonEmulateConfirm() {
-    drawHeader("Confirm Identity Emulation");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 32);
-    display.print("This changes Chameleon slot 8.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 50);
-    display.print(chameleonHfFound ? "HF identity only; not card data."
-                                   : "EM410x ID will be staged.");
-    display.setCursor(8, 68);
-    display.print("Use only with an authorised tag.");
-    display.setCursor(8, 88);
-    display.print("Enter: stage + emulate");
-    drawFooter("Enter: confirm   Esc: cancel");
-}
-
-void drawChameleon(bool fullDraw = true) {
-    beginContentUpdate("Chameleon Ultra", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(chameleonClient.isConnected() ? Branding::accent
-                                                        : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(chameleonClient.lastStatus());
-    display.setTextColor(Branding::text, Branding::background);
-    if (chameleonHasReadings) {
-        display.setCursor(8, 44);
-        display.printf("App version: %u.%u", chameleonAppMajor,
-                       chameleonAppMinor);
-        display.setCursor(8, 58);
-        display.printf("Battery: %u%%  (%u mV)", chameleonBatteryPct,
-                       chameleonBatteryMv);
-    }
-    if (chameleonScanAttempted) {
-        display.setCursor(8, 72);
-        if (chameleonHfFound) {
-            display.printf(
-                "UID: %s",
-                chameleonHexId(chameleonHfTag.uid, chameleonHfTag.uidLen)
-                    .c_str());
-            display.setCursor(8, 86);
-            display.printf("ATQA: 0x%04X  SAK: 0x%02X", chameleonHfTag.atqa,
-                           chameleonHfTag.sak);
-        } else if (chameleonLfFound) {
-            display.printf("EM410x ID: %s",
-                           chameleonHexId(chameleonLfId, 5).c_str());
-        } else {
-            display.print("No tag found");
-        }
-    }
-    display.setCursor(8, 100);
-    if (!chameleonWorkflowStatus.isEmpty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print(chameleonWorkflowStatus.substring(0, 37));
-    } else {
-        display.printf("Continuous: %s", chameleonContinuousScan ? "ON" : "OFF");
-        if (chameleonLogger.isActive()) {
-            display.printf("  Logged: %lu",
-                           static_cast<unsigned long>(chameleonLogger.rowCount()));
-        }
-    }
-    if (fullDraw) drawFooter("R: reconnect  Tab: actions  Q: back");
-}
+// Chameleon Ultra screens: see include/device_screens.h/src/device_screens.cpp.
 
 void attemptChameleonConnection() {
     if (chameleonClient.isConnected()) return;
@@ -3613,7 +2751,7 @@ void attemptChameleonConnection() {
     ++chameleonConnectAttempts;
     chameleonWorkflowStatus = "Auto-connect attempt " +
                               String(chameleonConnectAttempts);
-    drawChameleon(false);
+    chameleonScreen.draw(false);
 
     // A bounded scan keeps automatic retries responsive enough that the
     // user can still leave the screen between attempts.
@@ -3633,7 +2771,7 @@ void attemptChameleonConnection() {
         chameleonWorkflowStatus = "Retrying automatically...";
     }
     recoverKeyboardAfterBlockingOperation();
-    drawChameleon(false);
+    chameleonScreen.draw(false);
 }
 
 // Runs one HF-then-LF scan attempt, updates the on-screen result state, and
@@ -3648,13 +2786,13 @@ void performChameleonScan() {
 
     String signature, csvType, csvId, csvAtqa, csvSak;
     if (chameleonHfFound) {
-        csvId = chameleonHexId(chameleonHfTag.uid, chameleonHfTag.uidLen);
+        csvId = ChameleonScreen::hexId(chameleonHfTag.uid, chameleonHfTag.uidLen);
         signature = "HF:" + csvId;
         csvType = "HF14A";
         csvAtqa = String(chameleonHfTag.atqa, HEX);
         csvSak = String(chameleonHfTag.sak, HEX);
     } else if (chameleonLfFound) {
-        csvId = chameleonHexId(chameleonLfId, 5);
+        csvId = ChameleonScreen::hexId(chameleonLfId, 5);
         signature = "LF:" + csvId;
         csvType = "EM410x";
     }
@@ -3674,239 +2812,19 @@ void performChameleonScan() {
     }
 }
 
-void drawGpsMenu() {
-    static const char* const items[] = {
-        "GNSS Monitor",
-    };
-    drawHeader("GPS");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// GPS/Mesh/Network menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawMeshMenu() {
-    static const char* const items[] = {
-        "LoRa / Meshtastic",
-    };
-    drawHeader("Mesh");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Network Dashboard screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
-void drawNetworkMenu() {
-    static const char* const items[] = {
-        "Network Dashboard",
-        "Host Discovery",
-        "Telnet Client",
-        "SSH Client",
-    };
-    constexpr size_t kNetworkMenuCount = sizeof(items) / sizeof(items[0]);
-    drawHeader("Network");
-    normalizeListPosition(kNetworkMenuCount);
-    for (size_t row = 0; row < kNetworkMenuCount; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Tools menu: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawNetworkDashboard() {
-    drawHeader("Network Dashboard");
-    auto& display = M5Cardputer.Display;
-    display.setTextSize(1);
-    if (WiFi.status() != WL_CONNECTED) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 36);
-        display.print("Wi-Fi is not connected");
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 55);
-        display.print("Use Wi-Fi > Connect first.");
-        drawFooter("R: refresh   Q: back");
-        return;
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 28);
-    display.printf("SSID: %s  %d dBm", WiFi.SSID().c_str(), WiFi.RSSI());
-    display.setCursor(8, 44);
-    display.printf("IP:   %s", WiFi.localIP().toString().c_str());
-    display.setCursor(8, 60);
-    display.printf("GW:   %s", WiFi.gatewayIP().toString().c_str());
-    display.setCursor(8, 76);
-    display.printf("Mask: %s", WiFi.subnetMask().toString().c_str());
-    display.setCursor(8, 92);
-    display.printf("DNS:  %s", WiFi.dnsIP().toString().c_str());
-    display.setCursor(8, 108);
-    display.printf("MAC:  %s", WiFi.macAddress().c_str());
-    drawFooter("R: refresh   Q: back");
-}
+// QR Generator screens: see include/qr_screens.h/src/qr_screens.cpp.
 
-void drawToolsMenu() {
-    static const char* const items[] = {
-        "Infrared",     "USB / HID", "Audio",  "Logs / Sessions",
-        "Motion / IMU", "Files",     "QR Generator", "System", "About",
-    };
-    constexpr size_t kToolsCount = sizeof(items) / sizeof(items[0]);
-    drawHeader("Tools");
-    normalizeListPosition(kToolsCount);
-    drawHeaderPosition(listSelection + 1, kToolsCount);
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < kToolsCount;
-         ++row) {
-        drawListRow(row, items[row + listOffset],
-                    row + listOffset == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// LoRa screen: see include/lora_screen.h/src/lora_screen.cpp.
 
-void drawQrEntry() {
-    drawHeader("QR Generator");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 34);
-    display.print("Enter text, URL, or short note:");
-    drawTextEntryRow(56, "> ", qrText);
-    display.setCursor(8, 78);
-    display.printf("%u / 100 characters", static_cast<unsigned>(qrText.length()));
-    display.setCursor(8, 96);
-    display.print("Generated entirely offline.");
-    drawFooter("Enter: generate   Esc: back");
-}
-
-void drawQrDisplay() {
-    drawHeader("QR Code");
-    auto& display = M5Cardputer.Display;
-    display.fillRect(0, 22, display.width(), display.height() - 37,
-                     TFT_WHITE);
-    display.qrcode(qrText, 74, 25, 92, 6);
-    drawFooter("Enter: edit   Esc: back");
-}
-
-void drawLoRa(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(loraService.isReady()) << 31) ^
-        (static_cast<uint32_t>(loraLogger.isActive()) << 30) ^
-        (static_cast<uint32_t>(loraService.profile()) << 28) ^
-        loraService.packetCount() ^ (loraLogger.rowCount() << 8);
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("LoRa Receive", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(loraService.isReady() ? Branding::accent
-                                               : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    if (loraService.isReady()) {
-        display.printf("SX1262 ready %.3f MHz",
-                       loraService.frequencyMhz());
-    } else {
-        display.printf("Radio init failed: %d", loraService.status());
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 47);
-    display.printf("Packets: %lu",
-                   static_cast<unsigned long>(loraService.packetCount()));
-    if (loraLogger.isActive()) {
-        display.printf("  REC %lu",
-                       static_cast<unsigned long>(loraLogger.rowCount()));
-    }
-    display.setCursor(8, 64);
-    if (loraService.packetCount() > 0) {
-        display.printf("RSSI %.1f dBm  SNR %.1f dB", loraService.lastRssi(),
-                       loraService.lastSnr());
-        display.setCursor(8, 82);
-        const auto& decoded = loraService.lastDecoded();
-        if (decoded.valid) {
-            display.printf("Mesh %08lX  %s",
-                           static_cast<unsigned long>(decoded.from),
-                           MeshtasticDecoder::portName(decoded.port));
-            display.setCursor(8, 99);
-            display.print(decoded.summary.substring(0, 37));
-        } else {
-            display.print(loraService.lastPacket().substring(0, 36));
-            display.setCursor(8, 99);
-            display.setTextColor(Branding::muted, Branding::background);
-            display.print("Encrypted / unsupported payload");
-        }
-    } else {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print(loraService.profileName());
-        display.setCursor(8, 82);
-        if (loraService.profile() ==
-            LoRaService::Profile::MeshtasticEuLongFast) {
-            display.print("BW250 SF11 CR4/5 sync 0x2B");
-        } else {
-            display.print("BW125 SF12 CR4/5 sync 0x34");
-        }
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: back");
-}
-
-void drawWifiSniffer(bool fullDraw = true) {
-    beginContentUpdate("Wi-Fi Sniffer", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(wifiSnifferService.isActive() ? Branding::accent
-                                                       : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("RF %s  CH %-2u%s  %-9s",
-                   wifiSnifferService.isActive() ? "ON" : "OFF",
-                   wifiSnifferService.currentChannel(),
-                   wifiSnifferService.channelLocked() ? "L" : "H",
-                   wifiSnifferService.captureModeName());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf(
-        "Probes: %lu  Unique: %u",
-        static_cast<unsigned long>(wifiSnifferService.probeCount()),
-        static_cast<unsigned>(wifiSnifferService.uniqueDeviceCount()));
-    const uint32_t dropped = wifiSnifferService.droppedProbeCount();
-    if (dropped > 0) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(184, 46);
-        display.printf("D:%lu", static_cast<unsigned long>(dropped));
-    }
-    if (wifiPassiveCaptureLogger.isActive()) {
-        display.setTextColor(Branding::accent, Branding::background);
-        display.setCursor(8, 58);
-        display.printf("PCAP %lu frames  %llu KiB  drop %lu",
-                       static_cast<unsigned long>(
-                           wifiPassiveCaptureLogger.rowCount()),
-                       wifiPassiveCaptureLogger.byteCount() / 1024ULL,
-                       static_cast<unsigned long>(
-                           wifiSnifferService.droppedRawFrameCount()));
-    } else if (wifiPassiveCaptureLogger.rowCount() > 0) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 58);
-        display.printf("PCAP SAVED  %lu frames  %llu KiB",
-                       static_cast<unsigned long>(
-                           wifiPassiveCaptureLogger.rowCount()),
-                       wifiPassiveCaptureLogger.byteCount() / 1024ULL);
-    }
-
-    if (recentWifiProbes.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 72);
-        display.print("Waiting for probe requests...");
-    } else {
-        constexpr int kLineHeight = 13;
-        constexpr int kFirstLineY = 72;
-        constexpr size_t kVisibleLines = 4;
-        const size_t total = recentWifiProbes.size();
-        const size_t shown = std::min(kVisibleLines, total);
-        display.setTextColor(Branding::text, Branding::background);
-        for (size_t row = 0; row < shown; ++row) {
-            const WifiProbeRecord& probe = recentWifiProbes[total - 1 - row];
-            String ssid = String(probe.ssid);
-            if (ssid.isEmpty()) ssid = "<wildcard>";
-            display.setCursor(8,
-                              kFirstLineY + static_cast<int>(row) * kLineHeight);
-            display.printf("%02X:%02X:%02X %-12s %d", probe.mac[3],
-                           probe.mac[4], probe.mac[5],
-                           ssid.substring(0, 12).c_str(), probe.rssi);
-        }
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: back");
-}
+// Wi-Fi Sniffer screen: see
+// include/wifi_sniffer_screen.h/src/wifi_sniffer_screen.cpp.
 
 String csvSafePayload(const String& payload) {
     String safe = "\"";
@@ -3928,29 +2846,164 @@ String csvSafePayload(const String& payload) {
     return safe;
 }
 
-const char* familiarFace() {
-    const bool blink = (millis() / 2600U) % 9U == 0;
-    if (blink) return "(-_-)";
-    switch (cyberFamiliar.mood()) {
-        case FamiliarMood::Curious: return "(o_o)?";
-        case FamiliarMood::Excited: return "(^o^)";
-        case FamiliarMood::Sleepy: return "(-.-)z";
-        case FamiliarMood::Proud: return "(^_^)7";
-        case FamiliarMood::Worried: return "(O_O)!";
-        case FamiliarMood::Dizzy: return "(@_@)";
-        default: return "(._.)";
+// familiarFace(): see FamiliarScreens::face (private).
+
+void triggerFamiliarReaction(FamiliarReaction reaction,
+                             uint32_t durationMs = 1800) {
+    familiarReaction = reaction;
+    familiarReactionUntil = millis() + durationMs;
+}
+
+enum class FamiliarCue : uint8_t {
+    Started, Host, Service, Warning, Complete, Error,
+};
+
+uint8_t familiarVoicePhraseForCue(FamiliarCue cue) {
+    switch (cue) {
+        case FamiliarCue::Started: return 3;
+        case FamiliarCue::Host: return 0;
+        case FamiliarCue::Service: return 2;
+        case FamiliarCue::Warning: return 5;
+        case FamiliarCue::Complete: return 4;
+        case FamiliarCue::Error: return 6;
+    }
+    return 6;
+}
+
+uint8_t familiarVoicePriority(uint8_t phrase) {
+    if (phrase == 6) return 3;
+    if (phrase == 5) return 2;
+    return 1;
+}
+
+void queueFamiliarVoice(FamiliarCue cue) {
+    const uint8_t phrase = familiarVoicePhraseForCue(cue);
+    if (familiarVoicePhrase < 0 && millis() >= familiarVoiceReadyMs) {
+        familiarVoicePhrase = phrase;
+        familiarVoiceWord = 0;
+        return;
+    }
+    // Retain only one pending announcement. Warnings and errors may replace
+    // routine news, preventing a busy host from creating stale narration.
+    if (familiarVoicePending < 0 ||
+        familiarVoicePriority(phrase) >
+            familiarVoicePriority(static_cast<uint8_t>(familiarVoicePending))) {
+        familiarVoicePending = phrase;
     }
 }
 
-String familiarAgeText() {
-    const uint32_t seconds = cyberFamiliar.ageSeconds();
-    const uint32_t days = seconds / 86400U;
-    const uint8_t hours = (seconds / 3600U) % 24U;
-    char value[24];
-    snprintf(value, sizeof(value), "%lud %uh",
-             static_cast<unsigned long>(days), hours);
-    return String(value);
+void updateFamiliarVoice() {
+    if (familiarVoicePhrase < 0) {
+        if (familiarVoicePending < 0 || millis() < familiarVoiceReadyMs) return;
+        familiarVoicePhrase = familiarVoicePending;
+        familiarVoicePending = -1;
+        familiarVoiceWord = 0;
+    }
+    if (audioService.isPlaying()) return;
+    const auto& phrase =
+        kTtsLabPhrases[static_cast<uint8_t>(familiarVoicePhrase)];
+    if (familiarVoiceWord >= phrase.wordCount) {
+        familiarVoicePhrase = -1;
+        familiarVoiceWord = 0;
+        familiarVoiceReadyMs = millis() + 900;
+        return;
+    }
+    const String path = familiarWordPath(phrase.words[familiarVoiceWord]);
+    if (!audioService.startMp3(path.c_str(), 25)) {
+        familiarVoicePhrase = -1;
+        familiarVoicePending = -1;
+        familiarVoiceReadyMs = millis() + 3000;
+        return;
+    }
+    ++familiarVoiceWord;
 }
+
+void showFamiliarSpeech(const String& message, uint32_t durationMs = 2600) {
+    familiarSpeechBubble = message;
+    familiarSpeechBubbleUntil = millis() + durationMs;
+}
+
+String familiarHostLabel(const IPAddress& ip) {
+    // Always-available compact fallback. A future non-blocking name resolver
+    // can replace this without changing reaction or rendering code.
+    return "." + String(ip[3]);
+}
+
+const char* familiarServiceName(uint16_t port) {
+    switch (port) {
+        case 21: return "FTP"; case 22: return "SSH";
+        case 23: return "Telnet"; case 53: return "DNS";
+        case 80: case 8080: case 8081: case 8000: return "Web";
+        case 139: case 445: return "SMB";
+        case 443: case 8443: return "Secure web";
+        case 1883: return "MQTT"; case 2049: return "NFS";
+        case 2375: case 2376: return "Docker";
+        case 3306: return "MySQL"; case 3389: return "RDP";
+        case 5432: return "Postgres"; case 5900: return "VNC";
+        case 6379: return "Redis"; case 6443: return "Kubernetes";
+        case 9100: return "Printer"; case 9200: return "Elastic";
+        case 27017: return "MongoDB";
+        default: return "service";
+    }
+}
+
+void playFamiliarCue(FamiliarCue cue) {
+    if (familiarCueIndex == 0) return;
+    if (familiarCueIndex == kFamiliarCueCount - 1) {
+        if (millis() - lastFamiliarCueMs >= 1800 ||
+            cue == FamiliarCue::Warning || cue == FamiliarCue::Error) {
+            lastFamiliarCueMs = millis();
+            queueFamiliarVoice(cue);
+        }
+        return;
+    }
+    if (audioService.isPlaying() || millis() - lastFamiliarCueMs < 700) {
+        return;
+    }
+    lastFamiliarCueMs = millis();
+    uint16_t first = 700;
+    uint16_t second = 0;
+    uint16_t duration = 55;
+    if (familiarCueIndex == 1) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 440 : 880;
+        duration = 45;
+    } else if (familiarCueIndex == 2) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 520 : 1050;
+        second = cue == FamiliarCue::Complete ? 1400 : first + 180;
+    } else if (familiarCueIndex == 3) {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 220 : 660;
+        second = cue == FamiliarCue::Complete ? 1320 : first * 2;
+        duration = 60;
+    } else {
+        first = cue == FamiliarCue::Warning || cue == FamiliarCue::Error
+                    ? 330 : 784;
+        second = cue == FamiliarCue::Complete ? 1568 : 1175;
+        duration = 85;
+    }
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
+    M5Cardputer.Speaker.tone(first, duration);
+    if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
+}
+
+// drawFamiliarSpeechBubble(): see FamiliarScreens::drawSpeechBubble.
+
+bool familiarSensitivePort(uint16_t port) {
+    switch (port) {
+        case 23: case 111: case 135: case 139: case 445:
+        case 1433: case 2049: case 3306: case 3389: case 5432:
+        case 5900: case 6379: case 9200: case 27017:
+            return true;
+        default: return false;
+    }
+}
+
+// drawFamiliarCreature(): see FamiliarScreens::drawCreature.
+// familiarAgeText(): inlined into FamiliarScreens::drawFamiliar (its only
+// caller).
 
 bool looksLikeMac(const String& value) {
     if (value.length() != 17) return false;
@@ -4057,85 +3110,21 @@ void importFamiliarCaptureLogs() {
                              " new / " + String(rows) + " rows";
 }
 
-void drawCyberFamiliarResetConfirm() {
-    drawHeader("Reset Cyber Familiar");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 34);
-    display.print("This clears progression, bond,");
-    display.setCursor(8, 50);
-    display.print("discoveries, journal and tools.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 76);
-    display.print("Name and idle preference remain.");
-    drawFooter("Enter: reset   Esc: cancel");
-}
-
-void drawCyberFamiliar(bool fullDraw = true) {
-    beginContentUpdate(cyberFamiliar.name().c_str(), fullDraw);
-    auto& display = M5Cardputer.Display;
-    if (familiarPage == 0) {
-        display.setTextSize(3);
-        display.setTextColor(Branding::accent, Branding::background);
-        display.setCursor(57, 30);
-        display.print(familiarFace());
-        display.setTextSize(1);
-        display.setTextColor(Branding::text, Branding::background);
-        display.setCursor(8, 70);
-        display.printf("Lv %u  %s  Bond %u",
-                       static_cast<unsigned>(cyberFamiliar.level()),
-                       cyberFamiliar.evolutionName(),
-                       static_cast<unsigned>(cyberFamiliar.bond()));
-        const uint32_t levelStart =
-            static_cast<uint32_t>(cyberFamiliar.level() - 1U) * 100U;
-        const uint32_t progress = cyberFamiliar.xp() - levelStart;
-        display.drawRect(8, 84, 224, 8, Branding::muted);
-        display.fillRect(10, 86, std::min<uint32_t>(220, progress * 220 / 100),
-                         4, Branding::accent);
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 98);
-        display.print((familiarWorkflowStatus.isEmpty()
-                           ? cyberFamiliar.lastMessage()
-                           : familiarWorkflowStatus).substring(0, 37));
-    } else if (familiarPage == 1) {
-        display.setTextColor(Branding::text, Branding::background);
-        display.setCursor(8, 30);
-        display.printf("Mood:        %s", cyberFamiliar.moodName());
-        display.setCursor(8, 47);
-        display.printf("Age:         %s", familiarAgeText().c_str());
-        display.setCursor(8, 64);
-        display.printf("Wi-Fi seen:  %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.wifiDiscoveries()));
-        display.setCursor(8, 81);
-        display.printf("BLE seen:    %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.bleDiscoveries()));
-        display.setCursor(8, 98);
-        display.printf("Tools known: %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.toolCount()));
-    } else {
-        const auto& journal = cyberFamiliar.journal();
-        display.setTextColor(Branding::text, Branding::background);
-        const size_t shown = std::min<size_t>(6, journal.size());
-        const size_t start = journal.size() - shown;
-        for (size_t row = 0; row < shown; ++row) {
-            display.setCursor(6, 27 + static_cast<int>(row) * 15);
-            display.print(("> " + journal[start + row]).substring(0, 39));
-        }
-    }
-    if (fullDraw) {
-        drawFooter("Up/Down: pages   Tab: menu");
-    }
-}
+// Cyber Familiar / Familiar Patrol screens: see
+// include/familiar_screens.h/src/familiar_screens.cpp.
 
 void drawCyberFamiliarIdle() {
     auto& display = M5Cardputer.Display;
-    display.fillRect(0, 0, display.width(), display.height(),
-                     Branding::background);
-    display.setTextSize(3);
-    display.setTextColor(Branding::accent, Branding::background);
-    display.setCursor(57, 31);
-    display.print(familiarFace());
-    display.setTextSize(1);
+    if (!familiarIdleDrawn) {
+        display.fillRect(0, 0, display.width(), display.height(),
+                         Branding::background);
+        familiarIdleDrawn = true;
+    } else {
+        // The creature and bubble are the only animated idle elements.
+        display.fillRect(0, 0, display.width(), 80, Branding::background);
+    }
+    familiarScreens.drawCreature(120, 75, true);
+    familiarScreens.drawSpeechBubble(15, 4, 210);
     display.setTextColor(Branding::text, Branding::background);
     display.setCursor(8, 82);
     display.printf("%s  Lv%u  %s", cyberFamiliar.name().c_str(),
@@ -4150,193 +3139,11 @@ void drawCyberFamiliarIdle() {
                    batteryPercentage());
 }
 
-void drawSettings() {
-    drawHeader("Settings");
-    static const char* const items[] = {
-        "Display & Audio", "Boot Experience", "Connectivity",
-        "Restore Defaults",
-    };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
-    normalizeListPosition(count);
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Settings root menu: see MenuScreens::drawSettings.
+// Settings sub-screens, About, Placeholder: see
+// include/settings_screens.h/src/settings_screens.cpp.
 
-void drawSettingsDisplay() {
-    drawHeader("Settings: Display");
-    constexpr size_t count = 5;
-    normalizeListPosition(count);
-    const String timeout =
-        screenTimeoutSeconds == 0 ? "Off"
-                                  : String(screenTimeoutSeconds) + "s";
-    const char* const labels[count] = {
-        "Speaker volume", "Screen brightness", "Screen timeout",
-        "Cyberdeck idle", "Theme",
-    };
-    const String values[count] = {
-        String((speakerVolume * 100U) / 255U) + "%",
-        String((screenBrightness * 100U) / 255U) + "%",
-        timeout, cyberdeckIdleEnabled ? "On" : "Off",
-        Branding::kThemes[themeIndex].name,
-    };
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, labels[row], row == listSelection, values[row]);
-    }
-    drawFooter("Up/Down select   -/=: adjust   Q: back");
-}
-
-void drawSettingsBoot() {
-    drawHeader("Settings: Boot");
-    constexpr size_t count = 6;
-    normalizeListPosition(count);
-    const char* const labels[count] = {
-        "Boot sound", "Sound style", "Animation style", "Fast boot",
-        "Preview sound", "Preview animation",
-    };
-    const String values[count] = {
-        bootSoundEnabled ? "On" : "Off",
-        kBootSoundNames[bootSoundIndex],
-        kBootAnimationNames[bootAnimationIndex],
-        fastBootEnabled ? "On" : "Off", "Enter", "Enter",
-    };
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, labels[row], row == listSelection, values[row]);
-    }
-    drawFooter("Enter: change / preview   Q: back");
-}
-
-void drawSettingsConnectivity() {
-    drawHeader("Settings: Connectivity");
-    constexpr size_t count = 2;
-    normalizeListPosition(count);
-    drawListRow(0, "Save Wi-Fi login", listSelection == 0,
-                saveWifiCredentials ? "On" : "Off");
-    drawListRow(1, "Auto-connect Wi-Fi", listSelection == 1,
-                autoConnectWifi ? "On" : "Off");
-    drawFooter("-/= or Enter: toggle   Q: back");
-}
-
-void drawSettingsReset() {
-    drawHeader("Restore Settings?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 42);
-    display.print("Reset all preferences?");
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 64);
-    display.print("This does not erase SD files.");
-    drawFooter("Enter: restore   Backspace/Q: cancel");
-}
-
-void drawPlaceholder() {
-    drawHeader(placeholderTitle.c_str());
-    M5Cardputer.Display.setTextColor(Branding::muted,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 42);
-    M5Cardputer.Display.print("Module slots ready.");
-    M5Cardputer.Display.setCursor(8, 59);
-    M5Cardputer.Display.print("Tools arrive in later builds.");
-    drawFooter("Esc: back");
-}
-
-void drawAbout() {
-    drawHeader("About");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 34);
-    display.printf("%s %s", Branding::productName, Branding::version);
-    display.setTextColor(Branding::accent, Branding::background);
-    display.setCursor(8, 54);
-    display.printf("by %s", Branding::creatorName);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 76);
-    display.print("Authorized security field toolkit");
-    display.setCursor(8, 92);
-    display.print("Build: Cardputer-Adv / ESP32-S3");
-    drawFooter("Esc: back");
-}
-
-const char* imuTypeName() {
-    switch (M5.Imu.getType()) {
-        case m5::imu_bmi270: return "BMI270";
-        case m5::imu_mpu6050: return "MPU6050";
-        case m5::imu_mpu6886: return "MPU6886";
-        case m5::imu_mpu9250: return "MPU9250";
-        case m5::imu_sh200q: return "SH200Q";
-        case m5::imu_none: return "not detected";
-        default: return "unknown";
-    }
-}
-
-void drawImu(bool fullDraw = true) {
-    beginContentUpdate("Motion / IMU", fullDraw);
-    auto& display = M5Cardputer.Display;
-    if (!imuAvailable) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 38);
-        display.printf("Sensor: %s", imuTypeName());
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 58);
-        display.print("IMU is unavailable.");
-        drawFooter("R: retry   Backspace/Q: back");
-        return;
-    }
-
-    const float gx = imuData.gyro.x - gyroOffsetX;
-    const float gy = imuData.gyro.y - gyroOffsetY;
-    const float gz = imuData.gyro.z - gyroOffsetZ;
-    const float accelMagnitude =
-        sqrtf(imuData.accel.x * imuData.accel.x +
-              imuData.accel.y * imuData.accel.y +
-              imuData.accel.z * imuData.accel.z);
-    const float gyroMagnitude = sqrtf(gx * gx + gy * gy + gz * gz);
-    // The sensor's native XY frame is rotated relative to the landscape
-    // screen/keyboard. Rotate it 90 degrees clockwise for human-facing
-    // pitch and roll while retaining native axes in the diagnostic rows.
-    const float screenAccelX = imuData.accel.y;
-    const float screenAccelY = -imuData.accel.x;
-    const float roll =
-        atan2f(screenAccelY, imuData.accel.z) * 180.0F / PI;
-    const float pitch =
-        atan2f(screenAccelX,
-               sqrtf(screenAccelY * screenAccelY +
-                     imuData.accel.z * imuData.accel.z)) *
-        180.0F / PI;
-    const bool stationary =
-        accelMagnitude > 0.85F && accelMagnitude < 1.15F &&
-        gyroMagnitude < 2.0F;
-
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s  %s%s", imuTypeName(),
-                   imuCalibrating ? "CALIBRATING" :
-                   (stationary ? "STILL" : "MOVING"),
-                   imuLogger.isActive() ? "  REC" : "");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Accel g  X%6.2f Y%6.2f Z%6.2f",
-                   imuData.accel.x, imuData.accel.y, imuData.accel.z);
-    display.setCursor(8, 63);
-    display.printf("Gyro d/s X%6.1f Y%6.1f Z%6.1f", gx, gy, gz);
-    display.setCursor(8, 80);
-    display.printf("Pitch %6.1f   Roll %6.1f", pitch, roll);
-    display.setCursor(8, 97);
-    if (imuCalibrating) {
-        display.printf("Keep still: %u%%", imuCalibrationSamples);
-    } else if (imuLogger.isActive()) {
-        String logName = imuLogger.path();
-        const int slash = logName.lastIndexOf('/');
-        if (slash >= 0) logName = logName.substring(slash + 1);
-        display.printf("%s  %lu rows", logName.c_str(),
-                       static_cast<unsigned long>(imuLogger.rowCount()));
-    } else {
-        display.printf("|a| %.2fg   |w| %.1f d/s", accelMagnitude,
-                       gyroMagnitude);
-    }
-    drawFooter("Tab: actions   Q: back");
-}
+// IMU screen: see include/imu_screen.h/src/imu_screen.cpp.
 
 void beginImuCalibration() {
     if (!imuAvailable) return;
@@ -4378,81 +3185,92 @@ void updateImu() {
 
 void drawCurrentScreen() {
     switch (currentScreen) {
-        case Screen::MainMenu: drawMainMenu(); break;
-        case Screen::WifiMenu: drawWifiMenu(); break;
-        case Screen::WifiRecon: drawWifiRecon(); break;
-        case Screen::WifiChannelAnalyzer: drawWifiChannelAnalyzer(); break;
-        case Screen::WifiDetail: drawWifiDetail(); break;
-        case Screen::WifiDeauthConfirm: drawWifiDeauthConfirm(); break;
-        case Screen::WifiHandshakeCapture: drawWifiHandshakeCapture(); break;
-        case Screen::WifiConnectSelect: drawWifiConnectSelect(); break;
-        case Screen::WifiConnectPassword: drawWifiConnectPassword(); break;
-        case Screen::WifiConnectStatus: drawWifiConnectStatus(); break;
-        case Screen::BleMenu: drawBleMenu(); break;
-        case Screen::DevicesMenu: drawDevicesMenu(); break;
-        case Screen::AiChat: drawAiChat(); break;
-        case Screen::CyberFamiliar: drawCyberFamiliar(); break;
+        case Screen::MainMenu: menuScreens.drawMain(); break;
+        case Screen::ObserveMenu: menuScreens.drawObserve(); break;
+        case Screen::FieldKitMenu: menuScreens.drawFieldKit(); break;
+        case Screen::WifiMenu: menuScreens.drawWifi(); break;
+        case Screen::WifiRecon: wifiScreens.drawRecon(); break;
+        case Screen::WifiChannelAnalyzer: wifiScreens.drawChannelAnalyzer(); break;
+        case Screen::WifiDetail: wifiScreens.drawDetail(); break;
+        case Screen::WifiDeauthConfirm: wifiScreens.drawDeauthConfirm(); break;
+        case Screen::WifiHandshakeCapture: wifiScreens.drawHandshakeCapture(); break;
+        case Screen::WifiConnectSelect: wifiScreens.drawConnectSelect(); break;
+        case Screen::WifiConnectPassword: wifiScreens.drawConnectPassword(); break;
+        case Screen::WifiConnectStatus: wifiScreens.drawConnectStatus(); break;
+        case Screen::BleMenu: menuScreens.drawBle(); break;
+        case Screen::DevicesMenu: menuScreens.drawDevices(); break;
+        case Screen::AiChat: aiChatScreen.draw(); break;
+        case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
+        case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
+        case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
         case Screen::CyberFamiliarResetConfirm:
-            drawCyberFamiliarResetConfirm();
+            familiarScreens.drawResetConfirm();
             break;
-        case Screen::BleDiscovery: drawBleDiscovery(); break;
-        case Screen::BleDetail: drawBleDetail(); break;
-        case Screen::BleKeyboard: drawBleKeyboard(); break;
-        case Screen::Biscuit: drawBiscuit(); break;
-        case Screen::BiscuitTools: drawBiscuitTools(); break;
-        case Screen::BiscuitResult: drawBiscuitResult(); break;
-        case Screen::BiscuitWardrive: drawBiscuitWardrive(); break;
-        case Screen::BleSpamSelect: drawBleSpamSelect(); break;
-        case Screen::BleSpam: drawBleSpam(); break;
-        case Screen::RfidMenu: drawRfidMenu(); break;
-        case Screen::Chameleon: drawChameleon(); break;
+        case Screen::BleDiscovery: bleScreens.drawDiscovery(); break;
+        case Screen::BleDetail: bleScreens.drawDetail(); break;
+        case Screen::BleKeyboard: bleScreens.drawKeyboard(); break;
+        case Screen::Biscuit: biscuitScreens.drawMain(); break;
+        case Screen::BiscuitTools: biscuitScreens.drawTools(); break;
+        case Screen::BiscuitResult: biscuitScreens.drawResult(); break;
+        case Screen::BiscuitWardrive: biscuitScreens.drawWardrive(); break;
+        case Screen::BleSpamSelect:
+            normalizeListPosition(BleSpamScreen::kModeCount);
+            bleSpamScreen.drawSelect(listSelection);
+            break;
+        case Screen::BleSpam: bleSpamScreen.drawActive(); break;
+        case Screen::RfidMenu: menuScreens.drawRfid(); break;
+        case Screen::Chameleon: chameleonScreen.draw(); break;
         case Screen::ChameleonEmulateConfirm:
-            drawChameleonEmulateConfirm();
+            chameleonScreen.drawEmulateConfirm();
             break;
-        case Screen::ToolsMenu: drawToolsMenu(); break;
-        case Screen::Infrared: drawInfrared(); break;
-        case Screen::UsbHid: drawUsbHid(); break;
-        case Screen::UsbHidConfirm: drawUsbHidConfirmation(); break;
-        case Screen::DuckyScripts: drawDuckyScripts(); break;
-        case Screen::DuckyConfirm: drawDuckyConfirm(); break;
-        case Screen::DuckyResult: drawDuckyResult(); break;
-        case Screen::Audio: drawAudio(); break;
-        case Screen::AudioMic: drawMicrophone(); break;
-        case Screen::AudioFiles: drawAudioFiles(); break;
+        case Screen::ToolsMenu: menuScreens.drawTools(); break;
+        case Screen::Infrared: irScreen.draw(); break;
+        case Screen::UsbHid: usbHidScreens.drawUsbHid(); break;
+        case Screen::UsbHidConfirm: usbHidScreens.drawUsbHidConfirm(); break;
+        case Screen::DuckyScripts: usbHidScreens.drawDuckyScripts(); break;
+        case Screen::DuckyConfirm: usbHidScreens.drawDuckyConfirm(); break;
+        case Screen::DuckyResult: usbHidScreens.drawDuckyResult(); break;
+        case Screen::Audio: audioScreens.drawMenu(); break;
+        case Screen::TtsLab: audioScreens.drawTtsLab(); break;
+        case Screen::AudioMic: audioScreens.drawMicrophone(); break;
+        case Screen::AudioFiles: audioScreens.drawAudioFiles(); break;
         case Screen::AudioPlaying: break;
-        case Screen::QrEntry: drawQrEntry(); break;
-        case Screen::QrDisplay: drawQrDisplay(); break;
-        case Screen::Files: drawFiles(); break;
-        case Screen::FileDetail: drawFileDetail(); break;
-        case Screen::TextPreview: drawTextPreview(); break;
-        case Screen::LogSessions: drawLogSessions(); break;
-        case Screen::LogDetail: drawLogDetail(); break;
-        case Screen::LogDeleteConfirm: drawLogDeleteConfirm(); break;
-        case Screen::System: drawSystem(); break;
-        case Screen::TimeStatus: drawTimeStatus(); break;
-        case Screen::GpsMenu: drawGpsMenu(); break;
-        case Screen::MeshMenu: drawMeshMenu(); break;
-        case Screen::WarDrive: drawWarDrive(); break;
-        case Screen::NetworkMenu: drawNetworkMenu(); break;
-        case Screen::NetworkDashboard: drawNetworkDashboard(); break;
-        case Screen::NetworkHostScan: drawNetworkHostScan(); break;
-        case Screen::NetworkPortScan: drawNetworkPortScan(); break;
-        case Screen::TelnetConnect: drawTelnetConnect(); break;
-        case Screen::TelnetSession: drawTelnetSession(); break;
-        case Screen::SshConnect: drawSshConnect(); break;
-        case Screen::SshPassword: drawSshPassword(); break;
-        case Screen::SshSession: drawSshSession(); break;
-        case Screen::Gnss: drawGnss(); break;
-        case Screen::LoRa: drawLoRa(); break;
-        case Screen::WifiSniffer: drawWifiSniffer(); break;
-        case Screen::Imu: drawImu(); break;
-        case Screen::Settings: drawSettings(); break;
-        case Screen::SettingsDisplay: drawSettingsDisplay(); break;
-        case Screen::SettingsBoot: drawSettingsBoot(); break;
-        case Screen::SettingsConnectivity: drawSettingsConnectivity(); break;
-        case Screen::SettingsReset: drawSettingsReset(); break;
-        case Screen::Placeholder: drawPlaceholder(); break;
-        case Screen::About: drawAbout(); break;
+        case Screen::QrEntry: qrScreens.drawEntry(); break;
+        case Screen::QrDisplay: qrScreens.drawDisplay(); break;
+        case Screen::Files: fileScreens.drawFiles(); break;
+        case Screen::FileDetail: fileScreens.drawFileDetail(); break;
+        case Screen::TextPreview: fileScreens.drawTextPreview(); break;
+        case Screen::LogSessions: logScreens.drawSessions(); break;
+        case Screen::LogDetail: logScreens.drawDetail(); break;
+        case Screen::LogDeleteConfirm: logScreens.drawDeleteConfirm(); break;
+        case Screen::System: systemScreens.drawSystem(systemDiagnostics()); break;
+        case Screen::TimeStatus: systemScreens.drawTimeStatus(); break;
+        case Screen::GpsMenu: menuScreens.drawGps(); break;
+        case Screen::MeshMenu: menuScreens.drawMesh(); break;
+        case Screen::WarDrive: networkScanScreens.drawWarDrive(); break;
+        case Screen::NetworkMenu: menuScreens.drawNetwork(); break;
+        case Screen::NetworkDashboard: networkScanScreens.drawNetworkDashboard(); break;
+        case Screen::NetworkHostScan: networkScanScreens.drawNetworkHostScan(); break;
+        case Screen::NetworkPortScan: networkScanScreens.drawNetworkPortScan(); break;
+        case Screen::TelnetConnect: telnetScreens.drawConnect(); break;
+        case Screen::TelnetSession: telnetScreens.drawSession(); break;
+        case Screen::SshConnect: sshScreens.drawConnect(); break;
+        case Screen::SshPassword: sshScreens.drawPassword(); break;
+        case Screen::SshSession: sshScreens.drawSession(); break;
+        case Screen::Gnss: gnssScreen.draw(); break;
+        case Screen::LoRa: loraScreen.draw(); break;
+        case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
+        case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
+        case Screen::Imu: imuScreen.draw(); break;
+        case Screen::Settings: menuScreens.drawSettings(); break;
+        case Screen::SettingsDisplay: settingsScreens.drawDisplay(); break;
+        case Screen::SettingsBoot: settingsScreens.drawBoot(); break;
+        case Screen::SettingsConnectivity: settingsScreens.drawConnectivity(); break;
+        case Screen::SettingsReset: settingsScreens.drawResetConfirm(); break;
+        case Screen::Placeholder: settingsScreens.drawPlaceholder(); break;
+        case Screen::About: settingsScreens.drawAbout(); break;
+        case Screen::OtaCheck: otaScreens.drawCheck(); break;
+        case Screen::OtaInstalling: otaScreens.drawInstalling(); break;
     }
 }
 
@@ -4515,6 +3333,12 @@ void drawBootConsole(unsigned long elapsed,
     const int progress =
         static_cast<int>(visibleEntries * display.width() / entryCount);
     display.fillRect(0, 132, progress, 3, Branding::accent);
+}
+
+unsigned long bootDuration(unsigned long normalMs) {
+    if (bootSpeedIndex == 0) return normalMs * 3UL / 2UL;
+    if (bootSpeedIndex == 2) return std::max(100UL, normalMs / 2UL);
+    return normalMs;
 }
 
 void playBootChimeTones() {
@@ -4612,10 +3436,10 @@ void showBootSummary(const std::vector<SystemDiagnostic>& diagnostics) {
             bootChimeDeadlineMs = millis() + 20000;
             nextBootChimeAttemptMs = millis() + 250;
             bootChimeStatus = "Pending (deferred)";
-            if (!fastBootEnabled) delay(1000);
+            delay(bootDuration(1000));
         }
     } else {
-        if (!fastBootEnabled) delay(1000);
+        delay(bootDuration(1000));
     }
 }
 
@@ -4654,25 +3478,25 @@ void showBootTitle() {
 
     // Decrypt-style reveal: the product name resolves out of scrambled
     // characters left-to-right, like a terminal brute-forcing a cipher.
-    // Skipped entirely under fast boot.
+    // Reveal and hold durations follow the selected boot speed.
     display.setTextSize(2);
     const int titleY = 39;
     const int titleWidth = display.textWidth(Branding::productName);
     const int titleX = (display.width() - titleWidth) / 2;
     const size_t nameLength = strlen(Branding::productName);
     bool skipped = false;
-    if (!fastBootEnabled) {
+    {
         static constexpr char kScrambleChars[] =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&@?";
         constexpr size_t kScrambleCharCount = sizeof(kScrambleChars) - 1;
-        constexpr unsigned long kRevealDurationMs = 650;
+        const unsigned long revealDurationMs = bootDuration(650);
         const unsigned long revealStarted = millis();
         size_t locked = 0;
         while (locked < nameLength && !skipped) {
             const unsigned long elapsed = millis() - revealStarted;
             locked = std::min(nameLength,
                               static_cast<size_t>((elapsed * nameLength) /
-                                                  kRevealDurationMs));
+                                                  revealDurationMs));
             display.fillRect(titleX - 2, titleY - 2, titleWidth + 4, 18,
                              Branding::background);
             display.setCursor(titleX, titleY);
@@ -4703,18 +3527,13 @@ void showBootTitle() {
     display.setCursor(versionX, versionY);
     display.printf("v%s", Branding::version);
 
-    if (fastBootEnabled) {
-        delay(150);
-        return;
-    }
-
     // Blinking terminal cursor for the remaining hold time.
     const int cursorX = versionX + display.textWidth(String("v") +
                                                       Branding::version) +
                         2;
     const unsigned long holdStarted = millis();
     bool cursorOn = true;
-    while (!skipped && millis() - holdStarted < 2200) {
+    while (!skipped && millis() - holdStarted < bootDuration(2200)) {
         display.fillRect(cursorX, versionY, 6, 8,
                          cursorOn ? Branding::muted : Branding::background);
         cursorOn = !cursorOn;
@@ -4770,9 +3589,63 @@ void showMinimalBoot(unsigned long durationMs = 700) {
     }
 }
 
+void showCipherHackBoot(unsigned long durationMs = 1800) {
+    auto& display = M5Cardputer.Display;
+    display.fillScreen(Branding::background);
+    display.setTextSize(1);
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(7, 7);
+    display.print("BREACH SEQUENCE // GHOSTWIRE");
+    display.drawFastHLine(7, 19, 226, Branding::panel);
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    static constexpr char kTarget[] = "B7A4";
+    const unsigned long started = millis();
+    int lastFrame = -1;
+    while (millis() - started < durationMs) {
+        const unsigned long elapsed = millis() - started;
+        const int locked = std::min(4, static_cast<int>(elapsed * 5 /
+                                                        std::max(1UL, durationMs)));
+        const int frame = static_cast<int>(elapsed / 70);
+        if (frame != lastFrame) {
+            lastFrame = frame;
+            for (int column = 0; column < 4; ++column) {
+                const int x = 24 + column * 54;
+                display.fillRoundRect(x, 32, 42, 48, 4, Branding::panel);
+                display.drawRoundRect(x, 32, 42, 48, 4,
+                                      column < locked ? Branding::accent
+                                                      : Branding::muted);
+                const char value = column < locked
+                                       ? kTarget[column]
+                                       : kHex[(frame + column * 5) & 0x0F];
+                display.setTextSize(2);
+                display.setTextColor(column < locked ? Branding::accent
+                                                     : Branding::text,
+                                     Branding::panel);
+                display.setCursor(x + 14, 48);
+                display.print(value);
+            }
+            display.setTextSize(1);
+            display.fillRect(7, 90, 226, 31, Branding::background);
+            display.setTextColor(locked == 4 ? Branding::accent
+                                              : Branding::warning,
+                                 Branding::background);
+            display.setCursor(7, 92);
+            display.printf("ICE: %s", locked == 4 ? "BREACHED" : "DECRYPTING");
+            display.setTextColor(Branding::muted, Branding::background);
+            display.setCursor(7, 108);
+            for (int index = 0; index < 20; ++index) {
+                display.print(index < locked * 5 ? '#' : '-');
+            }
+        }
+        if (bootTitleSkipRequested()) break;
+        delay(25);
+    }
+    display.setTextSize(1);
+}
+
 void showNeonBreachBoot(unsigned long durationMs = 1500) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0000);
+    display.fillScreen(Branding::background);
     const unsigned long started = millis();
     while (millis() - started < durationMs) {
         const int progress = static_cast<int>(
@@ -4781,20 +3654,23 @@ void showNeonBreachBoot(unsigned long durationMs = 1500) {
         for (int line = 0; line < 5; ++line) {
             const int y = random(8, display.height() - 8);
             display.drawFastHLine(random(0, 70), y, random(30, 170),
-                                  line & 1 ? 0xF81F : 0x07FF);
+                                  line & 1 ? Branding::warning
+                                           : Branding::accent);
         }
-        display.fillRect(18, 37, display.width() - 36, 54, 0x0000);
-        display.drawRect(18, 37, display.width() - 36, 54, 0xF81F);
+        display.fillRect(18, 37, display.width() - 36, 54,
+                         Branding::background);
+        display.drawRect(18, 37, display.width() - 36, 54,
+                         Branding::warning);
         display.setTextSize(2);
-        display.setTextColor(0x07FF, 0x0000);
+        display.setTextColor(Branding::accent, Branding::background);
         display.setCursor(38 + random(-2, 3), 48);
         display.print("NEON BREACH");
         display.setTextSize(1);
-        display.setTextColor(0xFFFF, 0x0000);
+        display.setTextColor(Branding::text, Branding::background);
         display.setCursor(67, 74);
         display.printf("LINK %03d%%", progress);
         display.fillRect(24, 96, (display.width() - 48) * progress / 100, 3,
-                         0x07FF);
+                         Branding::accent);
         if (bootTitleSkipRequested()) break;
         delay(65);
     }
@@ -4802,7 +3678,7 @@ void showNeonBreachBoot(unsigned long durationMs = 1500) {
 
 void showHackerBoot(unsigned long durationMs = 1600) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0000);
+    display.fillScreen(Branding::background);
     display.setTextSize(1);
     static const char* const lines[] = {
         "$ mount /dev/ghost", "[ok] entropy seeded", "[ok] radio isolated",
@@ -4814,14 +3690,16 @@ void showHackerBoot(unsigned long durationMs = 1600) {
         const size_t target = std::min<size_t>(
             sizeof(lines) / sizeof(lines[0]), 1 + (millis() - started) / 210);
         while (shown < target) {
-            display.setTextColor(shown == 5 ? Branding::warning : 0x07E0,
-                                 0x0000);
+            display.setTextColor(shown == 5 ? Branding::warning
+                                             : Branding::accent,
+                                 Branding::background);
             display.setCursor(7, 10 + static_cast<int>(shown) * 18);
             display.print(lines[shown]);
             ++shown;
         }
         display.fillRect(7, 120, 7, 8,
-                         ((millis() / 180) & 1) ? 0x07E0 : 0x0000);
+                         ((millis() / 180) & 1) ? Branding::accent
+                                                : Branding::background);
         if (bootTitleSkipRequested()) break;
         delay(35);
     }
@@ -4836,11 +3714,11 @@ void showSillyBoot(unsigned long durationMs = 1500) {
         const int x = 18 + (frame * 7) % (display.width() - 52);
         const int y = 54 + static_cast<int>(sinf(frame * 0.55F) * 22);
         display.fillRect(0, 24, display.width(), 88, Branding::background);
-        display.fillCircle(x + 14, y, 13, 0xFFE0);
-        display.fillCircle(x + 10, y - 4, 2, 0x0000);
-        display.fillCircle(x + 18, y - 4, 2, 0x0000);
+        display.fillCircle(x + 14, y, 13, Branding::accent);
+        display.fillCircle(x + 10, y - 4, 2, Branding::background);
+        display.fillCircle(x + 18, y - 4, 2, Branding::background);
         display.fillTriangle(x + 27, y, x + 36, y + 4, x + 27, y + 8,
-                             0xFD20);
+                             Branding::warning);
         display.setTextSize(1);
         display.setTextColor(Branding::accent, Branding::background);
         display.setCursor(67, 12);
@@ -4855,27 +3733,28 @@ void showSillyBoot(unsigned long durationMs = 1500) {
 
 void showSynthwaveBoot(unsigned long durationMs = 1500) {
     auto& display = M5Cardputer.Display;
-    display.fillScreen(0x0008);
+    display.fillScreen(Branding::background);
     const int horizon = 72;
-    display.fillCircle(display.width() / 2, horizon - 12, 24, 0xFBE0);
+    display.fillCircle(display.width() / 2, horizon - 12, 24,
+                       Branding::warning);
     display.fillRect(0, horizon, display.width(), display.height() - horizon,
-                     0x0008);
+                     Branding::background);
     for (int y = horizon; y < display.height(); y += 11) {
-        display.drawFastHLine(0, y, display.width(), 0xF81F);
+        display.drawFastHLine(0, y, display.width(), Branding::warning);
     }
     for (int x = -120; x <= 360; x += 24) {
         display.drawLine(display.width() / 2, horizon, x, display.height() - 1,
-                         0x07FF);
+                         Branding::accent);
     }
     display.setTextSize(2);
-    display.setTextColor(0x07FF, 0x0008);
+    display.setTextColor(Branding::accent, Branding::background);
     display.setCursor(57, 22);
     display.print("GHOSTWIRE");
     const unsigned long started = millis();
     while (millis() - started < durationMs) {
         const int y = horizon + static_cast<int>((millis() - started) / 12) %
                                     (display.height() - horizon);
-        display.drawFastHLine(0, y, display.width(), 0xFFFF);
+        display.drawFastHLine(0, y, display.width(), Branding::text);
         if (bootTitleSkipRequested()) break;
         delay(35);
     }
@@ -4892,12 +3771,14 @@ void showSelectedStyledBoot(unsigned long durationMs) {
 }
 
 void previewBootAnimation() {
-    if (bootAnimationIndex == 2) {
-        showRadarBoot(1200);
+    if (bootAnimationIndex == 1) {
+        showCipherHackBoot(bootDuration(1800));
+    } else if (bootAnimationIndex == 2) {
+        showRadarBoot(bootDuration(1200));
     } else if (bootAnimationIndex == 3) {
-        showMinimalBoot(900);
+        showMinimalBoot(bootDuration(900));
     } else if (bootAnimationIndex >= 4) {
-        showSelectedStyledBoot(1300);
+        showSelectedStyledBoot(bootDuration(1300));
     } else {
         // A compact preview of the console/cipher styles without replaying
         // the full multi-second boot diagnostics sequence.
@@ -4918,7 +3799,7 @@ void previewBootAnimation() {
                            step < 4 ? "READY" : "WAIT");
             delay(100);
         }
-        delay(350);
+        delay(bootDuration(350));
     }
     recoverKeyboardAfterBlockingOperation();
 }
@@ -4926,7 +3807,7 @@ void previewBootAnimation() {
 void showBootSequence() {
     M5Cardputer.Display.fillScreen(Branding::background);
     const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
-    if (!fastBootEnabled && bootAnimationIndex == 0) {
+    if (bootAnimationIndex == 0) {
         M5Canvas console(&M5Cardputer.Display);
         if (!console.createSprite(M5Cardputer.Display.width(), 61)) {
             showBootSummary(diagnostics);
@@ -4936,9 +3817,12 @@ void showBootSequence() {
         size_t drawnEntries = 0;
         int drawnSpinner = -1;
         const unsigned long started = millis();
-        while (millis() - started < 3920) {
+        const unsigned long consoleDuration = bootDuration(3920);
+        while (millis() - started < consoleDuration) {
             const unsigned long elapsed = millis() - started;
-            drawBootConsole(elapsed, diagnostics, console, drawnEntries,
+            const unsigned long normalized = elapsed * 3920UL /
+                                             std::max(1UL, consoleDuration);
+            drawBootConsole(normalized, diagnostics, console, drawnEntries,
                             drawnSpinner);
             M5Cardputer.update();
             if (M5Cardputer.Keyboard.isChange() &&
@@ -4949,14 +3833,17 @@ void showBootSequence() {
         }
         console.deleteSprite();
     }
-    if (!fastBootEnabled && bootAnimationIndex == 2) {
-        showRadarBoot();
+    if (bootAnimationIndex == 1) {
+        showCipherHackBoot(bootDuration(1800));
     }
-    if (!fastBootEnabled && bootAnimationIndex >= 4) {
-        showSelectedStyledBoot(1700);
+    if (bootAnimationIndex == 2) {
+        showRadarBoot(bootDuration(1500));
     }
-    if (bootAnimationIndex == 3 || fastBootEnabled) {
-        showMinimalBoot(fastBootEnabled ? 180 : 700);
+    if (bootAnimationIndex >= 4) {
+        showSelectedStyledBoot(bootDuration(1700));
+    }
+    if (bootAnimationIndex == 3) {
+        showMinimalBoot(bootDuration(700));
         return;
     }
     showBootSummary(diagnostics);
@@ -4975,6 +3862,7 @@ bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
 }
 
 void stopAllActiveOperations() {
+    wifiGuardianService.stop();
     wifiSnifferService.end();
     bleSpamService.end();
     bleKeyboardService.end();
@@ -4983,6 +3871,7 @@ void stopAllActiveOperations() {
     warDriveService.stop();
     networkHostScanService.stop();
     networkPortScanService.stop();
+    familiarPatrolService.stop();
     chameleonContinuousScan = false;
     chameleonClient.disconnect();
     telnetClient.stop();
@@ -4993,8 +3882,10 @@ void stopAllActiveOperations() {
     gnssLogger.stop();
     loraLogger.stop();
     wifiSnifferLogger.stop();
+    guardianEventLogger.stop();
     bleCaptureLogger.stop();
     wifiPassiveCaptureLogger.stop();
+    guardianEvidenceLogger.stop();
     chameleonLogger.stop();
     warDriveWifiLogger.stop();
     warDriveBleLogger.stop();
@@ -5009,7 +3900,7 @@ void stopAllActiveOperations() {
     listSelection = 0;
     listOffset = 0;
     Serial.println("[safety] all active operations stopped");
-    drawMainMenu();
+    menuScreens.drawMain();
     drawFooter("Emergency stop complete");
 }
 
@@ -5048,44 +3939,54 @@ void enterMenuItem() {
     listSelection = 0;
     listOffset = 0;
     switch (menuSelection) {
-        case 0: currentScreen = Screen::WifiMenu; break;
-        case 1: currentScreen = Screen::BleMenu; break;
-        case 2: currentScreen = Screen::GpsMenu; break;
-        case 3: currentScreen = Screen::MeshMenu; break;
-        case 4: currentScreen = Screen::WarDrive; break;
-        case 5: currentScreen = Screen::NetworkMenu; break;
-        case 6: currentScreen = Screen::DevicesMenu; break;
-        case 7:
-            currentScreen = Screen::AiChat;
-            aiNotice = "";
-            aiService.loadConfig();
-            break;
-        case 8:
+        case 0:
             currentScreen = Screen::CyberFamiliar;
             familiarPage = 0;
             break;
-        case 9: currentScreen = Screen::ToolsMenu; break;
-        case 10: currentScreen = Screen::Settings; break;
+        case 1: currentScreen = Screen::ObserveMenu; break;
+        case 2: currentScreen = Screen::NetworkMenu; break;
+        case 3:
+            currentScreen = Screen::LogSessions;
+            evidenceReturnScreen = Screen::MainMenu;
+            loadLogSessions();
+            break;
+        case 4: currentScreen = Screen::FieldKitMenu; break;
+        case 5: currentScreen = Screen::Settings; break;
     }
     drawCurrentScreen();
 }
 
 void goBack() {
-    if (currentScreen == Screen::AiChat) {
+    if (currentScreen == Screen::ObserveMenu ||
+        currentScreen == Screen::FieldKitMenu) {
+        const bool wasObserve = currentScreen == Screen::ObserveMenu;
         currentScreen = Screen::MainMenu;
-        menuSelection = 7;
-        drawMainMenu();
+        menuSelection = wasObserve ? 1 : 4;
+        menuScreens.drawMain();
+        return;
+    }
+    if (currentScreen == Screen::AiChat) {
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 1;
+        menuScreens.drawFieldKit();
         return;
     }
     if (currentScreen == Screen::CyberFamiliar) {
         currentScreen = Screen::MainMenu;
-        menuSelection = 8;
-        drawMainMenu();
+        menuSelection = 0;
+        menuScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::CyberFamiliarResetConfirm) {
         currentScreen = Screen::CyberFamiliar;
-        drawCyberFamiliar();
+        familiarScreens.drawFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarPatrol ||
+        currentScreen == Screen::FamiliarPatrolConfirm) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarPage = 0;
+        familiarScreens.drawFamiliar();
         return;
     }
     if (currentScreen == Screen::Imu) {
@@ -5102,6 +4003,7 @@ void goBack() {
         wifiPassiveCaptureLogger.stop();
         wifiSnifferService.end();
     }
+    if (currentScreen == Screen::WifiGuardian) stopWifiGuardian();
     if (currentScreen == Screen::BleDiscovery) {
         bleCaptureLogger.stop();
         bleScanner.stop();
@@ -5109,26 +4011,26 @@ void goBack() {
     if (currentScreen == Screen::Gnss) {
         currentScreen = Screen::GpsMenu;
         listSelection = 0;
-        drawGpsMenu();
+        menuScreens.drawGps();
         return;
     }
     if (currentScreen == Screen::LoRa) {
         currentScreen = Screen::MeshMenu;
         listSelection = 0;
-        drawMeshMenu();
+        menuScreens.drawMesh();
         return;
     }
     if (currentScreen == Screen::NetworkHostScan) {
         networkHostScanService.stop();
         currentScreen = Screen::NetworkMenu;
         listSelection = 0;
-        drawNetworkMenu();
+        menuScreens.drawNetwork();
         return;
     }
     if (currentScreen == Screen::NetworkDashboard) {
         currentScreen = Screen::NetworkMenu;
         listSelection = 0;
-        drawNetworkMenu();
+        menuScreens.drawNetwork();
         return;
     }
     if (currentScreen == Screen::NetworkPortScan) {
@@ -5136,7 +4038,7 @@ void goBack() {
         currentScreen = Screen::NetworkHostScan;
         listSelection = 0;
         listOffset = 0;
-        drawNetworkHostScan();
+        networkScanScreens.drawNetworkHostScan();
         return;
     }
     if (currentScreen == Screen::SettingsDisplay ||
@@ -5146,20 +4048,20 @@ void goBack() {
         currentScreen = Screen::Settings;
         listSelection = 0;
         listOffset = 0;
-        drawSettings();
+        menuScreens.drawSettings();
         return;
     }
     if (currentScreen == Screen::AudioMic) {
         audioService.endMicrophone();
         M5Cardputer.Speaker.begin();
         currentScreen = Screen::Audio;
-        drawAudio();
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::AudioFiles) {
         currentScreen = Screen::Audio;
         listSelection = 2;
-        drawAudio();
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::AudioPlaying) {
@@ -5170,19 +4072,25 @@ void goBack() {
     }
     if (currentScreen == Screen::QrDisplay) {
         currentScreen = Screen::QrEntry;
-        drawQrEntry();
+        qrScreens.drawEntry();
+        return;
+    }
+    if (currentScreen == Screen::TtsLab) {
+        currentScreen = Screen::Audio;
+        listSelection = 3;
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::QrEntry) {
         currentScreen = Screen::ToolsMenu;
         listSelection = 6;
         listOffset = 1;
-        drawToolsMenu();
+        menuScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::FileDetail) {
         currentScreen = Screen::Files;
-        drawFiles();
+        fileScreens.drawFiles();
         return;
     }
     if (currentScreen == Screen::TextPreview) {
@@ -5192,82 +4100,94 @@ void goBack() {
     }
     if (currentScreen == Screen::LogDetail) {
         currentScreen = Screen::LogSessions;
-        drawLogSessions();
+        logScreens.drawSessions();
+        return;
+    }
+    if (currentScreen == Screen::LogSessions) {
+        currentScreen = evidenceReturnScreen;
+        if (currentScreen == Screen::MainMenu) {
+            menuSelection = 3;
+            menuScreens.drawMain();
+        } else {
+            listSelection = 3;
+            menuScreens.drawTools();
+        }
         return;
     }
     if (currentScreen == Screen::LogDeleteConfirm) {
         currentScreen = Screen::LogDetail;
-        drawLogDetail();
+        logScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::TimeStatus) {
         currentScreen = Screen::System;
-        drawSystem();
+        systemScreens.drawSystem(systemDiagnostics());
         return;
     }
     if (currentScreen == Screen::WifiDetail) {
         currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     if (currentScreen == Screen::WifiDeauthConfirm) {
         currentScreen = Screen::WifiDetail;
-        drawWifiDetail();
+        wifiScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::WifiHandshakeCapture) {
         handshakeCaptureLogger.stop();
         wifiSnifferService.clearHandshakeTarget();
         currentScreen = Screen::WifiDetail;
-        drawWifiDetail();
+        wifiScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::BleDetail) {
         currentScreen = Screen::BleDiscovery;
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     if (currentScreen == Screen::UsbHidConfirm) {
         currentScreen = Screen::UsbHid;
-        drawUsbHid();
+        usbHidScreens.drawUsbHid();
         return;
     }
     if (currentScreen == Screen::DuckyScripts) {
         currentScreen = Screen::UsbHid;
         listSelection = kHidPresetCount;
-        drawUsbHid();
+        usbHidScreens.drawUsbHid();
         return;
     }
     if (currentScreen == Screen::DuckyConfirm ||
         currentScreen == Screen::DuckyResult) {
         currentScreen = Screen::DuckyScripts;
-        drawDuckyScripts();
+        usbHidScreens.drawDuckyScripts();
         return;
     }
     if (currentScreen == Screen::Files && currentPath != "/") {
         const int slash = currentPath.lastIndexOf('/');
         currentPath = slash <= 0 ? "/" : currentPath.substring(0, slash);
         loadDirectory();
-        drawFiles();
+        fileScreens.drawFiles();
         return;
     }
     if (currentScreen == Screen::WifiRecon ||
         currentScreen == Screen::WifiChannelAnalyzer ||
-        currentScreen == Screen::WifiSniffer) {
+        currentScreen == Screen::WifiSniffer ||
+        currentScreen == Screen::WifiGuardian) {
         currentScreen = Screen::WifiMenu;
         listSelection = 0;
-        drawWifiMenu();
+        menuScreens.drawWifi();
         return;
     }
     if (currentScreen == Screen::WifiConnectSelect) {
         currentScreen = Screen::WifiMenu;
-        listSelection = 2;
-        drawWifiMenu();
+        listSelection = 4;
+        menuScreens.drawWifi();
         return;
     }
     if (currentScreen == Screen::WifiConnectPassword) {
         currentScreen = Screen::WifiConnectSelect;
-        drawWifiConnectSelect();
+        wifiScreens.drawConnectSelect();
         return;
     }
     if (currentScreen == Screen::WifiConnectStatus) {
@@ -5276,58 +4196,59 @@ void goBack() {
         // background for future network tools to use. Disconnecting is
         // the explicit D key on this screen, not a side effect of leaving.
         currentScreen = Screen::WifiConnectSelect;
-        drawWifiConnectSelect();
+        wifiScreens.drawConnectSelect();
         return;
     }
     if (currentScreen == Screen::BleDiscovery) {
         currentScreen = Screen::BleMenu;
         listSelection = 0;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::BleKeyboard) {
         bleKeyboardService.end();
         currentScreen = Screen::BleMenu;
         listSelection = 1;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::BiscuitResult) {
         currentScreen = Screen::BiscuitTools;
         listSelection = 0;
-        drawBiscuitTools();
+        biscuitScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::BiscuitWardrive) {
         stopBiscuitWardrive();
         currentScreen = Screen::BiscuitTools;
         listSelection = 6;
-        drawBiscuitTools();
+        biscuitScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::BiscuitTools) {
         currentScreen = Screen::Biscuit;
-        drawBiscuit();
+        biscuitScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::Biscuit) {
         biscuitClient.disconnect();
         currentScreen = Screen::DevicesMenu;
         listSelection = 0;
-        drawDevicesMenu();
+        menuScreens.drawDevices();
         return;
     }
     if (currentScreen == Screen::BleSpam) {
         bleSpamService.end();
         currentScreen = Screen::BleSpamSelect;
         listSelection = 0;
-        drawBleSpamSelect();
+        normalizeListPosition(BleSpamScreen::kModeCount);
+        bleSpamScreen.drawSelect(listSelection);
         return;
     }
     if (currentScreen == Screen::BleSpamSelect) {
         currentScreen = Screen::BleMenu;
         listSelection = 2;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::Chameleon) {
@@ -5339,39 +4260,71 @@ void goBack() {
         chameleonLastLoggedSignature = "";
         currentScreen = Screen::DevicesMenu;
         listSelection = 1;
-        drawDevicesMenu();
+        menuScreens.drawDevices();
         return;
     }
     if (currentScreen == Screen::ChameleonEmulateConfirm) {
         currentScreen = Screen::Chameleon;
-        drawChameleon();
+        chameleonScreen.draw();
         return;
     }
     if (currentScreen == Screen::Infrared || currentScreen == Screen::UsbHid ||
         currentScreen == Screen::Audio ||
-        currentScreen == Screen::LogSessions || currentScreen == Screen::Imu ||
+        currentScreen == Screen::Imu ||
         currentScreen == Screen::System || currentScreen == Screen::About ||
         currentScreen == Screen::Files) {
         // Files only reaches here when at "/" -- the case above already
         // returns for "go up a directory" when currentPath isn't root.
         currentScreen = Screen::ToolsMenu;
         listSelection = 0;
-        drawToolsMenu();
+        menuScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::DevicesMenu) {
-        currentScreen = Screen::MainMenu;
-        menuSelection = 6;
-        drawMainMenu();
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 0;
+        menuScreens.drawFieldKit();
         return;
     }
     if (currentScreen == Screen::WarDrive) {
         warDriveService.stop();
         if (warDriveWifiLogger.isActive()) warDriveWifiLogger.stop();
         if (warDriveBleLogger.isActive()) warDriveBleLogger.stop();
+        currentScreen = Screen::ObserveMenu;
+        listSelection = 4;
+        menuScreens.drawObserve();
+        return;
+    }
+    if (currentScreen == Screen::WifiMenu || currentScreen == Screen::BleMenu ||
+        currentScreen == Screen::GpsMenu || currentScreen == Screen::MeshMenu) {
+        const Screen previous = currentScreen;
+        currentScreen = Screen::ObserveMenu;
+        listSelection = previous == Screen::WifiMenu ? 0
+                        : previous == Screen::BleMenu ? 1
+                        : previous == Screen::GpsMenu ? 2 : 3;
+        menuScreens.drawObserve();
+        return;
+    }
+    if (currentScreen == Screen::ToolsMenu) {
+        currentScreen = Screen::FieldKitMenu;
+        listSelection = 2;
+        menuScreens.drawFieldKit();
+        return;
+    }
+    if (currentScreen == Screen::NetworkMenu) {
+        currentScreen = Screen::MainMenu;
+        menuSelection = 2;
+        menuScreens.drawMain();
+        return;
+    }
+    if (currentScreen == Screen::Settings) {
+        currentScreen = Screen::MainMenu;
+        menuSelection = 5;
+        menuScreens.drawMain();
+        return;
     }
     currentScreen = Screen::MainMenu;
-    drawMainMenu();
+    menuScreens.drawMain();
 }
 
 void handleInput(const Keyboard_Class::KeysState& keys) {
@@ -5389,7 +4342,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (keys.enter && !qrText.isEmpty()) {
             currentScreen = Screen::QrDisplay;
-            drawQrDisplay();
+            qrScreens.drawDisplay();
             return;
         }
         if (keys.backspace && !qrText.isEmpty()) {
@@ -5406,7 +4359,40 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             goBack();
         } else if (keys.enter) {
             currentScreen = Screen::QrEntry;
-            drawQrEntry();
+            qrScreens.drawEntry();
+        }
+        return;
+    }
+    if (currentScreen == Screen::TtsLab) {
+        if (keys.esc) { goBack(); return; }
+        if (keys.tab) {
+            ttsLabPhrase = (ttsLabPhrase + 1) % kTtsLabPhraseCount;
+            audioScreens.drawTtsLab();
+            return;
+        }
+        if (keys.enter) {
+            const auto& phrase = kTtsLabPhrases[ttsLabPhrase];
+            drawHeader("Familiar: speaking");
+            M5Cardputer.Display.setCursor(8, 48);
+            M5Cardputer.Display.print(phrase.name);
+            const uint32_t started = millis();
+            bool success = true;
+            for (uint8_t i = 0; i < phrase.wordCount; ++i) {
+                const String path = familiarWordPath(phrase.words[i]);
+                // The normal player uses a conservative 150 ms decoder
+                // settling delay. A short gap makes adjacent word clips
+                // sound like a phrase while retaining an I2S handoff margin.
+                if (!audioService.startMp3(path.c_str(), 25)) {
+                    success = false;
+                    break;
+                }
+                while (audioService.isPlaying()) delay(2);
+            }
+            ttsLabPlaybackMs = millis() - started;
+            ttsLabStatus = success ? "Complete" : "Missing or invalid word MP3";
+            recoverKeyboardAfterBlockingOperation();
+            audioScreens.drawTtsLab();
+            return;
         }
         return;
     }
@@ -5419,19 +4405,19 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (keys.up) {
             ++aiScrollLines;
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.down) {
             if (aiScrollLines > 0) --aiScrollLines;
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 'r')) {
             if (!sdAvailable || WiFi.status() != WL_CONNECTED) {
                 aiNotice = !sdAvailable ? "SD card required"
                                         : "Connect Wi-Fi first";
-                drawAiChat();
+                aiChatScreen.draw();
                 return;
             }
             drawHeader("AI: Recording 6 seconds");
@@ -5458,7 +4444,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             SD.remove(kAiRecordingPath);
             recoverKeyboardAfterBlockingOperation();
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 's')) {
@@ -5478,43 +4464,35 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     currentScreen = Screen::AudioPlaying;
                     nowPlayingName = "AI reply";
                     nowPlayingSource = kAiSpeechPath;
-                    drawHeader("Now Playing");
-                    M5Cardputer.Display.setTextColor(
-                        Branding::text, Branding::background);
-                    M5Cardputer.Display.setCursor(8, 40);
-                    M5Cardputer.Display.print("AI reply");
-                    M5Cardputer.Display.setTextColor(
-                        Branding::muted, Branding::background);
-                    M5Cardputer.Display.setCursor(8, 64);
-                    M5Cardputer.Display.print("OpenAI text-to-speech");
-                    drawFooter("Enter/Backspace/Q: stop");
+                    audioScreens.drawNowPlaying("AI reply",
+                                                "OpenAI text-to-speech");
                     recoverKeyboardAfterBlockingOperation();
                     return;
                 }
                 aiNotice = aiService.status();
                 recoverKeyboardAfterBlockingOperation();
             }
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 'n')) {
             aiService.clearHistory();
             aiNotice = "Conversation cleared";
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.tab) {
             aiService.toggleProvider();
             aiNotice = aiService.isConfigured() ? "Provider changed"
                                                  : "Provider key missing";
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.enter && !aiPrompt.isEmpty()) {
             const String prompt = aiPrompt;
             aiPrompt = "";
             aiNotice = "Waiting for " + String(aiService.providerName()) + "...";
-            drawAiChat();
+            aiChatScreen.draw();
             String answer;
             if (!aiService.send(prompt, answer)) {
                 aiPrompt = prompt;
@@ -5524,7 +4502,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 aiScrollLines = 0;
             }
             recoverKeyboardAfterBlockingOperation();
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.backspace && !aiPrompt.isEmpty()) {
@@ -5533,7 +4511,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         for (char value : keys.word) {
             if (!keys.ctrl && aiPrompt.length() < 500) aiPrompt += value;
         }
-        drawAiComposer();
+        aiChatScreen.drawComposer();
         return;
     }
     // This screen forwards ordinary keys, so process it before Ghostwire's
@@ -5544,14 +4522,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             bleKeyboardService.end();
             currentScreen = Screen::BleMenu;
             listSelection = 1;
-            drawBleMenu();
+            menuScreens.drawBle();
             return;
         }
         if (!bleKeyboardService.isActive()) {
             if (keys.enter) {
                 bleKeyboardService.begin(batteryPercentage());
             }
-            drawBleKeyboard();
+            bleScreens.drawKeyboard();
             return;
         }
         if (bleKeyboardService.isConnected()) {
@@ -5560,7 +4538,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.tab) bleKeyboardService.sendAscii('\t');
             for (char value : keys.word) bleKeyboardService.sendAscii(value);
         }
-        drawBleKeyboard();
+        bleScreens.drawKeyboard();
         return;
     }
     // Free-text password entry: every other screen treats individual
@@ -5667,7 +4645,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             preferences.remove("ssh_stage");
-            drawSshConnect();
+            sshScreens.drawConnect();
             return;
         }
         if (keys.tab) {
@@ -5761,7 +4739,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 sshService.write(outgoing, outgoingLength);
             }
             if (!keys.word.empty() || keys.backspace || keys.enter) {
-                drawSshSessionDynamic();
+                sshScreens.drawSessionDynamic();
             }
         }
         return;
@@ -5780,7 +4758,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                               pressedLetter(keys, 'j') ||
                               pressedLetter(keys, '.');
         const bool menuClose = keys.esc || keys.backspace || keys.tab ||
-                               keys.left || pressedLetter(keys, 'q') ||
+                               keys.left || pressedLetter(keys, ',') ||
+                               pressedLetter(keys, 'q') ||
                                pressedLetter(keys, 'b');
         if (!actionMenuItems.empty()) {
             if (menuUp) {
@@ -5810,16 +4789,42 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         return;
     }
 
-    const bool up = keys.up || pressedLetter(keys, 'w') ||
+    bool up = keys.up || pressedLetter(keys, 'w') ||
                     pressedLetter(keys, 'k') || pressedLetter(keys, ';');
-    const bool down = keys.down || pressedLetter(keys, 's') ||
+    bool down = keys.down || pressedLetter(keys, 's') ||
                       pressedLetter(keys, 'j') || pressedLetter(keys, '.');
+    const bool navigationLeft = keys.left || pressedLetter(keys, ',');
+    const bool navigationRight = keys.right || pressedLetter(keys, '/');
     const bool back = keys.esc || keys.backspace;
+    const bool cardMenuScreen = cardNavigationEnabled &&
+        (currentScreen == Screen::MainMenu ||
+         currentScreen == Screen::ObserveMenu ||
+         currentScreen == Screen::FieldKitMenu ||
+         currentScreen == Screen::WifiMenu ||
+         currentScreen == Screen::BleMenu ||
+         currentScreen == Screen::GpsMenu ||
+         currentScreen == Screen::MeshMenu ||
+         currentScreen == Screen::NetworkMenu ||
+         currentScreen == Screen::DevicesMenu ||
+         currentScreen == Screen::ToolsMenu ||
+         currentScreen == Screen::Settings);
+    if (cardMenuScreen) {
+        up = up || navigationLeft;
+        down = down || navigationRight;
+    }
+    const bool settingsAdjustmentScreen =
+        currentScreen == Screen::SettingsDisplay ||
+        currentScreen == Screen::SettingsBoot ||
+        currentScreen == Screen::SettingsConnectivity;
     const bool alternateBack =
-        keys.left || pressedLetter(keys, 'q') || pressedLetter(keys, 'b');
+        (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
+        pressedLetter(keys, 'q') ||
+        pressedLetter(keys, 'b');
     const bool refresh = pressedLetter(keys, 'r');
-    const bool decrease = pressedLetter(keys, '-');
-    const bool increase = pressedLetter(keys, '=');
+    const bool decrease = pressedLetter(keys, '-') ||
+                          (settingsAdjustmentScreen && navigationLeft);
+    const bool increase = pressedLetter(keys, '=') ||
+                          (settingsAdjustmentScreen && navigationRight);
 
     if ((back || alternateBack) && currentScreen != Screen::MainMenu) {
         goBack();
@@ -5839,15 +4844,57 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     switch (currentScreen) {
         case Screen::MainMenu:
             if (up) {
-                menuSelection =
-                    menuSelection == 0 ? kMenuCount - 1 : menuSelection - 1;
+                menuSelection = menuSelection == 0 ? MenuScreens::kMenuCount - 1
+                                                    : menuSelection - 1;
             } else if (down) {
-                menuSelection = (menuSelection + 1) % kMenuCount;
+                menuSelection = (menuSelection + 1) % MenuScreens::kMenuCount;
             } else if (keys.enter) {
                 enterMenuItem();
                 return;
             }
-            drawMainMenu();
+            menuScreens.drawMain();
+            break;
+
+        case Screen::ObserveMenu:
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
+            if (keys.enter) {
+                const size_t mission = listSelection;
+                listSelection = 0;
+                listOffset = 0;
+                switch (mission) {
+                    case 0: currentScreen = Screen::WifiMenu; break;
+                    case 1: currentScreen = Screen::BleMenu; break;
+                    case 2: currentScreen = Screen::GpsMenu; break;
+                    case 3: currentScreen = Screen::MeshMenu; break;
+                    case 4: currentScreen = Screen::WarDrive; break;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            menuScreens.drawObserve();
+            break;
+
+        case Screen::FieldKitMenu:
+            if (up) moveSelection(-1, 3);
+            if (down) moveSelection(1, 3);
+            if (keys.enter) {
+                const size_t tool = listSelection;
+                listSelection = 0;
+                listOffset = 0;
+                if (tool == 0) {
+                    currentScreen = Screen::DevicesMenu;
+                } else if (tool == 1) {
+                    currentScreen = Screen::AiChat;
+                    aiNotice = "";
+                    aiService.loadConfig();
+                } else {
+                    currentScreen = Screen::ToolsMenu;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            menuScreens.drawFieldKit();
             break;
 
         case Screen::AiChat:
@@ -5856,8 +4903,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::WifiMenu:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::WifiRecon;
@@ -5872,6 +4919,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     recentWifiProbes.clear();
                     wifiSnifferService.begin();
                     drawCurrentScreen();
+                } else if (listSelection == 3) {
+                    currentScreen = Screen::WifiGuardian;
+                    startWifiGuardian();
+                    drawCurrentScreen();
                 } else {
                     currentScreen = Screen::WifiConnectSelect;
                     drawCurrentScreen();
@@ -5879,7 +4930,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 return;
             }
-            drawWifiMenu();
+            menuScreens.drawWifi();
             break;
 
         case Screen::WifiRecon:
@@ -5896,10 +4947,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !accessPoints.empty()) {
                 wifiDeauthStatus = "";
                 currentScreen = Screen::WifiDetail;
-                drawWifiDetail();
+                wifiScreens.drawDetail();
                 return;
             }
-            drawWifiRecon();
+            wifiScreens.drawRecon();
             break;
 
         case Screen::WifiChannelAnalyzer:
@@ -5907,13 +4958,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 scanWifiNetworks();
                 return;
             }
-            drawWifiChannelAnalyzer();
+            wifiScreens.drawChannelAnalyzer();
             break;
 
         case Screen::WifiDetail:
             if (pressedLetter(keys, 'd') && !accessPoints.empty()) {
                 currentScreen = Screen::WifiDeauthConfirm;
-                drawWifiDeauthConfirm();
+                wifiScreens.drawDeauthConfirm();
                 return;
             }
             if (pressedLetter(keys, 'h') && !accessPoints.empty()) {
@@ -5925,7 +4976,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     accessPoints[listSelection].bssid);
                 handshakeCaptureLogger.begin("handshake");
                 currentScreen = Screen::WifiHandshakeCapture;
-                drawWifiHandshakeCapture();
+                wifiScreens.drawHandshakeCapture();
                 return;
             }
             break;
@@ -5934,7 +4985,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !accessPoints.empty()) {
                 transmitWifiDeauth(accessPoints[listSelection]);
                 currentScreen = Screen::WifiDetail;
-                drawWifiDetail();
+                wifiScreens.drawDetail();
                 return;
             }
             break;
@@ -5942,7 +4993,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::WifiHandshakeCapture:
             if (pressedLetter(keys, 'd') && !accessPoints.empty()) {
                 transmitWifiDeauth(accessPoints[listSelection]);
-                drawWifiHandshakeCapture();
+                wifiScreens.drawHandshakeCapture();
                 return;
             }
             if (refresh && !accessPoints.empty()) {
@@ -5953,7 +5004,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     accessPoints[listSelection].bssid);
                 handshakeCaptureLogger.begin("handshake");
             }
-            drawWifiHandshakeCapture();
+            wifiScreens.drawHandshakeCapture();
             break;
 
         case Screen::WifiConnectSelect: {
@@ -5981,7 +5032,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawWifiConnectSelect();
+            wifiScreens.drawConnectSelect();
             break;
         }
 
@@ -5990,10 +5041,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 WiFi.disconnect(true);
                 wifiConnectAttempting = false;
                 wifiConnectStatusText = "Disconnected";
-                drawWifiConnectStatus();
+                wifiScreens.drawConnectStatus();
                 return;
             }
-            drawWifiConnectStatus();
+            wifiScreens.drawConnectStatus();
             break;
 
         case Screen::BleMenu:
@@ -6015,7 +5066,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 return;
             }
-            drawBleMenu();
+            menuScreens.drawBle();
             break;
 
         case Screen::DevicesMenu:
@@ -6033,7 +5084,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawDevicesMenu();
+            menuScreens.drawDevices();
             break;
 
         case Screen::Biscuit:
@@ -6046,16 +5097,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawFooter("Please wait");
                 biscuitClient.connect();
                 recoverKeyboardAfterBlockingOperation();
-                drawBiscuit();
+                biscuitScreens.drawMain();
                 return;
             }
             if (keys.enter && biscuitClient.isConnected()) {
                 listSelection = 0;
                 currentScreen = Screen::BiscuitTools;
-                drawBiscuitTools();
+                biscuitScreens.drawTools();
                 return;
             }
-            drawBiscuit();
+            biscuitScreens.drawMain();
             break;
 
         case Screen::BiscuitTools: {
@@ -6080,7 +5131,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     biscuitWardriveParseTail = "";
                     biscuitWardriveActive = false;
                     currentScreen = Screen::BiscuitWardrive;
-                    drawBiscuitWardrive();
+                    biscuitScreens.drawWardrive();
                     return;
                 }
                 drawHeader(titles[commandIndex]);
@@ -6098,10 +5149,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 prepareBiscuitResult(response);
                 currentScreen = Screen::BiscuitResult;
                 recoverKeyboardAfterBlockingOperation();
-                drawBiscuitResult();
+                biscuitScreens.drawResult();
                 return;
             }
-            drawBiscuitTools();
+            biscuitScreens.drawTools();
             break;
         }
 
@@ -6122,10 +5173,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         biscuitWardriveParseTail = biscuitClient.lastStatus();
                     }
                 }
-                drawBiscuitWardrive();
+                biscuitScreens.drawWardrive();
                 return;
             }
-            drawBiscuitWardrive();
+            biscuitScreens.drawWardrive();
             break;
 
         case Screen::BiscuitResult:
@@ -6134,31 +5185,26 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                             biscuitResultLines.size()) {
                 ++biscuitResultOffset;
             }
-            drawBiscuitResult();
+            biscuitScreens.drawResult();
             break;
 
         case Screen::BleSpamSelect: {
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, BleSpamScreen::kModeCount);
+            if (down) moveSelection(1, BleSpamScreen::kModeCount);
             if (keys.enter) {
-                BleSpamMode mode;
-                switch (listSelection) {
-                    case 0: mode = BleSpamMode::Apple; break;
-                    case 1: mode = BleSpamMode::FastPair; break;
-                    case 2: mode = BleSpamMode::SwiftPair; break;
-                    default: mode = BleSpamMode::All; break;
-                }
-                bleSpamService.begin(mode);
+                bleSpamService.begin(
+                    BleSpamScreen::modeForSelection(listSelection));
                 currentScreen = Screen::BleSpam;
-                drawBleSpam();
+                bleSpamScreen.drawActive();
                 return;
             }
-            drawBleSpamSelect();
+            normalizeListPosition(BleSpamScreen::kModeCount);
+            bleSpamScreen.drawSelect(listSelection);
             break;
         }
 
         case Screen::BleSpam:
-            drawBleSpam();
+            bleSpamScreen.drawActive();
             break;
 
         case Screen::RfidMenu:
@@ -6172,7 +5218,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawRfidMenu();
+            menuScreens.drawRfid();
             break;
 
         case Screen::Chameleon:
@@ -6186,45 +5232,45 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 lastChameleonConnectAttemptMs =
                     millis() - kChameleonReconnectIntervalMs;
                 chameleonWorkflowStatus = "Automatic connection enabled";
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 's') && chameleonClient.isConnected()) {
                 chameleonWorkflowStatus = "";
                 performChameleonScan();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'c') && chameleonClient.isConnected()) {
                 chameleonWorkflowStatus = "";
                 chameleonContinuousScan = !chameleonContinuousScan;
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'v') && chameleonClient.isConnected()) {
                 saveChameleonIdentity();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'o') && chameleonClient.isConnected()) {
                 loadChameleonIdentity();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'd') && chameleonClient.isConnected()) {
                 chameleonClient.setReaderMode();
                 chameleonWorkflowStatus = chameleonClient.lastStatus();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'e') && chameleonClient.isConnected() &&
                 (chameleonHfFound || chameleonLfFound)) {
                 chameleonContinuousScan = false;
                 currentScreen = Screen::ChameleonEmulateConfirm;
-                drawChameleonEmulateConfirm();
+                chameleonScreen.drawEmulateConfirm();
                 return;
             }
-            drawChameleon();
+            chameleonScreen.draw();
             break;
 
         case Screen::ChameleonEmulateConfirm:
@@ -6236,7 +5282,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     ? chameleonClient.lastStatus()
                     : "Stage failed: " + chameleonClient.lastStatus();
                 currentScreen = Screen::Chameleon;
-                drawChameleon();
+                chameleonScreen.draw();
             }
             break;
 
@@ -6269,7 +5315,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 listSelection = 0;
                 listOffset = 0;
-                drawBleDiscovery();
+                bleScreens.drawDiscovery();
                 return;
             }
             if (pressedLetter(keys, 'f')) {
@@ -6282,17 +5328,17 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 bleCaptureRssiFilter =
                     filters[(selected + 1) %
                             (sizeof(filters) / sizeof(filters[0]))];
-                drawBleDiscovery();
+                bleScreens.drawDiscovery();
                 return;
             }
             if (up) moveSelection(-1, bleDevices.size());
             if (down) moveSelection(1, bleDevices.size());
             if (keys.enter && !bleDevices.empty()) {
                 currentScreen = Screen::BleDetail;
-                drawBleDetail();
+                bleScreens.drawDetail();
                 return;
             }
-            drawBleDiscovery();
+            bleScreens.drawDiscovery();
             break;
 
         case Screen::CyberFamiliar:
@@ -6301,6 +5347,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'p')) cyberFamiliar.interact();
             if (pressedLetter(keys, 'n')) cyberFamiliar.cycleName();
             if (pressedLetter(keys, 'i')) cyberFamiliar.toggleIdleMode();
+            if (pressedLetter(keys, 'w')) {
+                screenSleeping = true;
+                familiarIdleActive = true;
+                familiarIdleDrawn = false;
+                cyberdeckIdleActive = false;
+                lastFamiliarDraw = 0;
+                drawCyberFamiliarIdle();
+                return;
+            }
             if (pressedLetter(keys, 'o')) familiarPage = 0;
             if (pressedLetter(keys, 't')) familiarPage = 1;
             if (pressedLetter(keys, 'j')) familiarPage = 2;
@@ -6314,10 +5369,57 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (pressedLetter(keys, 'z')) {
                 currentScreen = Screen::CyberFamiliarResetConfirm;
-                drawCyberFamiliarResetConfirm();
+                familiarScreens.drawResetConfirm();
                 return;
             }
-            drawCyberFamiliar();
+            if (pressedLetter(keys, 'a')) {
+                currentScreen = familiarPatrolService.isActive()
+                                    ? Screen::FamiliarPatrol
+                                    : Screen::FamiliarPatrolConfirm;
+                drawCurrentScreen();
+                return;
+            }
+            familiarScreens.drawFamiliar();
+            break;
+
+        case Screen::FamiliarPatrolConfirm:
+            if (pressedLetter(keys, 'c')) {
+                familiarPatrolContinuousChoice =
+                    !familiarPatrolContinuousChoice;
+                familiarScreens.drawPatrolConfirm();
+                return;
+            }
+            if (pressedLetter(keys, 'v')) {
+                familiarPatrolIntervalIndex = static_cast<uint8_t>(
+                    (familiarPatrolIntervalIndex + 1) %
+                    (sizeof(kFamiliarPatrolIntervals) /
+                     sizeof(kFamiliarPatrolIntervals[0])));
+                familiarScreens.drawPatrolConfirm();
+                return;
+            }
+            if (keys.enter && sdAvailable && WiFi.status() == WL_CONNECTED) {
+                if (familiarPatrolService.start(WiFi.localIP(),
+                        WiFi.subnetMask(), familiarPatrolContinuousChoice,
+                        kFamiliarPatrolIntervals[familiarPatrolIntervalIndex])) {
+                    cyberFamiliar.notePatrol("Patrol started. Mapping the deck.",
+                                             10, FamiliarMood::Excited);
+                    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+                    showFamiliarSpeech("Let's see who's here!", 2600);
+                    playFamiliarCue(FamiliarCue::Started);
+                    lastFamiliarPatrolState = familiarPatrolService.state();
+                    currentScreen = Screen::FamiliarPatrol;
+                }
+                drawCurrentScreen();
+            }
+            break;
+
+        case Screen::FamiliarPatrol:
+            if (pressedLetter(keys, 'x')) {
+                familiarPatrolService.stop();
+                cyberFamiliar.notePatrol("Patrol stopped by operator.", 0,
+                                         FamiliarMood::Content);
+            }
+            familiarScreens.drawPatrol();
             break;
 
         case Screen::CyberFamiliarResetConfirm:
@@ -6326,7 +5428,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 familiarWorkflowStatus = "Familiar progress reset";
                 familiarPage = 0;
                 currentScreen = Screen::CyberFamiliar;
-                drawCyberFamiliar();
+                familiarScreens.drawFamiliar();
             }
             break;
 
@@ -6346,6 +5448,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     case 2: currentScreen = Screen::Audio; break;
                     case 3:
                         currentScreen = Screen::LogSessions;
+                        evidenceReturnScreen = Screen::ToolsMenu;
                         loadLogSessions();
                         break;
                     case 4:
@@ -6367,15 +5470,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawToolsMenu();
+            menuScreens.drawTools();
             break;
 
         case Screen::Infrared:
             if (keys.enter || refresh) {
-                transmitInfraredSelfTest();
+                irScreen.transmitSelfTest();
                 return;
             }
-            drawInfrared();
+            irScreen.draw();
             break;
 
         case Screen::UsbHid:
@@ -6385,14 +5488,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (listSelection == kHidPresetCount) {
                     loadDuckyScripts();
                     currentScreen = Screen::DuckyScripts;
-                    drawDuckyScripts();
+                    usbHidScreens.drawDuckyScripts();
                 } else {
                     currentScreen = Screen::UsbHidConfirm;
-                    drawUsbHidConfirmation();
+                    usbHidScreens.drawUsbHidConfirm();
                 }
                 return;
             }
-            drawUsbHid();
+            usbHidScreens.drawUsbHid();
             break;
 
         case Screen::UsbHidConfirm:
@@ -6409,10 +5512,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !duckyScripts.empty()) {
                 preflightDuckyScript();
                 currentScreen = Screen::DuckyConfirm;
-                drawDuckyConfirm();
+                usbHidScreens.drawDuckyConfirm();
                 return;
             }
-            drawDuckyScripts();
+            usbHidScreens.drawDuckyScripts();
             break;
 
         case Screen::DuckyConfirm:
@@ -6425,35 +5528,42 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::DuckyResult:
             if (keys.enter) {
                 currentScreen = Screen::DuckyScripts;
-                drawDuckyScripts();
+                usbHidScreens.drawDuckyScripts();
             }
             break;
 
         case Screen::Audio:
-            if (up) moveSelection(-1, 3);
-            if (down) moveSelection(1, 3);
+            if (up) moveSelection(-1, 4);
+            if (down) moveSelection(1, 4);
             if (keys.enter) {
                 if (listSelection == 0) {
                     audioService.playToneTest();
                     recoverKeyboardAfterBlockingOperation();
-                    drawAudio();
+                    audioScreens.drawMenu();
                 } else if (listSelection == 1) {
                     microphoneLevel = 0;
                     if (audioService.beginMicrophone()) {
                         currentScreen = Screen::AudioMic;
-                        drawMicrophone();
+                        audioScreens.drawMicrophone();
                     }
-                } else {
+                } else if (listSelection == 2) {
                     loadAudioFiles();
                     currentScreen = Screen::AudioFiles;
-                    drawAudioFiles();
+                    audioScreens.drawAudioFiles();
+                } else {
+                    currentScreen = Screen::TtsLab;
+                    audioScreens.drawTtsLab();
                 }
                 return;
             }
-            drawAudio();
+            audioScreens.drawMenu();
             break;
 
         case Screen::AudioMic:
+            break;
+
+        case Screen::TtsLab:
+            // Text entry is handled before the general screen switch.
             break;
 
         case Screen::AudioFiles:
@@ -6464,7 +5574,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 startSelectedMp3();
                 return;
             }
-            drawAudioFiles();
+            audioScreens.drawAudioFiles();
             break;
 
         case Screen::AudioPlaying:
@@ -6490,22 +5600,22 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     loadDirectory();
                 } else {
                     currentScreen = Screen::FileDetail;
-                    drawFileDetail();
+                    fileScreens.drawFileDetail();
                     return;
                 }
             }
-            drawFiles();
+            fileScreens.drawFiles();
             break;
 
         case Screen::FileDetail:
             if (keys.enter) {
-                if (isMp3File(files[listSelection].name)) {
+                if (FileScreens::isMp3File(files[listSelection].name)) {
                     playSelectedBrowserMp3();
-                } else if (isPreviewableFile(files[listSelection].name) &&
+                } else if (FileScreens::isPreviewableFile(files[listSelection].name) &&
                            loadTextPreview()) {
                     textPreviewReturnScreen = Screen::FileDetail;
                     currentScreen = Screen::TextPreview;
-                    drawTextPreview();
+                    fileScreens.drawTextPreview();
                 }
             }
             break;
@@ -6522,7 +5632,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (pressedLetter(keys, 'd') && previewColumn < 120) {
                 previewColumn += 8;
             }
-            drawTextPreview();
+            fileScreens.drawTextPreview();
             break;
 
         case Screen::LogSessions:
@@ -6537,38 +5647,38 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 logSelection = (logSelection + 1) % logSessions.size();
             } else if (keys.enter && !logSessions.empty()) {
                 openLogDetail();
-                drawLogDetail();
+                logScreens.drawDetail();
                 return;
             }
-            drawLogSessions();
+            logScreens.drawSessions();
             break;
 
         case Screen::LogDetail:
             if (pressedLetter(keys, 'd')) {
                 currentScreen = Screen::LogDeleteConfirm;
-                drawLogDeleteConfirm();
-            } else if (keys.enter) {
-                currentPath = "/ghostwire/logs";
-                files.clear();
+                logScreens.drawDeleteConfirm();
+            } else if (keys.enter &&
+                       FileScreens::isPreviewableFile(logSessions[logSelection].name)) {
                 const auto& log = logSessions[logSelection];
+                const int slash = log.path.lastIndexOf('/');
+                currentPath = slash <= 0 ? "/" : log.path.substring(0, slash);
+                files.clear();
                 files.push_back({log.name, false, log.size});
                 listSelection = 0;
                 if (loadTextPreview()) {
                     textPreviewReturnScreen = Screen::LogDetail;
                     currentScreen = Screen::TextPreview;
-                    drawTextPreview();
+                    fileScreens.drawTextPreview();
                 }
             }
             break;
 
         case Screen::LogDeleteConfirm:
             if (keys.enter && !logSessions.empty()) {
-                const String path =
-                    "/ghostwire/logs/" + logSessions[logSelection].name;
-                SD.remove(path);
+                SD.remove(logSessions[logSelection].path);
                 loadLogSessions();
                 currentScreen = Screen::LogSessions;
-                drawLogSessions();
+                logScreens.drawSessions();
             }
             break;
 
@@ -6582,26 +5692,26 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'e')) exportSystemDiagnostics();
             if (keys.enter) {
                 currentScreen = Screen::TimeStatus;
-                drawTimeStatus();
+                systemScreens.drawTimeStatus();
                 return;
             }
-            drawSystem();
+            systemScreens.drawSystem(systemDiagnostics());
             break;
 
         case Screen::TimeStatus:
             if (pressedLetter(keys, 'g')) syncClockFromGnss();
             if (pressedLetter(keys, 'n')) syncClockFromNtp();
-            drawTimeStatus();
+            systemScreens.drawTimeStatus();
             break;
 
         case Screen::GpsMenu:
             if (keys.enter) {
                 gnssService.begin();
                 currentScreen = Screen::Gnss;
-                drawGnss();
+                gnssScreen.draw();
                 return;
             }
-            drawGpsMenu();
+            menuScreens.drawGps();
             break;
 
         case Screen::MeshMenu:
@@ -6613,10 +5723,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 M5Cardputer.Display.setCursor(8, 42);
                 M5Cardputer.Display.print("Initialising SX1262...");
                 loraService.begin();
-                drawLoRa();
+                loraScreen.draw();
                 return;
             }
-            drawMeshMenu();
+            menuScreens.drawMesh();
             break;
 
         case Screen::WarDrive:
@@ -6642,10 +5752,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     if (warDriveWifiLogger.isActive()) warDriveWifiLogger.stop();
                     if (warDriveBleLogger.isActive()) warDriveBleLogger.stop();
                 }
-                drawWarDriveDynamic();
+                networkScanScreens.drawWarDriveDynamic();
                 return;
             }
-            drawWarDriveDynamic();
+            networkScanScreens.drawWarDriveDynamic();
             break;
 
         case Screen::NetworkMenu:
@@ -6671,16 +5781,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawNetworkMenu();
+            menuScreens.drawNetwork();
             break;
 
         case Screen::NetworkDashboard:
-            if (refresh) drawNetworkDashboard();
+            if (refresh) networkScanScreens.drawNetworkDashboard();
             break;
 
         case Screen::NetworkHostScan:
             if (WiFi.status() != WL_CONNECTED) {
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 break;
             }
             if (refresh) {
@@ -6693,12 +5803,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 } else {
                     networkHostScanService.stop();
                 }
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 return;
             }
             if (pressedLetter(keys, 'e')) {
                 exportNetworkHostResults();
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 return;
             }
             if (up) moveSelection(-1, networkHostResults.size());
@@ -6729,7 +5839,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawNetworkHostScan();
+            networkScanScreens.drawNetworkHostScan();
             break;
 
         case Screen::NetworkPortScan:
@@ -6745,7 +5855,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         networkPortScanService.start(networkPortScanTarget, 1,
                                                      65535);
                     }
-                    drawNetworkPortScan();
+                    networkScanScreens.drawNetworkPortScan();
                 } else {
                     scanNetworkPorts(networkPortScanTarget);
                 }
@@ -6753,12 +5863,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (pressedLetter(keys, 'e')) {
                 exportNetworkPortResults();
-                drawNetworkPortScan();
+                networkScanScreens.drawNetworkPortScan();
                 return;
             }
             if (up) moveSelection(-1, networkPortResults.size());
             if (down) moveSelection(1, networkPortResults.size());
-            drawNetworkPortScan();
+            networkScanScreens.drawNetworkPortScan();
             break;
 
         case Screen::Gnss:
@@ -6775,7 +5885,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (refresh) {
                 gnssService.restart();
             }
-            drawGnss();
+            gnssScreen.draw();
             break;
 
         case Screen::LoRa:
@@ -6795,7 +5905,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (refresh) {
                 loraService.restartReceive();
             }
-            drawLoRa();
+            loraScreen.draw();
             break;
 
         case Screen::WifiSniffer:
@@ -6832,7 +5942,19 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 recentWifiProbes.clear();
                 wifiSnifferService.begin();
             }
-            drawWifiSniffer();
+            wifiSnifferScreen.draw();
+            break;
+
+        case Screen::WifiGuardian:
+            if (pressedLetter(keys, 's')) {
+                wifiGuardianService.cycleSensitivity();
+                guardianLastEvent = String("Sensitivity: ") +
+                                    wifiGuardianService.sensitivityName();
+            } else if (refresh) {
+                stopWifiGuardian();
+                startWifiGuardian();
+            }
+            wifiGuardianScreen.draw();
             break;
 
         case Screen::Imu:
@@ -6852,28 +5974,35 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 imuAvailable = M5.Imu.isEnabled() ||
                                M5.Imu.begin(nullptr, M5.getBoard());
             }
-            drawImu();
+            imuScreen.draw();
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
                 else if (listSelection == 2) currentScreen = Screen::SettingsConnectivity;
-                else currentScreen = Screen::SettingsReset;
+                else if (listSelection == 3) currentScreen = Screen::SettingsReset;
+                else {
+                    listSelection = 0;
+                    listOffset = 0;
+                    checkForFirmwareUpdate();
+                    return;
+                }
                 listSelection = 0;
                 listOffset = 0;
                 drawCurrentScreen();
                 return;
             }
-            drawSettings();
+            menuScreens.drawSettings();
             break;
 
         case Screen::SettingsDisplay:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 8);
+            if (down) moveSelection(1, 8);
+            normalizeListPosition(8);
             if (decrease || increase) {
                 const int direction = increase ? 1 : -1;
                 if (listSelection == 0) {
@@ -6908,16 +6037,36 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                         1) %
                                            Branding::kThemeCount;
                     Branding::applyTheme(themeIndex);
+                } else if (listSelection == 5) {
+                    familiarCueIndex = static_cast<uint8_t>(
+                        increase
+                            ? (familiarCueIndex + 1) % kFamiliarCueCount
+                            : (familiarCueIndex + kFamiliarCueCount - 1) %
+                                  kFamiliarCueCount);
+                    playFamiliarCue(FamiliarCue::Host);
+                } else if (listSelection == 6) {
+                    cardNavigationEnabled = !cardNavigationEnabled;
+                } else if (listSelection == 7) {
+                    cyberdeckIdleStyle = static_cast<uint8_t>(
+                        increase
+                            ? (cyberdeckIdleStyle + 1) %
+                                  kCyberdeckIdleStyleCount
+                            : (cyberdeckIdleStyle +
+                               kCyberdeckIdleStyleCount - 1) %
+                                  kCyberdeckIdleStyleCount);
                 }
                 applySettings();
                 saveSettings();
                 lastUserActivity = millis();
             }
-            if (keys.enter && listSelection == 3) {
-                cyberdeckIdleEnabled = !cyberdeckIdleEnabled;
-                saveSettings();
+            if (keys.enter && listSelection == 7) {
+                screenSleeping = true;
+                familiarIdleActive = false;
+                beginCyberdeckIdle();
+                drawCyberdeckIdle();
+                return;
             }
-            drawSettingsDisplay();
+            settingsScreens.drawDisplay();
             break;
 
         case Screen::SettingsBoot:
@@ -6937,27 +6086,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         : (bootAnimationIndex + kBootAnimationCount - 1) %
                               kBootAnimationCount);
                 } else if (listSelection == 3) {
-                    fastBootEnabled = !fastBootEnabled;
+                    bootSpeedIndex = static_cast<uint8_t>(
+                        increase ? (bootSpeedIndex + 1) % kBootSpeedCount
+                                 : (bootSpeedIndex + kBootSpeedCount - 1) %
+                                       kBootSpeedCount);
                 }
                 saveSettings();
             }
-            if (keys.enter && listSelection == 0) {
-                bootSoundEnabled = !bootSoundEnabled;
-                saveSettings();
-            }
             if (keys.enter && listSelection == 1) {
-                bootSoundIndex = static_cast<uint8_t>(
-                    (bootSoundIndex + 1) % kBootSoundCount);
-                saveSettings();
+                previewBootSound();
             }
             if (keys.enter && listSelection == 2) {
-                bootAnimationIndex = static_cast<uint8_t>(
-                    (bootAnimationIndex + 1) % kBootAnimationCount);
-                saveSettings();
-            }
-            if (keys.enter && listSelection == 3) {
-                fastBootEnabled = !fastBootEnabled;
-                saveSettings();
+                previewBootAnimation();
             }
             if (keys.enter && listSelection == 4) {
                 previewBootSound();
@@ -6965,13 +6105,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && listSelection == 5) {
                 previewBootAnimation();
             }
-            drawSettingsBoot();
+            settingsScreens.drawBoot();
             break;
 
         case Screen::SettingsConnectivity:
             if (up) moveSelection(-1, 2);
             if (down) moveSelection(1, 2);
-            if ((decrease || increase || keys.enter) && listSelection == 0) {
+            if ((decrease || increase) && listSelection == 0) {
                 saveWifiCredentials = !saveWifiCredentials;
                 if (!saveWifiCredentials) {
                     autoConnectWifi = false;
@@ -6982,11 +6122,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 saveSettings();
             }
-            if ((decrease || increase || keys.enter) && listSelection == 1) {
+            if ((decrease || increase) && listSelection == 1) {
                 if (saveWifiCredentials) autoConnectWifi = !autoConnectWifi;
                 saveSettings();
             }
-            drawSettingsConnectivity();
+            settingsScreens.drawConnectivity();
             break;
 
         case Screen::SettingsReset:
@@ -6994,12 +6134,32 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 restoreDefaultSettings();
                 currentScreen = Screen::Settings;
                 listSelection = 0;
-                drawSettings();
+                menuScreens.drawSettings();
             }
             break;
 
         case Screen::Placeholder:
         case Screen::About: drawCurrentScreen(); break;
+
+        case Screen::OtaCheck:
+            if (keys.enter && otaService.hasVerifiedUpdate()) {
+                installFirmwareUpdate();
+                return;
+            }
+            if (refresh) {
+                checkForFirmwareUpdate();
+                return;
+            }
+            otaScreens.drawCheck();
+            break;
+
+        case Screen::OtaInstalling:
+            // downloadAndInstall() polls for its own cancel key and blocks
+            // until it returns; this screen is never live in the normal
+            // input loop, but the switch stays exhaustive for consistency
+            // with every other screen here.
+            otaScreens.drawInstalling();
+            break;
 
         // These text-entry/session screens return from their dedicated input
         // handlers above before this navigation switch is reached.
@@ -7026,12 +6186,20 @@ void beginCyberdeckIdle() {
         cyberdeckRainHead[column] = random(-rows, rows);
         cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
     }
+    for (size_t node = 0; node < kIdleNodeCount; ++node) {
+        idleNodeX[node] = random(8, M5Cardputer.Display.width() - 8);
+        idleNodeY[node] = random(8, M5Cardputer.Display.height() - 26);
+        idleNodeDx[node] = random(0, 2) == 0 ? -1 : 1;
+        idleNodeDy[node] = random(0, 2) == 0 ? -1 : 1;
+    }
+    cyberdeckIdleCanvasReady = cyberdeckIdleCanvas.createSprite(
+        M5Cardputer.Display.width(), M5Cardputer.Display.height() - 18);
     M5Cardputer.Display.fillScreen(Branding::background);
 }
 
 void drawCyberdeckIdle() {
     const unsigned long now = millis();
-    if (now - lastCyberdeckDraw < 75) return;
+    if (now - lastCyberdeckDraw < 50) return;
     lastCyberdeckDraw = now;
 
     auto& display = M5Cardputer.Display;
@@ -7047,30 +6215,79 @@ void drawCyberdeckIdle() {
     cyberdeckLastWifiCount = wifiCount;
     cyberdeckLastBleCount = bleCount;
 
-    display.fillRect(0, 0, width, height - 18, Branding::background);
-    display.setTextSize(1);
+    if (!cyberdeckIdleCanvasReady) return;
+    auto& canvas = cyberdeckIdleCanvas;
+    const int contentHeight = height - 18;
+    canvas.fillSprite(Branding::background);
+    canvas.setTextSize(1);
     static constexpr char kGlyphs[] =
         "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<>/\\[]{}#@";
     static constexpr size_t kGlyphCount = sizeof(kGlyphs) - 1;
-    for (size_t column = 0; column < kCyberdeckColumns; ++column) {
-        if ((now / 75U) % cyberdeckRainSpeed[column] == 0) {
-            ++cyberdeckRainHead[column];
+    if (cyberdeckIdleStyle == 0) {
+        for (size_t column = 0; column < kCyberdeckColumns; ++column) {
+            if ((now / 50U) % cyberdeckRainSpeed[column] == 0) {
+                ++cyberdeckRainHead[column];
+            }
+            if (cyberdeckRainHead[column] - 6 > rows) {
+                cyberdeckRainHead[column] = random(-rows, 1);
+                cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
+            }
+            for (int tail = 6; tail >= 0; --tail) {
+                const int row = cyberdeckRainHead[column] - tail;
+                if (row < 0 || row >= rows) continue;
+                const uint16_t colour = tail == 0
+                    ? (radioPulse ? Branding::warning : Branding::text)
+                    : (tail <= 2 ? Branding::accent : Branding::muted);
+                canvas.setTextColor(colour, Branding::background);
+                canvas.setCursor(static_cast<int>(column) * columnWidth,
+                                 row * 8);
+                canvas.print(kGlyphs[random(kGlyphCount)]);
+            }
         }
-        if (cyberdeckRainHead[column] - 5 > rows) {
-            cyberdeckRainHead[column] = random(-rows, 1);
-            cyberdeckRainSpeed[column] = static_cast<uint8_t>(random(1, 4));
+    } else if (cyberdeckIdleStyle == 1) {
+        const int cx = width / 2;
+        const int cy = contentHeight / 2;
+        const int radius = 43;
+        canvas.drawCircle(cx, cy, radius, Branding::muted);
+        canvas.drawCircle(cx, cy, 28, Branding::panel);
+        canvas.drawCircle(cx, cy, 14, Branding::panel);
+        const float angle = static_cast<float>(now % 4000UL) *
+                            6.2831853F / 4000.0F;
+        canvas.drawLine(cx, cy, cx + cosf(angle) * radius,
+                        cy + sinf(angle) * radius, Branding::accent);
+        for (size_t node = 0; node < 5; ++node) {
+            const float nodeAngle = node * 1.19F + 0.4F;
+            const int nodeRadius = 12 + static_cast<int>(node * 7);
+            canvas.fillCircle(cx + cosf(nodeAngle) * nodeRadius,
+                              cy + sinf(nodeAngle) * nodeRadius,
+                              radioPulse && node == 0 ? 3 : 2,
+                              radioPulse && node == 0 ? Branding::warning
+                                                       : Branding::text);
         }
-        for (int tail = 5; tail >= 0; --tail) {
-            const int row = cyberdeckRainHead[column] - tail;
-            if (row < 0 || row >= rows) continue;
-            const uint16_t colour =
-                tail == 0 ? (radioPulse ? Branding::warning : Branding::text)
-                          : (tail <= 2 ? Branding::accent : Branding::muted);
-            display.setTextColor(colour, Branding::background);
-            display.setCursor(static_cast<int>(column) * columnWidth, row * 8);
-            display.print(kGlyphs[random(kGlyphCount)]);
+    } else {
+        for (size_t node = 0; node < kIdleNodeCount; ++node) {
+            idleNodeX[node] += idleNodeDx[node];
+            idleNodeY[node] += idleNodeDy[node];
+            if (idleNodeX[node] <= 4 || idleNodeX[node] >= width - 4)
+                idleNodeDx[node] = -idleNodeDx[node];
+            if (idleNodeY[node] <= 4 || idleNodeY[node] >= contentHeight - 4)
+                idleNodeDy[node] = -idleNodeDy[node];
+            for (size_t other = node + 1; other < kIdleNodeCount; ++other) {
+                const int dx = idleNodeX[node] - idleNodeX[other];
+                const int dy = idleNodeY[node] - idleNodeY[other];
+                if (dx * dx + dy * dy < 1600) {
+                    canvas.drawLine(idleNodeX[node], idleNodeY[node],
+                                    idleNodeX[other], idleNodeY[other],
+                                    Branding::panel);
+                }
+            }
+            canvas.fillCircle(idleNodeX[node], idleNodeY[node],
+                              radioPulse && node == 0 ? 3 : 2,
+                              radioPulse && node == 0 ? Branding::warning
+                                                       : Branding::accent);
         }
     }
+    canvas.pushSprite(0, 0);
 
     display.fillRect(0, height - 18, width, 18, Branding::panel);
     display.drawFastHLine(0, height - 18, width,
@@ -7099,6 +6316,7 @@ void observeFamiliarToolScreen() {
         case Screen::WifiRecon: cyberFamiliar.observeTool(0, "Wi-Fi survey"); break;
         case Screen::WifiChannelAnalyzer: cyberFamiliar.observeTool(1, "channel map"); break;
         case Screen::WifiSniffer: cyberFamiliar.observeTool(2, "sniffer"); break;
+        case Screen::WifiGuardian: cyberFamiliar.observeTool(17, "guardian"); break;
         case Screen::WarDrive: cyberFamiliar.observeTool(3, "wardrive"); break;
         case Screen::NetworkHostScan: cyberFamiliar.observeTool(4, "host scan"); break;
         case Screen::NetworkPortScan: cyberFamiliar.observeTool(5, "port scan"); break;
@@ -7119,12 +6337,44 @@ void observeFamiliarToolScreen() {
 
 }  // namespace
 
+// Forwarders for extracted screen modules (see include/screen_chrome.h).
+// These call straight into the internal-linkage implementations above --
+// extracted .cpp files live in a different translation unit and cannot see
+// symbols inside this file's anonymous namespace directly.
+namespace ScreenChrome {
+void drawHeader(const char* title) { ::drawHeader(title); }
+void drawFooter(const char* text) { ::drawFooter(text); }
+void recoverKeyboard() { ::recoverKeyboardAfterBlockingOperation(); }
+void beginContentUpdate(const char* title, bool fullDraw) {
+    ::beginContentUpdate(title, fullDraw);
+}
+void drawListRow(int row, const String& label, bool selected,
+                 const String& suffix) {
+    ::drawListRow(row, label, selected, suffix);
+}
+void normalizeListPosition(size_t count) { ::normalizeListPosition(count); }
+void drawHeaderPosition(size_t oneBasedIndex, size_t total) {
+    ::drawHeaderPosition(oneBasedIndex, total);
+}
+void drawNavigationCard(const char* header, const String& label,
+                        const String& description, size_t selected,
+                        size_t count, uint8_t icon, const String& badge) {
+    ::drawNavigationCard(header, label, description, selected, count, icon,
+                         badge);
+}
+void drawTextEntryRow(int y, const char* label, const String& value,
+                      bool masked) {
+    ::drawTextEntryRow(y, label, value, masked);
+}
+}  // namespace ScreenChrome
+
 void setup() {
     auto config = M5.config();
     config.output_power = true;
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
+    verifyOtaBootOrRollback();
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
         preferences.getUChar("brightness", kDefaultBrightness);
@@ -7132,14 +6382,27 @@ void setup() {
         preferences.getUShort("timeout", kDefaultScreenTimeout);
     bootSoundEnabled =
         preferences.getBool("boot_sound", kDefaultBootSound);
-    fastBootEnabled =
-        preferences.getBool("fast_boot", kDefaultFastBoot);
+    if (preferences.isKey("boot_speed")) {
+        bootSpeedIndex = preferences.getUChar("boot_speed", kDefaultBootSpeed);
+    } else {
+        // Migrate the former binary Fast boot setting without changing the
+        // user's established startup preference.
+        bootSpeedIndex = preferences.getBool("fast_boot", false) ? 2 : 1;
+    }
+    if (bootSpeedIndex >= kBootSpeedCount) bootSpeedIndex = kDefaultBootSpeed;
     saveWifiCredentials =
         preferences.getBool("save_wifi", kDefaultSaveWifiCredentials);
     autoConnectWifi =
         preferences.getBool("auto_wifi", kDefaultAutoConnectWifi);
     cyberdeckIdleEnabled =
         preferences.getBool("cyber_idle", kDefaultCyberdeckIdle);
+    cyberdeckIdleStyle =
+        preferences.getUChar("idle_style", kDefaultCyberdeckIdleStyle);
+    if (cyberdeckIdleStyle >= kCyberdeckIdleStyleCount) {
+        cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
+    }
+    cardNavigationEnabled =
+        preferences.getBool("nav_cards", kDefaultCardNavigation);
     themeIndex = preferences.getUChar("theme", 0);
     if (themeIndex >= Branding::kThemeCount) themeIndex = 0;
     bootAnimationIndex = preferences.getUChar(
@@ -7151,6 +6414,11 @@ void setup() {
         "boot_tone", kDefaultBootSoundPreset);
     if (bootSoundIndex >= kBootSoundCount) {
         bootSoundIndex = kDefaultBootSoundPreset;
+    }
+    familiarCueIndex = preferences.getUChar(
+        "fam_cue", kDefaultFamiliarCue);
+    if (familiarCueIndex >= kFamiliarCueCount) {
+        familiarCueIndex = kDefaultFamiliarCue;
     }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
@@ -7171,11 +6439,13 @@ void setup() {
     gnssService.begin();
     initSd();
     recordBootTelemetry();
+    if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
-    drawMainMenu();
+    menuScreens.drawMain();
+    markBootHealthy();
 
     if (autoConnectWifi && !wifiConnectSavedSsid.isEmpty()) {
         Serial.printf("[wifi] auto-connecting to %s\n",
@@ -7194,6 +6464,90 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     observeFamiliarToolScreen();
+    familiarPatrolService.update();
+    updateFamiliarVoice();
+    const uint32_t patrolHosts = familiarPatrolService.hostsFound();
+    const uint32_t patrolOpenPorts = familiarPatrolService.openPortsFound();
+    if (patrolHosts < familiarObservedPatrolHosts) {
+        familiarObservedPatrolHosts = patrolHosts;
+    } else if (patrolHosts > familiarObservedPatrolHosts) {
+        familiarObservedPatrolHosts = patrolHosts;
+        triggerFamiliarReaction(FamiliarReaction::HostFound, 1400);
+        showFamiliarSpeech("Oh! Found " + familiarHostLabel(
+                               familiarPatrolService.lastSeenHost()) + "!");
+        playFamiliarCue(FamiliarCue::Host);
+    }
+    if (patrolOpenPorts < familiarObservedOpenPorts) {
+        familiarObservedOpenPorts = patrolOpenPorts;
+    } else if (patrolOpenPorts > familiarObservedOpenPorts) {
+        familiarObservedOpenPorts = patrolOpenPorts;
+        triggerFamiliarReaction(
+            familiarSensitivePort(familiarPatrolService.lastOpenPort())
+                ? FamiliarReaction::Warning
+                : FamiliarReaction::ServiceFound,
+            1900);
+        const uint16_t foundPort = familiarPatrolService.lastOpenPort();
+        const String endpoint = familiarHostLabel(
+            familiarPatrolService.lastOpenHost());
+        if (familiarSensitivePort(foundPort)) {
+            showFamiliarSpeech(String("Careful: ") +
+                               familiarServiceName(foundPort) + " on " +
+                               endpoint + "!");
+            playFamiliarCue(FamiliarCue::Warning);
+        } else {
+            showFamiliarSpeech(String("Interesting: ") +
+                               familiarServiceName(foundPort) + " on " +
+                               endpoint + "!");
+            playFamiliarCue(FamiliarCue::Service);
+        }
+    }
+    const FamiliarPatrolState patrolState = familiarPatrolService.state();
+    if (patrolState != lastFamiliarPatrolState) {
+        if (patrolState == FamiliarPatrolState::CommonPorts) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            const String message =
+                fresh == 0 ? "Quiet map. No new hosts this pass."
+                           : "Map ready. " + String(fresh) +
+                                 (fresh == 1 ? " new host." : " new hosts.");
+            cyberFamiliar.notePatrol(
+                message, fresh == 0 ? 0 : 10,
+                fresh == 0 ? FamiliarMood::Content : FamiliarMood::Curious);
+        } else if (patrolState == FamiliarPatrolState::Complete) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            cyberFamiliar.notePatrol(
+                fresh == 0 ? "Quiet patrol. No new hosts."
+                           : "Patrol complete. New leads saved.",
+                fresh == 0 ? 5 : 30,
+                fresh == 0 ? FamiliarMood::Content : FamiliarMood::Proud);
+            triggerFamiliarReaction(FamiliarReaction::Complete, 4000);
+            showFamiliarSpeech(
+                fresh == 0 ? "All quiet. Nothing new."
+                           : "All done! " + String(fresh) +
+                                 (fresh == 1 ? " new host." : " new hosts."),
+                4000);
+            playFamiliarCue(FamiliarCue::Complete);
+        } else if (patrolState == FamiliarPatrolState::WatchWait) {
+            const uint32_t fresh = familiarPatrolService.cycleHostsFound();
+            cyberFamiliar.notePatrol(
+                fresh == 0 ? "Quiet watch pass. Nothing changed."
+                           : "Scout pass found new company. Keeping watch.",
+                fresh == 0 ? 3 : 10,
+                fresh == 0 ? FamiliarMood::Sleepy : FamiliarMood::Proud);
+            triggerFamiliarReaction(FamiliarReaction::Complete, 3000);
+            showFamiliarSpeech(
+                fresh == 0 ? "Still quiet. I'll keep watch!"
+                           : "I found " + String(fresh) +
+                                 (fresh == 1 ? " new host!" : " new hosts!"),
+                3400);
+            playFamiliarCue(FamiliarCue::Complete);
+        } else if (patrolState == FamiliarPatrolState::Error) {
+            cyberFamiliar.notePatrol("Patrol needs operator attention.", 0,
+                                     FamiliarMood::Worried);
+            showFamiliarSpeech("I need some help!", 3500);
+            playFamiliarCue(FamiliarCue::Error);
+        }
+        lastFamiliarPatrolState = patrolState;
+    }
     static unsigned long lastFamiliarUpdate = 0;
     if (millis() - lastFamiliarUpdate >= 1000) {
         lastFamiliarUpdate = millis();
@@ -7329,6 +6683,19 @@ void loop() {
 
     WifiRawFrameRecord rawFrame;
     while (wifiSnifferService.nextRawFrame(rawFrame)) {
+        if (wifiGuardianService.isActive()) {
+            wifiGuardianService.ingest(rawFrame);
+            if (WifiGuardianService::isDisruptionFrame(rawFrame)) {
+                guardianLastChannel = rawFrame.channel;
+                guardianLastRssi = rawFrame.rssi;
+                if (guardianEvidenceLogger.isActive()) {
+                    guardianEvidenceLogger.append(
+                        rawFrame.data, rawFrame.length,
+                        static_cast<uint32_t>(time(nullptr)),
+                        static_cast<uint32_t>(micros() % 1000000UL));
+                }
+            }
+        }
         if (wifiPassiveCaptureLogger.isActive()) {
             wifiPassiveCaptureLogger.append(
                 rawFrame.data, rawFrame.length,
@@ -7361,18 +6728,43 @@ void loop() {
     }
     wifiPassiveCaptureLogger.update();
     handshakeCaptureLogger.update();
+    guardianEvidenceLogger.update();
+    wifiGuardianService.update();
+    String guardianAlert;
+    if (wifiGuardianService.takeAlert(guardianAlert)) {
+        guardianLastEvent = guardianAlert;
+        if (guardianEventLogger.isActive()) {
+            guardianEventLogger.append(
+                utcTimestamp() + "," + csvSafePayload(guardianAlert) + "," +
+                String(guardianLastChannel) + "," + String(guardianLastRssi) +
+                "," + String(wifiGuardianService.deauthFrames()) + "," +
+                String(wifiGuardianService.disassocFrames()));
+        }
+        cyberFamiliar.notePatrol(
+            "Guardian observed unusual disconnect traffic.", 8,
+            FamiliarMood::Worried);
+        triggerFamiliarReaction(FamiliarReaction::Warning, 4500);
+        showFamiliarSpeech("Warning! Disconnect burst observed.", 4500);
+        playFamiliarCue(FamiliarCue::Warning);
+    }
+    guardianEventLogger.update();
 
     if (screenSleeping) {
         if (M5Cardputer.Keyboard.isChange() &&
             M5Cardputer.Keyboard.isPressed()) {
             screenSleeping = false;
+            if (cyberdeckIdleCanvasReady) {
+                cyberdeckIdleCanvas.deleteSprite();
+                cyberdeckIdleCanvasReady = false;
+            }
             cyberdeckIdleActive = false;
             familiarIdleActive = false;
+            familiarIdleDrawn = false;
             M5Cardputer.Display.setBrightness(screenBrightness);
             lastUserActivity = millis();
             drawCurrentScreen();
         } else if (familiarIdleActive &&
-                   millis() - lastFamiliarDraw >= 500) {
+                   millis() - lastFamiliarDraw >= 180) {
             lastFamiliarDraw = millis();
             drawCyberFamiliarIdle();
         } else if (cyberdeckIdleActive) {
@@ -7394,9 +6786,9 @@ void loop() {
     }
 
     if (currentScreen == Screen::CyberFamiliar && !actionMenuOpen &&
-        millis() - lastFamiliarDraw >= 500) {
+        millis() - lastFamiliarDraw >= 180) {
         lastFamiliarDraw = millis();
-        drawCyberFamiliar(false);
+        familiarScreens.drawFamiliar(false);
     }
 
     if (currentScreen == Screen::BleDiscovery && !actionMenuOpen &&
@@ -7404,7 +6796,7 @@ void loop() {
         millis() - lastBleCaptureDraw >= 500) {
         lastBleCaptureDraw = millis();
         bleCaptureUiDirty = false;
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
     }
 
     if (currentScreen == Screen::AudioMic) {
@@ -7413,7 +6805,7 @@ void loop() {
             microphoneLevel = level;
             if (!screenSleeping && millis() - lastMicrophoneDraw >= 80) {
                 lastMicrophoneDraw = millis();
-                updateMicrophoneMeter();
+                audioScreens.updateMicrophoneMeter();
             }
         }
     }
@@ -7421,31 +6813,37 @@ void loop() {
     if (currentScreen == Screen::Gnss && !actionMenuOpen &&
         millis() - lastGnssDraw >= 500) {
         lastGnssDraw = millis();
-        drawGnss(false);
+        gnssScreen.draw(false);
     }
 
     if (currentScreen == Screen::LoRa && !actionMenuOpen &&
         millis() - lastLoRaDraw >= 500) {
         lastLoRaDraw = millis();
-        drawLoRa(false);
+        loraScreen.draw(false);
     }
 
     if (currentScreen == Screen::WifiSniffer && !actionMenuOpen &&
         millis() - lastWifiSnifferDraw >= 500) {
         lastWifiSnifferDraw = millis();
-        drawWifiSniffer(false);
+        wifiSnifferScreen.draw(false);
+    }
+
+    if (currentScreen == Screen::WifiGuardian && !actionMenuOpen &&
+        millis() - lastGuardianDraw >= 500) {
+        lastGuardianDraw = millis();
+        wifiGuardianScreen.draw(false);
     }
 
     if (currentScreen == Screen::BleSpam && !actionMenuOpen &&
         millis() - lastBleSpamDraw >= 300) {
         lastBleSpamDraw = millis();
-        drawBleSpam(false);
+        bleSpamScreen.drawActive(false);
     }
 
     if (currentScreen == Screen::BleKeyboard && !actionMenuOpen &&
         millis() - lastBleKeyboardDraw >= 500) {
         lastBleKeyboardDraw = millis();
-        drawBleKeyboard(false);
+        bleScreens.drawKeyboard(false);
     }
 
     if (currentScreen == Screen::Chameleon && chameleonContinuousScan &&
@@ -7453,7 +6851,7 @@ void loop() {
         millis() - lastChameleonScanMs >= 500) {
         lastChameleonScanMs = millis();
         performChameleonScan();
-        if (!actionMenuOpen) drawChameleon(false);
+        if (!actionMenuOpen) chameleonScreen.draw(false);
     }
 
     if (currentScreen == Screen::Chameleon && !actionMenuOpen &&
@@ -7474,7 +6872,7 @@ void loop() {
         }
         if (!actionMenuOpen && millis() - lastBiscuitWardriveDraw >= 250) {
             lastBiscuitWardriveDraw = millis();
-            drawBiscuitWardrive(false);
+            biscuitScreens.drawWardrive(false);
         }
     }
 
@@ -7493,7 +6891,13 @@ void loop() {
     if (currentScreen == Screen::WarDrive && !actionMenuOpen &&
         millis() - lastWarDriveDraw >= 500) {
         lastWarDriveDraw = millis();
-        drawWarDriveDynamic();
+        networkScanScreens.drawWarDriveDynamic();
+    }
+
+    if (currentScreen == Screen::FamiliarPatrol && !actionMenuOpen &&
+        millis() - lastFamiliarPatrolDraw >= 500) {
+        lastFamiliarPatrolDraw = millis();
+        familiarScreens.drawPatrol(false);
     }
 
     networkHostScanService.update();
@@ -7504,7 +6908,7 @@ void loop() {
     if (currentScreen == Screen::NetworkHostScan && !actionMenuOpen &&
         millis() - lastNetworkHostScanDraw >= 500) {
         lastNetworkHostScanDraw = millis();
-        drawNetworkHostScan(false);
+        networkScanScreens.drawNetworkHostScan(false);
     }
 
     networkPortScanService.update();
@@ -7515,7 +6919,7 @@ void loop() {
     if (currentScreen == Screen::NetworkPortScan && !actionMenuOpen &&
         millis() - lastNetworkPortScanDraw >= 500) {
         lastNetworkPortScanDraw = millis();
-        drawNetworkPortScan(false);
+        networkScanScreens.drawNetworkPortScan(false);
     }
 
     if (currentScreen == Screen::TelnetSession) {
@@ -7530,7 +6934,7 @@ void loop() {
         }
         if (millis() - lastTelnetDraw >= 150) {
             lastTelnetDraw = millis();
-            if (newData) drawTelnetSessionDynamic();
+            if (newData) telnetScreens.drawSessionDynamic();
             drawFooter(telnetClient.connected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }
@@ -7567,7 +6971,7 @@ void loop() {
         }
         if (millis() - lastSshDraw >= 150) {
             lastSshDraw = millis();
-            if (newData) drawSshSessionDynamic();
+            if (newData) sshScreens.drawSessionDynamic();
             drawFooter(sshService.isConnected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }
@@ -7617,19 +7021,19 @@ void loop() {
     if (currentScreen == Screen::WifiConnectStatus && !actionMenuOpen &&
         millis() - lastWifiConnectDraw >= 1000) {
         lastWifiConnectDraw = millis();
-        drawWifiConnectStatus(false);
+        wifiScreens.drawConnectStatus(false);
     }
 
     if (currentScreen == Screen::WifiHandshakeCapture && !actionMenuOpen &&
         millis() - lastHandshakeCaptureDraw >= 500) {
         lastHandshakeCaptureDraw = millis();
-        drawWifiHandshakeCapture(false);
+        wifiScreens.drawHandshakeCapture(false);
     }
 
     if (currentScreen == Screen::Imu && !actionMenuOpen &&
         millis() - lastImuDraw >= 100) {
         lastImuDraw = millis();
-        drawImu(false);
+        imuScreen.draw(false);
     }
 
     if (millis() - lastHeaderStatusDraw >= 1000) {
@@ -7640,7 +7044,7 @@ void loop() {
     if (currentScreen == Screen::TimeStatus && !actionMenuOpen &&
         millis() - lastTimeStatusDraw >= 1000) {
         lastTimeStatusDraw = millis();
-        drawTimeReadouts();
+        systemScreens.drawTimeReadouts();
     }
 
     if (!screenSleeping && screenTimeoutSeconds > 0 &&
@@ -7648,6 +7052,7 @@ void loop() {
         screenSleeping = true;
         if (cyberFamiliar.idleMode()) {
             familiarIdleActive = true;
+            familiarIdleDrawn = false;
             cyberdeckIdleActive = false;
             lastFamiliarDraw = 0;
             drawCyberFamiliarIdle();

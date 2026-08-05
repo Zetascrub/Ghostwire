@@ -34,6 +34,8 @@ public:
     void cycleName();
     void toggleIdleMode();
     void noteRecovery();
+    void notePatrol(const String& message, uint16_t xp = 0,
+                    FamiliarMood mood = FamiliarMood::Curious);
     void resetProgress();
 
     const String& name() const { return name_; }
