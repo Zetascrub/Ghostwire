@@ -6,6 +6,10 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix a connected BLE Keyboard panic on Escape by disabling automatic
+  re-advertising, explicitly disconnecting peers, waiting for NimBLE's host task
+  to drain the event, and only then deleting the HID server state.
+
 - Harden the 0.5 release candidate by aligning device and native builds on
   GNU C++17, expanding operation-policy coverage, and treating Biscuit Pro and
   Chameleon Ultra connections as BLE accessory operations so incompatible

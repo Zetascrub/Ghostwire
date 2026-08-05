@@ -3,6 +3,7 @@
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
 #include <WiFi.h>
+#include <vector>
 
 namespace {
 constexpr uint8_t kReportMap[] = {
@@ -114,15 +115,36 @@ bool BleKeyboardService::begin(uint8_t batteryPercent) {
 
 void BleKeyboardService::end() {
     if (!active_ && server_ == nullptr && hid_ == nullptr) return;
+    active_ = false;
     if (NimBLEDevice::isInitialized()) {
+        // A connected HID peripheral cannot be torn down like a passive scan.
+        // Disable advertise-on-disconnect first, explicitly terminate every
+        // peer, and give the NimBLE host task a bounded window to process the
+        // disconnect event before deinit(true) deletes the server and its
+        // characteristics. Deinitializing immediately here used to race the
+        // host task and panic when Esc stopped an established keyboard link.
+        if (server_ != nullptr) {
+            server_->advertiseOnDisconnect(false);
+            const std::vector<uint16_t> peers = server_->getPeerDevices();
+            for (const uint16_t handle : peers) server_->disconnect(handle);
+            const unsigned long deadline = millis() + 500;
+            while (server_->getConnectedCount() > 0 &&
+                   static_cast<long>(deadline - millis()) > 0) {
+                delay(10);
+            }
+        }
         NimBLEDevice::stopAdvertising();
+        delay(50);
+        delete hid_;
+        hid_ = nullptr;
         NimBLEDevice::deinit(true);
     }
     server_ = nullptr;
     input_ = nullptr;
+    // If begin() failed before NimBLE initialization completed, the HID
+    // wrapper can still exist even though the stack does not.
     delete hid_;
     hid_ = nullptr;
-    active_ = false;
     status_ = "Stopped";
 }
 
