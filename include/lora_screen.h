@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lora_service.h"
+#include "gnss_service.h"
 #include "sd_logger.h"
 
 // LoRa Receive screen: radio status, packet/RSSI/SNR readout, and decoded
@@ -10,18 +11,20 @@
 // packet-driven CSV log rows stay in main.cpp.
 class LoRaScreen {
 public:
-    LoRaScreen(LoRaService& service, SdLogger& logger)
-        : service_(service), logger_(logger) {}
+    LoRaScreen(LoRaService& service, SdLogger& logger, GnssService& gnss)
+        : service_(service), logger_(logger), gnss_(gnss) {}
 
     void draw(bool fullDraw = true);
     void drawNodes(size_t selection, size_t offset);
     void drawNodeDetail(size_t selection);
     void drawMessages(size_t selection, size_t offset);
     void drawMessageDetail(size_t selection);
+    void drawRadar();
 
 private:
     LoRaService& service_;
     SdLogger& logger_;
+    GnssService& gnss_;
     // Skips redundant partial redraws when nothing shown on screen has
     // changed since the last tick (was a function-static in main.cpp;
     // equivalent here since exactly one LoRaScreen instance exists).

@@ -33,6 +33,39 @@ String printableText(const std::vector<uint8_t>& payload) {
 int32_t readLeI32(const uint8_t* value) {
     return static_cast<int32_t>(readLe32(value));
 }
+
+float readLeFloat(const uint8_t* value) {
+    const uint32_t raw = readLe32(value);
+    float result = 0.0F;
+    memcpy(&result, &raw, sizeof(result));
+    return result;
+}
+
+void decodeDeviceMetrics(const uint8_t* data, size_t length,
+                         MeshtasticDecoded& result) {
+    size_t offset = 0;
+    while (offset < length) {
+        uint64_t key = 0;
+        if (!MeshtasticDecoder::readVarint(data, length, offset, key)) return;
+        const uint32_t field = key >> 3;
+        const uint8_t wire = key & 7;
+        if (wire == 0) {
+            uint64_t value = 0;
+            if (!MeshtasticDecoder::readVarint(data, length, offset, value)) return;
+            if (field == 1) result.batteryLevel = static_cast<uint32_t>(value);
+        } else if (wire == 5) {
+            if (length - offset < 4) return;
+            const float value = readLeFloat(data + offset);
+            if (field == 2) result.voltage = value;
+            if (field == 3) result.channelUtilization = value;
+            if (field == 4) result.airUtilTx = value;
+            offset += 4;
+        } else {
+            return;
+        }
+    }
+    result.hasDeviceMetrics = true;
+}
 }  // namespace
 
 bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
@@ -105,6 +138,10 @@ void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
                 }
                 if (field == 2) result.longName = value;
                 if (field == 3) result.shortName = value;
+            }
+            if (result.port == 67 && field == 2) {
+                decodeDeviceMetrics(result.payload.data() + offset, length,
+                                    result);
             }
             offset += length;
         } else if (wire == 5) {

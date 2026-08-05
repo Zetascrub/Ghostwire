@@ -28,6 +28,8 @@ reliability testing is the remaining 0.5 release gate.
 - [x] First receive-side Mesh Field Client milestone: bounded node/message
   state, identity and position decoding, duplicate suppression, and navigable
   dashboard, directory, detail, and inbox views.
+- [x] GNSS-relative mesh radar, node range/bearing, device-metrics decoding,
+  and debounced microSD persistence for the bounded client state.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 
@@ -113,9 +115,9 @@ verified against test tags.
 
 ### Mesh Field Client progression
 
-- Persist the bounded node database and message journal to microSD.
-- Combine local GNSS with received positions for distance/bearing and a field
-  radar view; add structured telemetry decoding.
+- [x] Persist the bounded node database and message journal to microSD.
+- [x] Combine local GNSS with received positions for distance/bearing and a
+  field radar view; decode device battery and channel telemetry.
 - Add deliberate region/channel/key configuration before any transmission.
 - Implement standards-compatible messages, acknowledgements, packet IDs, and
   position sharing only after duty-cycle and interoperability testing.

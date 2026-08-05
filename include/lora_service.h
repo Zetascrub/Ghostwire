@@ -22,6 +22,11 @@ public:
         double latitude = 0.0;
         double longitude = 0.0;
         int32_t altitude = 0;
+        bool hasDeviceMetrics = false;
+        uint32_t batteryLevel = 0;
+        float voltage = 0.0F;
+        float channelUtilization = 0.0F;
+        float airUtilTx = 0.0F;
     };
 
     struct MeshMessage {
@@ -55,6 +60,8 @@ public:
     const std::vector<MeshNode>& nodes() const { return nodes_; }
     const std::vector<MeshMessage>& messages() const { return messages_; }
     String nodeDisplayName(uint32_t id) const;
+    void restoreNode(const MeshNode& node);
+    void restoreMessage(const MeshMessage& message);
 
 private:
     Module module_{5, 4, 3, 6};

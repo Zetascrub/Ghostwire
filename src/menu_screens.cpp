@@ -221,19 +221,19 @@ void MenuScreens::drawGps() {
 
 void MenuScreens::drawMesh() {
     static const char* const items[] = {"Mesh Dashboard", "Node Directory",
-                                       "Message Inbox"};
+                                       "Message Inbox", "Position Radar"};
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Listen and review mesh activity", "Known identities and positions",
-            "Recent public-channel messages"};
+            "Recent public-channel messages", "GNSS-relative mesh positions"};
         ScreenChrome::drawNavigationCard("Mesh signals", items[listSelection_],
                                          descriptions[listSelection_],
-                                         listSelection_, 3, 1);
+                                         listSelection_, 4, 1);
         return;
     }
     ScreenChrome::drawHeader("Mesh");
-    ScreenChrome::normalizeListPosition(3);
-    for (size_t index = 0; index < 3; ++index) {
+    ScreenChrome::normalizeListPosition(4);
+    for (size_t index = 0; index < 4; ++index) {
         ScreenChrome::drawListRow(index, items[index], listSelection_ == index);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");

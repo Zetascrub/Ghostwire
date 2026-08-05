@@ -162,7 +162,10 @@ The detailed capabilities behind those missions are:
   dashboard feeds a bounded 24-node directory and 32-message inbox, decodes
   public-channel identities and positions, suppresses repeated messages, and
   retains raw radio metadata in event-driven CSV logs. Node and message detail
-  views remain available while the radio continues listening.
+  views remain available while the radio continues listening. A GNSS-relative
+  radar plots received positions and node details calculate range/bearing;
+  device battery telemetry is shown when broadcast. The bounded client state
+  is restored from `/ghostwire/mesh/state.json` after reboot.
 
 #### War Drive
 

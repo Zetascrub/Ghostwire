@@ -105,6 +105,13 @@ void LoRaService::observeDecodedPacket() {
         node->longitude = lastDecoded_.longitude;
         node->altitude = lastDecoded_.altitude;
     }
+    if (lastDecoded_.hasDeviceMetrics) {
+        node->hasDeviceMetrics = true;
+        node->batteryLevel = lastDecoded_.batteryLevel;
+        node->voltage = lastDecoded_.voltage;
+        node->channelUtilization = lastDecoded_.channelUtilization;
+        node->airUtilTx = lastDecoded_.airUtilTx;
+    }
     if ((lastDecoded_.port == 1 || lastDecoded_.port == 7 ||
          lastDecoded_.port == 32) && !lastDecoded_.summary.isEmpty()) {
         const auto duplicate = std::find_if(
@@ -129,6 +136,32 @@ String LoRaService::nodeDisplayName(uint32_t id) const {
     char fallback[10];
     snprintf(fallback, sizeof(fallback), "!%08lX", static_cast<unsigned long>(id));
     return String(fallback);
+}
+
+void LoRaService::restoreNode(const MeshNode& node) {
+    if (node.id == 0) return;
+    const auto existing = std::find_if(nodes_.begin(), nodes_.end(),
+                                       [&](const MeshNode& value) {
+                                           return value.id == node.id;
+                                       });
+    if (existing != nodes_.end()) {
+        *existing = node;
+    } else if (nodes_.size() < 24) {
+        nodes_.push_back(node);
+    }
+}
+
+void LoRaService::restoreMessage(const MeshMessage& message) {
+    if (message.from == 0 || message.text.isEmpty()) return;
+    const auto duplicate = std::find_if(messages_.begin(), messages_.end(),
+                                        [&](const MeshMessage& value) {
+        return value.from == message.from &&
+               value.packetId == message.packetId;
+    });
+    if (duplicate == messages_.end()) {
+        if (messages_.size() >= 32) messages_.erase(messages_.begin());
+        messages_.push_back(message);
+    }
 }
 
 bool LoRaService::restartReceive() {

@@ -18,6 +18,11 @@ struct MeshtasticDecoded {
     double latitude = 0.0;
     double longitude = 0.0;
     int32_t altitude = 0;
+    bool hasDeviceMetrics = false;
+    uint32_t batteryLevel = 0;
+    float voltage = 0.0F;
+    float channelUtilization = 0.0F;
+    float airUtilTx = 0.0F;
 };
 
 class MeshtasticDecoder {
@@ -25,10 +30,10 @@ public:
     bool decodePublic(const uint8_t* packet, size_t length,
                       MeshtasticDecoded& result) const;
     static const char* portName(uint32_t port);
-
-private:
     static bool readVarint(const uint8_t* data, size_t length, size_t& offset,
                            uint64_t& value);
+
+private:
     static bool decodeData(const uint8_t* data, size_t length,
                            MeshtasticDecoded& result);
     static void decodeApplicationPayload(MeshtasticDecoded& result);

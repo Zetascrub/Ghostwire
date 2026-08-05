@@ -11,6 +11,11 @@ assessment tools built on those verified foundations.
   payloads, suppress repeated messages, and add dashboard, list, and readable
   detail views while the SX1262 continues listening in the background.
 
+- Extend the Mesh Field Client with a GNSS-relative position radar, per-node
+  range and bearing, Meshtastic device battery/channel telemetry, and a
+  debounced `/ghostwire/mesh/state.json` snapshot that restores the bounded
+  node directory and message inbox after reboot.
+
 - Fix a connected BLE Keyboard panic on Escape by disabling automatic
   re-advertising, explicitly disconnecting peers, waiting for NimBLE's host task
   to drain the event, and only then deleting the HID server state.

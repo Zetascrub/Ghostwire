@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
@@ -312,7 +313,7 @@ WifiSnifferService wifiSnifferService;
 WifiGuardianService wifiGuardianService;
 SdLogger imuLogger;
 SdLogger loraLogger;
-LoRaScreen loraScreen(loraService, loraLogger);
+LoRaScreen loraScreen(loraService, loraLogger, gnssService);
 SdLogger wifiSnifferLogger;
 SdLogger guardianEventLogger;
 SdLogger chameleonLogger;
@@ -410,6 +411,8 @@ unsigned long lastGnssDraw = 0;
 unsigned long lastGnssLog = 0;
 unsigned long lastLoRaDraw = 0;
 uint32_t lastLoggedLoRaPacket = 0;
+uint32_t lastPersistedMeshPacket = 0;
+unsigned long meshPersistDue = 0;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
@@ -861,6 +864,109 @@ void initSd() {
         sdAvailable = sdCardType != CARD_NONE;
         sdCardSizeMiB = SD.cardSize() / (1024ULL * 1024ULL);
     }
+}
+
+constexpr char kMeshStatePath[] = "/ghostwire/mesh/state.json";
+constexpr char kMeshStateTempPath[] = "/ghostwire/mesh/state.tmp";
+constexpr char kMeshStateBackupPath[] = "/ghostwire/mesh/state.bak";
+
+void loadMeshState() {
+    if (!sdAvailable) return;
+    const char* source = SD.exists(kMeshStatePath) ? kMeshStatePath
+                       : SD.exists(kMeshStateBackupPath) ? kMeshStateBackupPath
+                                                        : nullptr;
+    if (source == nullptr) return;
+    File file = SD.open(source, FILE_READ);
+    if (!file) return;
+    JsonDocument document;
+    if (deserializeJson(document, file)) {
+        file.close();
+        return;
+    }
+    file.close();
+    for (JsonObject value : document["nodes"].as<JsonArray>()) {
+        LoRaService::MeshNode node;
+        node.id = value["id"] | 0U;
+        node.longName = value["long"] | "";
+        node.shortName = value["short"] | "";
+        node.lastRssi = value["rssi"] | 0.0F;
+        node.lastSnr = value["snr"] | 0.0F;
+        node.packets = value["packets"] | 0U;
+        node.hasPosition = value["position"] | false;
+        node.latitude = value["lat"] | 0.0;
+        node.longitude = value["lon"] | 0.0;
+        node.altitude = value["alt"] | 0;
+        node.hasDeviceMetrics = value["metrics"] | false;
+        node.batteryLevel = value["battery"] | 0U;
+        node.voltage = value["voltage"] | 0.0F;
+        node.channelUtilization = value["channel"] | 0.0F;
+        node.airUtilTx = value["air"] | 0.0F;
+        loraService.restoreNode(node);
+    }
+    for (JsonObject value : document["messages"].as<JsonArray>()) {
+        LoRaService::MeshMessage message;
+        message.from = value["from"] | 0U;
+        message.to = value["to"] | 0U;
+        message.packetId = value["id"] | 0U;
+        message.text = value["text"] | "";
+        loraService.restoreMessage(message);
+    }
+}
+
+void saveMeshState() {
+    if (!sdAvailable) return;
+    SD.mkdir("/ghostwire");
+    SD.mkdir("/ghostwire/mesh");
+    JsonDocument document;
+    JsonArray nodes = document["nodes"].to<JsonArray>();
+    for (const auto& node : loraService.nodes()) {
+        JsonObject value = nodes.add<JsonObject>();
+        value["id"] = node.id;
+        value["long"] = node.longName;
+        value["short"] = node.shortName;
+        value["rssi"] = node.lastRssi;
+        value["snr"] = node.lastSnr;
+        value["packets"] = node.packets;
+        value["position"] = node.hasPosition;
+        value["lat"] = node.latitude;
+        value["lon"] = node.longitude;
+        value["alt"] = node.altitude;
+        value["metrics"] = node.hasDeviceMetrics;
+        value["battery"] = node.batteryLevel;
+        value["voltage"] = node.voltage;
+        value["channel"] = node.channelUtilization;
+        value["air"] = node.airUtilTx;
+    }
+    JsonArray messages = document["messages"].to<JsonArray>();
+    for (const auto& message : loraService.messages()) {
+        JsonObject value = messages.add<JsonObject>();
+        value["from"] = message.from;
+        value["to"] = message.to;
+        value["id"] = message.packetId;
+        value["text"] = message.text;
+    }
+    SD.remove(kMeshStateTempPath);
+    File file = SD.open(kMeshStateTempPath, FILE_WRITE);
+    if (!file) return;
+    const bool written = serializeJson(document, file) > 0;
+    file.flush();
+    file.close();
+    if (!written) {
+        SD.remove(kMeshStateTempPath);
+        return;
+    }
+    SD.remove(kMeshStateBackupPath);
+    if (SD.exists(kMeshStatePath)) {
+        SD.rename(kMeshStatePath, kMeshStateBackupPath);
+    }
+    if (!SD.rename(kMeshStateTempPath, kMeshStatePath)) {
+        if (SD.exists(kMeshStateBackupPath)) {
+            SD.rename(kMeshStateBackupPath, kMeshStatePath);
+        }
+        return;
+    }
+    SD.remove(kMeshStateBackupPath);
+    lastPersistedMeshPacket = loraService.packetCount();
 }
 
 void drawHeaderStatus(bool force = false) {
@@ -3521,6 +3627,7 @@ void drawCurrentScreen() {
         case Screen::MeshMessageDetail:
             loraScreen.drawMessageDetail(listSelection);
             break;
+        case Screen::MeshRadar: loraScreen.drawRadar(); break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
         case Screen::Imu: imuScreen.draw(); break;
@@ -4274,6 +4381,13 @@ void goBack() {
     if (currentScreen == Screen::MeshMessageDetail) {
         currentScreen = Screen::MeshMessages;
         loraScreen.drawMessages(listSelection, listOffset);
+        return;
+    }
+    if (currentScreen == Screen::MeshRadar) {
+        currentScreen = Screen::MeshMenu;
+        listSelection = 3;
+        listOffset = 0;
+        menuScreens.drawMesh();
         return;
     }
     if (currentScreen == Screen::LoRa) {
@@ -6200,13 +6314,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
-            if (up) moveSelection(-1, 3);
-            if (down) moveSelection(1, 3);
+            if (up) moveSelection(-1, 4);
+            if (down) moveSelection(1, 4);
             if (keys.enter) {
                 const size_t destination = listSelection;
                 currentScreen = destination == 0 ? Screen::LoRa
                               : destination == 1 ? Screen::MeshNodes
-                                                 : Screen::MeshMessages;
+                              : destination == 2 ? Screen::MeshMessages
+                                                 : Screen::MeshRadar;
                 listSelection = 0;
                 listOffset = 0;
                 drawHeader("LoRa Receive");
@@ -6448,6 +6563,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::MeshMessageDetail:
             loraScreen.drawMessageDetail(listSelection);
+            break;
+
+        case Screen::MeshRadar:
+            loraScreen.drawRadar();
             break;
 
         case Screen::WifiSniffer:
@@ -6986,6 +7105,7 @@ void setup() {
     hidService.begin();
     gnssService.begin();
     initSd();
+    loadMeshState();
     recordBootTelemetry();
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
@@ -7139,6 +7259,15 @@ void loop() {
     updateBatteryEstimate();
     gnssService.update();
     loraService.update();
+    if (loraService.packetCount() != lastPersistedMeshPacket &&
+        meshPersistDue == 0) {
+        meshPersistDue = millis() + 2000;
+    }
+    if (meshPersistDue != 0 &&
+        static_cast<long>(millis() - meshPersistDue) >= 0) {
+        saveMeshState();
+        meshPersistDue = 0;
+    }
     wifiSnifferService.update();
     bleSpamService.update();
     if (!clockSynced && millis() - lastClockSyncAttempt >= 1000) {
