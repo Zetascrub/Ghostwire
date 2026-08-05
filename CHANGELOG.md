@@ -6,6 +6,11 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Begin the receive-side Mesh Field Client: retain a bounded 24-node directory
+  and 32-message inbox, decode Meshtastic public-channel identity and position
+  payloads, suppress repeated messages, and add dashboard, list, and readable
+  detail views while the SX1262 continues listening in the background.
+
 - Fix a connected BLE Keyboard panic on Escape by disabling automatic
   re-advertising, explicitly disconnecting peers, waiting for NimBLE's host task
   to drain the event, and only then deleting the HID server state.

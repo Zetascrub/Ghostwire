@@ -220,16 +220,22 @@ void MenuScreens::drawGps() {
 }
 
 void MenuScreens::drawMesh() {
-    static const char* const items[] = {"LoRa / Meshtastic"};
+    static const char* const items[] = {"Mesh Dashboard", "Node Directory",
+                                       "Message Inbox"};
     if (cardNav_) {
-        ScreenChrome::drawNavigationCard("Mesh signals", items[0],
-                                         "Listen to LoRa and Meshtastic", 0,
-                                         1, 1);
+        static const char* const descriptions[] = {
+            "Listen and review mesh activity", "Known identities and positions",
+            "Recent public-channel messages"};
+        ScreenChrome::drawNavigationCard("Mesh signals", items[listSelection_],
+                                         descriptions[listSelection_],
+                                         listSelection_, 3, 1);
         return;
     }
     ScreenChrome::drawHeader("Mesh");
-    ScreenChrome::normalizeListPosition(1);
-    ScreenChrome::drawListRow(0, items[0], listSelection_ == 0);
+    ScreenChrome::normalizeListPosition(3);
+    for (size_t index = 0; index < 3; ++index) {
+        ScreenChrome::drawListRow(index, items[index], listSelection_ == index);
+    }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");
 }
 

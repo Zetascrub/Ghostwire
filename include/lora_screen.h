@@ -14,6 +14,10 @@ public:
         : service_(service), logger_(logger) {}
 
     void draw(bool fullDraw = true);
+    void drawNodes(size_t selection, size_t offset);
+    void drawNodeDetail(size_t selection);
+    void drawMessages(size_t selection, size_t offset);
+    void drawMessageDetail(size_t selection);
 
 private:
     LoRaService& service_;

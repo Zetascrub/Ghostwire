@@ -1120,7 +1120,9 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
         case Screen::LoRa:
             return {{'l', loraLogger.isActive() ? "Stop logging"
                                                 : "Start logging"},
-                    {'p', "Switch profile"}};
+                    {'p', "Switch profile"},
+                    {'n', "Open node directory"},
+                    {'m', "Open message inbox"}};
         case Screen::WifiSniffer:
             return {{'l', wifiSnifferLogger.isActive() ? "Stop probe CSV"
                                                         : "Start probe CSV"},
@@ -3507,6 +3509,18 @@ void drawCurrentScreen() {
         case Screen::SshSession: sshScreens.drawSession(); break;
         case Screen::Gnss: gnssScreen.draw(); break;
         case Screen::LoRa: loraScreen.draw(); break;
+        case Screen::MeshNodes:
+            loraScreen.drawNodes(listSelection, listOffset);
+            break;
+        case Screen::MeshNodeDetail:
+            loraScreen.drawNodeDetail(listSelection);
+            break;
+        case Screen::MeshMessages:
+            loraScreen.drawMessages(listSelection, listOffset);
+            break;
+        case Screen::MeshMessageDetail:
+            loraScreen.drawMessageDetail(listSelection);
+            break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
         case Screen::Imu: imuScreen.draw(); break;
@@ -4243,6 +4257,24 @@ void goBack() {
     }
     if (currentScreen == Screen::Gnss) {
         gnssLogger.stop();
+    }
+    if (currentScreen == Screen::MeshNodes ||
+        currentScreen == Screen::MeshMessages) {
+        currentScreen = Screen::LoRa;
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.draw();
+        return;
+    }
+    if (currentScreen == Screen::MeshNodeDetail) {
+        currentScreen = Screen::MeshNodes;
+        loraScreen.drawNodes(listSelection, listOffset);
+        return;
+    }
+    if (currentScreen == Screen::MeshMessageDetail) {
+        currentScreen = Screen::MeshMessages;
+        loraScreen.drawMessages(listSelection, listOffset);
+        return;
     }
     if (currentScreen == Screen::LoRa) {
         loraLogger.stop();
@@ -6168,15 +6200,22 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
+            if (up) moveSelection(-1, 3);
+            if (down) moveSelection(1, 3);
             if (keys.enter) {
-                currentScreen = Screen::LoRa;
+                const size_t destination = listSelection;
+                currentScreen = destination == 0 ? Screen::LoRa
+                              : destination == 1 ? Screen::MeshNodes
+                                                 : Screen::MeshMessages;
+                listSelection = 0;
+                listOffset = 0;
                 drawHeader("LoRa Receive");
                 M5Cardputer.Display.setTextColor(Branding::warning,
                                                 Branding::background);
                 M5Cardputer.Display.setCursor(8, 42);
                 M5Cardputer.Display.print("Initialising SX1262...");
                 loraService.begin();
-                loraScreen.draw();
+                drawCurrentScreen();
                 return;
             }
             menuScreens.drawMesh();
@@ -6361,10 +6400,54 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
             } else if (pressedLetter(keys, 'p')) {
                 loraService.toggleProfile();
+            } else if (pressedLetter(keys, 'n')) {
+                currentScreen = Screen::MeshNodes;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.drawNodes(listSelection, listOffset);
+                return;
+            } else if (pressedLetter(keys, 'm')) {
+                currentScreen = Screen::MeshMessages;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.drawMessages(listSelection, listOffset);
+                return;
             } else if (refresh) {
                 loraService.restartReceive();
             }
             loraScreen.draw();
+            break;
+
+        case Screen::MeshNodes:
+            if (up) moveSelection(-1, loraService.nodes().size());
+            if (down) moveSelection(1, loraService.nodes().size());
+            normalizeListPosition(loraService.nodes().size());
+            if (keys.enter && !loraService.nodes().empty()) {
+                currentScreen = Screen::MeshNodeDetail;
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            loraScreen.drawNodes(listSelection, listOffset);
+            break;
+
+        case Screen::MeshNodeDetail:
+            loraScreen.drawNodeDetail(listSelection);
+            break;
+
+        case Screen::MeshMessages:
+            if (up) moveSelection(-1, loraService.messages().size());
+            if (down) moveSelection(1, loraService.messages().size());
+            normalizeListPosition(loraService.messages().size());
+            if (keys.enter && !loraService.messages().empty()) {
+                currentScreen = Screen::MeshMessageDetail;
+                loraScreen.drawMessageDetail(listSelection);
+                return;
+            }
+            loraScreen.drawMessages(listSelection, listOffset);
+            break;
+
+        case Screen::MeshMessageDetail:
+            loraScreen.drawMessageDetail(listSelection);
             break;
 
         case Screen::WifiSniffer:

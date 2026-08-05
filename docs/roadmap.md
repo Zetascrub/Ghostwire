@@ -25,6 +25,9 @@ reliability testing is the remaining 0.5 release gate.
   default selection, migration, and deletion.
 - [x] Skippable, replayable first-run guidance for the Observe -> Scout ->
   Record workflow, Familiar, SD evidence, navigation, and profile storage.
+- [x] First receive-side Mesh Field Client milestone: bounded node/message
+  state, identity and position decoding, duplicate suppression, and navigable
+  dashboard, directory, detail, and inbox views.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 
@@ -107,6 +110,18 @@ log import is idempotent.
 verified against test tags.
 
 ## Next — high-value operator utilities
+
+### Mesh Field Client progression
+
+- Persist the bounded node database and message journal to microSD.
+- Combine local GNSS with received positions for distance/bearing and a field
+  radar view; add structured telemetry decoding.
+- Add deliberate region/channel/key configuration before any transmission.
+- Implement standards-compatible messages, acknowledgements, packet IDs, and
+  position sharing only after duty-cycle and interoperability testing.
+
+The present client remains receive-only; it does not claim full Meshtastic node
+or router behaviour.
 
 ### 5. Network socket workbench
 

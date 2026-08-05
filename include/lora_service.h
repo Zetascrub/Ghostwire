@@ -10,6 +10,28 @@
 
 class LoRaService {
 public:
+    struct MeshNode {
+        uint32_t id = 0;
+        String longName;
+        String shortName;
+        uint32_t lastSeenMs = 0;
+        float lastRssi = 0.0F;
+        float lastSnr = 0.0F;
+        uint32_t packets = 0;
+        bool hasPosition = false;
+        double latitude = 0.0;
+        double longitude = 0.0;
+        int32_t altitude = 0;
+    };
+
+    struct MeshMessage {
+        uint32_t from = 0;
+        uint32_t to = 0;
+        uint32_t packetId = 0;
+        uint32_t receivedMs = 0;
+        String text;
+    };
+
     enum class Profile {
         MeshtasticEuLongFast,
         M5StackGeneric,
@@ -30,6 +52,9 @@ public:
     Profile profile() const { return profile_; }
     const char* profileName() const;
     float frequencyMhz() const;
+    const std::vector<MeshNode>& nodes() const { return nodes_; }
+    const std::vector<MeshMessage>& messages() const { return messages_; }
+    String nodeDisplayName(uint32_t id) const;
 
 private:
     Module module_{5, 4, 3, 6};
@@ -45,4 +70,8 @@ private:
     MeshtasticDecoded lastDecoded_;
     MeshtasticDecoder decoder_;
     Profile profile_ = Profile::MeshtasticEuLongFast;
+    std::vector<MeshNode> nodes_;
+    std::vector<MeshMessage> messages_;
+
+    void observeDecodedPacket();
 };

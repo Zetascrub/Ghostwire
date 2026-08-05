@@ -12,6 +12,12 @@ struct MeshtasticDecoded {
     uint32_t port = 0;
     std::vector<uint8_t> payload;
     String summary;
+    String longName;
+    String shortName;
+    bool hasPosition = false;
+    double latitude = 0.0;
+    double longitude = 0.0;
+    int32_t altitude = 0;
 };
 
 class MeshtasticDecoder {
@@ -25,4 +31,5 @@ private:
                            uint64_t& value);
     static bool decodeData(const uint8_t* data, size_t length,
                            MeshtasticDecoded& result);
+    static void decodeApplicationPayload(MeshtasticDecoded& result);
 };

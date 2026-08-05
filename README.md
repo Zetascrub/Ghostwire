@@ -158,8 +158,11 @@ The detailed capabilities behind those missions are:
 
 - GPS provides GNSS fix monitoring, live position/altitude/HDOP, and one-second
   CSV recording.
-- Mesh provides passive SX1262 LoRa reception with Meshtastic public-channel
-  header/port/plaintext decoding and event-driven CSV logging.
+- Mesh provides a receive-only Meshtastic field client over the SX1262. Its
+  dashboard feeds a bounded 24-node directory and 32-message inbox, decodes
+  public-channel identities and positions, suppresses repeated messages, and
+  retains raw radio metadata in event-driven CSV logs. Node and message detail
+  views remain available while the radio continues listening.
 
 #### War Drive
 
@@ -378,7 +381,8 @@ authorized security field toolkit. It includes:
 - Persistent Slow, Normal, and Fast boot-speed settings scale the complete
   animation, title reveal, summary, and hold sequence.
 - Battery percentage, charge status, and low-battery indication.
-- GNSS fix monitoring and passive SX1262 LoRa/Meshtastic packet reception.
+- GNSS fix monitoring and a passive SX1262 Meshtastic field client with a
+  bounded node directory and message inbox.
 - Live accelerometer/gyroscope data, orientation, motion state, and stationary
   gyro calibration.
 - Reusable SD CSV logging, initially exposed as a 10 Hz IMU recorder under
@@ -388,8 +392,8 @@ authorized security field toolkit. It includes:
 - Event-driven passive LoRa packet logging with radio metadata and payload
   previews.
 - GNSS-synchronized UTC system time and ISO-8601 timestamps in new logs.
-- Receive-only Meshtastic public-channel header, port, and plaintext message
-  decoding.
+- Receive-only Meshtastic public-channel identity, position, port, and text
+  decoding with duplicate suppression and readable detail views.
 - One-shot CSV export of Wi-Fi and BLE discovery results.
 - Dedicated log-session browsing, metadata, preview, and confirmed deletion.
 - Persistent boot/recovery counters and append-only SD startup history.

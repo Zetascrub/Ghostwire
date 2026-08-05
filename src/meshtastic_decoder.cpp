@@ -29,6 +29,10 @@ String printableText(const std::vector<uint8_t>& payload) {
     }
     return text;
 }
+
+int32_t readLeI32(const uint8_t* value) {
+    return static_cast<int32_t>(readLe32(value));
+}
 }  // namespace
 
 bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
@@ -64,13 +68,72 @@ bool MeshtasticDecoder::decodePublic(const uint8_t* packet, size_t length,
     }
 
     result.valid = true;
-    if (result.port == 1 || result.port == 10 || result.port == 11 ||
-        result.port == 32 || result.port == 66) {
+    decodeApplicationPayload(result);
+    if (result.port == 1 || result.port == 7 || result.port == 32) {
         result.summary = printableText(result.payload);
+    } else if (result.port == 4 && !result.longName.isEmpty()) {
+        result.summary = result.longName;
+    } else if (result.port == 3 && result.hasPosition) {
+        result.summary = String(result.latitude, 5) + ", " +
+                         String(result.longitude, 5);
     } else {
         result.summary = portName(result.port);
     }
     return true;
+}
+
+
+void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
+    size_t offset = 0;
+    while (offset < result.payload.size()) {
+        uint64_t key = 0;
+        if (!readVarint(result.payload.data(), result.payload.size(), offset,
+                        key) || key == 0) return;
+        const uint32_t field = key >> 3;
+        const uint8_t wire = key & 7;
+        if (wire == 2) {
+            uint64_t length = 0;
+            if (!readVarint(result.payload.data(), result.payload.size(),
+                            offset, length) ||
+                length > result.payload.size() - offset) return;
+            if (result.port == 4 && (field == 2 || field == 3)) {
+                String value;
+                value.reserve(length);
+                for (size_t i = 0; i < length; ++i) {
+                    const uint8_t c = result.payload[offset + i];
+                    if (c >= 32 && c <= 126) value += static_cast<char>(c);
+                }
+                if (field == 2) result.longName = value;
+                if (field == 3) result.shortName = value;
+            }
+            offset += length;
+        } else if (wire == 5) {
+            if (result.payload.size() - offset < 4) return;
+            if (result.port == 3) {
+                if (field == 1) {
+                    result.latitude = readLeI32(result.payload.data() + offset) *
+                                      1e-7;
+                    result.hasPosition = true;
+                } else if (field == 2) {
+                    result.longitude = readLeI32(result.payload.data() + offset) *
+                                       1e-7;
+                }
+            }
+            offset += 4;
+        } else if (wire == 0) {
+            uint64_t value = 0;
+            if (!readVarint(result.payload.data(), result.payload.size(),
+                            offset, value)) return;
+            if (result.port == 3 && field == 3) {
+                result.altitude = static_cast<int32_t>(value);
+            }
+        } else if (wire == 1) {
+            if (result.payload.size() - offset < 8) return;
+            offset += 8;
+        } else {
+            return;
+        }
+    }
 }
 
 bool MeshtasticDecoder::readVarint(const uint8_t* data, size_t length,

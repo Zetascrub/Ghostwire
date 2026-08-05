@@ -70,8 +70,65 @@ void LoRaService::update() {
         lastRssi_ = radio_.getRSSI();
         lastSnr_ = radio_.getSNR();
         ++packetCount_;
+        observeDecodedPacket();
     }
     restartReceive();
+}
+
+void LoRaService::observeDecodedPacket() {
+    if (!lastDecoded_.valid) return;
+    auto node = std::find_if(nodes_.begin(), nodes_.end(), [&](const MeshNode& n) {
+        return n.id == lastDecoded_.from;
+    });
+    if (node == nodes_.end()) {
+        if (nodes_.size() >= 24) {
+            node = std::min_element(nodes_.begin(), nodes_.end(),
+                                    [](const MeshNode& a, const MeshNode& b) {
+                                        return a.lastSeenMs < b.lastSeenMs;
+                                    });
+            *node = MeshNode{};
+        } else {
+            nodes_.push_back(MeshNode{});
+            node = nodes_.end() - 1;
+        }
+        node->id = lastDecoded_.from;
+    }
+    node->lastSeenMs = millis();
+    node->lastRssi = lastRssi_;
+    node->lastSnr = lastSnr_;
+    ++node->packets;
+    if (!lastDecoded_.longName.isEmpty()) node->longName = lastDecoded_.longName;
+    if (!lastDecoded_.shortName.isEmpty()) node->shortName = lastDecoded_.shortName;
+    if (lastDecoded_.hasPosition) {
+        node->hasPosition = true;
+        node->latitude = lastDecoded_.latitude;
+        node->longitude = lastDecoded_.longitude;
+        node->altitude = lastDecoded_.altitude;
+    }
+    if ((lastDecoded_.port == 1 || lastDecoded_.port == 7 ||
+         lastDecoded_.port == 32) && !lastDecoded_.summary.isEmpty()) {
+        const auto duplicate = std::find_if(
+            messages_.begin(), messages_.end(), [&](const MeshMessage& message) {
+                return message.from == lastDecoded_.from &&
+                       message.packetId == lastDecoded_.id;
+            });
+        if (duplicate != messages_.end()) return;
+        if (messages_.size() >= 32) messages_.erase(messages_.begin());
+        messages_.push_back({lastDecoded_.from, lastDecoded_.to,
+                             lastDecoded_.id, millis(), lastDecoded_.summary});
+    }
+}
+
+String LoRaService::nodeDisplayName(uint32_t id) const {
+    const auto node = std::find_if(nodes_.begin(), nodes_.end(),
+                                   [id](const MeshNode& n) { return n.id == id; });
+    if (node != nodes_.end()) {
+        if (!node->longName.isEmpty()) return node->longName;
+        if (!node->shortName.isEmpty()) return node->shortName;
+    }
+    char fallback[10];
+    snprintf(fallback, sizeof(fallback), "!%08lX", static_cast<unsigned long>(id));
+    return String(fallback);
 }
 
 bool LoRaService::restartReceive() {
