@@ -78,4 +78,6 @@ enum class Screen {
     SettingsReset,
     Placeholder,
     About,
+    OtaCheck,
+    OtaInstalling,
 };

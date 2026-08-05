@@ -26,3 +26,16 @@ fingerprint through a trusted channel.
 microSD logs are plaintext and may contain MAC addresses, network names,
 location, packet data, and RFID identifiers. Protect, minimize, and securely
 erase them according to the rules governing the assessment.
+
+## Firmware updates
+
+Ghostwire can optionally check GitHub for a newer signed release and install
+it over Wi-Fi from **Settings > Firmware Update**; see
+[docs/ota-updates.md](docs/ota-updates.md). Every release image is verified
+against an ECDSA-P256 signature (public key embedded in firmware; private
+key held only in GitHub Actions secrets) before it is ever committed as
+bootable, and an unattended boot-safety check rolls back a bad update
+automatically. This does not change the physical-access threat model above
+-- an attacker who can reflash the device over USB was never constrained by
+this mechanism in the first place -- it only constrains what the *network*
+update path will accept.

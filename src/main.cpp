@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
 #include <sys/time.h>
@@ -31,6 +32,8 @@
 #include "menu_screens.h"
 #include "settings_names.h"
 #include "settings_screens.h"
+#include "ota_service.h"
+#include "ota_screens.h"
 #include "system_screens.h"
 #include "eapol_parser.h"
 #include "familiar_patrol_service.h"
@@ -126,6 +129,11 @@ uint32_t bootCount = 0;
 uint32_t abnormalResetCount = 0;
 bool bootHistorySaved = false;
 bool bootChimePending = false;
+// True when the running OTA partition is still in the bootloader's
+// ESP_OTA_IMG_PENDING_VERIFY state (see verifyOtaBootOrRollback()/
+// markBootHealthy() in setup()).
+bool otaPendingVerify = false;
+constexpr uint8_t kMaxBootAttemptsBeforeRollback = 3;
 unsigned long bootChimeDeadlineMs = 0;
 unsigned long nextBootChimeAttemptMs = 0;
 String bootChimeStatus = "Disabled";
@@ -377,6 +385,8 @@ bool clockSynced = false;
 String clockStatus = "Waiting for GNSS UTC";
 SystemScreens systemScreens(listSelection, listOffset, diagnosticExportStatus,
                             clockSynced, clockStatus);
+OtaService otaService;
+OtaScreens otaScreens(otaService);
 unsigned long lastClockSyncAttempt = 0;
 unsigned long lastHeaderStatusDraw = 0;
 unsigned long lastTimeStatusDraw = 0;
@@ -505,6 +515,61 @@ void recoverKeyboardAfterBlockingOperation() {
         M5Cardputer.update();
         delay(10);
     }
+}
+
+// Queries the public repo's latest release (see OtaService::checkForUpdate)
+// and lands on Screen::OtaCheck either way -- same "please wait" blocking
+// convention as scanWifiNetworks()/connectSsh().
+void checkForFirmwareUpdate() {
+    currentScreen = Screen::OtaCheck;
+    ScreenChrome::drawHeader("Firmware Update");
+    M5Cardputer.Display.setTextColor(Branding::warning, Branding::background);
+    M5Cardputer.Display.setCursor(8, 36);
+    M5Cardputer.Display.print("Checking for updates...");
+    ScreenChrome::drawFooter("Please wait");
+    otaService.checkForUpdate(Branding::version);
+    recoverKeyboardAfterBlockingOperation();
+    drawCurrentScreen();
+}
+
+// Downloads, verifies, and flashes the release found by a prior
+// checkForFirmwareUpdate(). Blocking, with periodic progress redraws and
+// Esc-to-cancel polling inside the progress callback -- same pattern as
+// waitDuckyDelay(). Reboots on success; otherwise returns to Screen::OtaCheck
+// with the failure reason so the operator can retry or back out.
+void installFirmwareUpdate() {
+    currentScreen = Screen::OtaInstalling;
+    otaScreens.drawInstalling();
+    unsigned long lastRedrawMs = 0;
+    const OtaService::InstallResult result = otaService.downloadAndInstall(
+        [&](size_t /*downloaded*/, size_t /*total*/) -> bool {
+            M5Cardputer.update();
+            if (M5Cardputer.Keyboard.isChange() &&
+                M5Cardputer.Keyboard.isPressed() &&
+                M5Cardputer.Keyboard.keysState().esc) {
+                return false;
+            }
+            const unsigned long now = millis();
+            if (now - lastRedrawMs >= 150) {
+                lastRedrawMs = now;
+                otaScreens.drawInstalling(false);
+            }
+            return true;
+        });
+    recoverKeyboardAfterBlockingOperation();
+    if (result == OtaService::InstallResult::Success) {
+        ScreenChrome::drawHeader("Firmware Update");
+        M5Cardputer.Display.setTextColor(Branding::accent, Branding::background);
+        M5Cardputer.Display.setCursor(8, 40);
+        M5Cardputer.Display.print("Update installed.");
+        M5Cardputer.Display.setCursor(8, 58);
+        M5Cardputer.Display.print("Restarting...");
+        delay(1500);
+        ESP.restart();
+        return;
+    }
+    currentScreen = Screen::OtaCheck;
+    drawCurrentScreen();
 }
 
 float sampleBatteryVoltage() {
@@ -2133,6 +2198,64 @@ void recordBootTelemetry() {
     bootHistorySaved = true;
 }
 
+// Call as early in setup() as preferences.begin() allows (before anything
+// that could itself crash/hang). Two independent, layered safety nets for
+// a bad OTA update:
+//
+// 1. ESP-IDF's own pending-verify mechanism, if the bootloader has app
+//    rollback enabled -- harmless no-op read if it isn't. Catches a crash
+//    at literally any point after boot, including before this function
+//    returns, since the bootloader itself reboots into the previous
+//    partition after enough failed boot attempts. Confirmed valid (this
+//    boot counts as healthy) by markBootHealthy() once setup() finishes.
+// 2. An app-level boot-attempt counter in NVS, independent of whether (1)
+//    is actually enabled on this board. Catches the more common real-world
+//    case: the new firmware boots far enough to run setup() but hangs,
+//    watchdog-resets, or panics before reaching a healthy checkpoint.
+//    Falls back to the other OTA partition after kMaxBootAttemptsBeforeRollback
+//    consecutive attempts that never reached markBootHealthy().
+void verifyOtaBootOrRollback() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t otaState;
+    if (running &&
+        esp_ota_get_state_partition(running, &otaState) == ESP_OK &&
+        otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+        otaPendingVerify = true;
+    }
+
+    const uint8_t attempts = preferences.getUChar("boot_attempts", 0);
+    if (attempts >= kMaxBootAttemptsBeforeRollback) {
+        preferences.putUChar("boot_attempts", 0);
+        const esp_partition_t* other =
+            esp_ota_get_next_update_partition(nullptr);
+        if (other && other != running) {
+            Serial.println(
+                "[ota] repeated failed boots after an update -- "
+                "rolling back to the previous firmware");
+            esp_ota_set_boot_partition(other);
+            esp_restart();
+        }
+        // No other OTA partition to fall back to (e.g. very first boot
+        // before any update has ever happened) -- nothing more we can do
+        // here; the counter is already cleared above.
+    } else {
+        preferences.putUChar("boot_attempts", attempts + 1);
+    }
+}
+
+// Call once setup() has reached a point that's a meaningful sign of a
+// healthy boot (SD/display/core services initialized, main menu drawn).
+// Clears the boot-attempt counter and, if this boot was pending bootloader
+// verification, confirms the partition so the bootloader stops treating it
+// as provisional.
+void markBootHealthy() {
+    preferences.putUChar("boot_attempts", 0);
+    if (otaPendingVerify) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        otaPendingVerify = false;
+    }
+}
+
 String formatUptime() {
     const uint32_t totalSeconds = millis() / 1000;
     const uint32_t days = totalSeconds / 86400;
@@ -3142,6 +3265,8 @@ void drawCurrentScreen() {
         case Screen::SettingsReset: settingsScreens.drawResetConfirm(); break;
         case Screen::Placeholder: settingsScreens.drawPlaceholder(); break;
         case Screen::About: settingsScreens.drawAbout(); break;
+        case Screen::OtaCheck: otaScreens.drawCheck(); break;
+        case Screen::OtaInstalling: otaScreens.drawInstalling(); break;
     }
 }
 
@@ -5849,13 +5974,19 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
                 else if (listSelection == 2) currentScreen = Screen::SettingsConnectivity;
-                else currentScreen = Screen::SettingsReset;
+                else if (listSelection == 3) currentScreen = Screen::SettingsReset;
+                else {
+                    listSelection = 0;
+                    listOffset = 0;
+                    checkForFirmwareUpdate();
+                    return;
+                }
                 listSelection = 0;
                 listOffset = 0;
                 drawCurrentScreen();
@@ -6005,6 +6136,26 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::Placeholder:
         case Screen::About: drawCurrentScreen(); break;
+
+        case Screen::OtaCheck:
+            if (keys.enter && otaService.hasVerifiedUpdate()) {
+                installFirmwareUpdate();
+                return;
+            }
+            if (refresh) {
+                checkForFirmwareUpdate();
+                return;
+            }
+            otaScreens.drawCheck();
+            break;
+
+        case Screen::OtaInstalling:
+            // downloadAndInstall() polls for its own cancel key and blocks
+            // until it returns; this screen is never live in the normal
+            // input loop, but the switch stays exhaustive for consistency
+            // with every other screen here.
+            otaScreens.drawInstalling();
+            break;
 
         // These text-entry/session screens return from their dedicated input
         // handlers above before this navigation switch is reached.
@@ -6219,6 +6370,7 @@ void setup() {
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
+    verifyOtaBootOrRollback();
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
         preferences.getUChar("brightness", kDefaultBrightness);
@@ -6289,6 +6441,7 @@ void setup() {
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
     menuScreens.drawMain();
+    markBootHealthy();
 
     if (autoConnectWifi && !wifiConnectSavedSsid.isEmpty()) {
         Serial.printf("[wifi] auto-connecting to %s\n",

@@ -9,9 +9,10 @@ another tool in the menu. Ghostwire should complement workstation tooling by
 collecting bounded, explainable evidence in the field.
 
 The mission-led home screen and unified Evidence browser are implemented in the
-current development build. The next product work is persistent named network
-profiles, a single operation/radio coordinator, first-run guidance, and gradual
-screen/controller extraction from `src/main.cpp`.
+current development build. Screen/controller extraction from `src/main.cpp` is
+complete (see `docs/screen-extraction.md`). The next product work is persistent
+named network profiles, a single operation/radio coordinator, and first-run
+guidance.
 
 This roadmap favours features that are useful during authorised assessment,
 network administration, or field diagnostics on the Cardputer ADV. Inspiration
@@ -126,37 +127,99 @@ emulator.
   level history, and optional CSV summary.
 - Treat it as a diagnostic visualiser, not calibrated test equipment.
 
+### 10. Wi-Fi auto-connect and template sync
+
+- On boot, if a saved Wi-Fi profile exists, connect automatically (still an
+  explicit opt-in setting via `autoConnectWifi`/`saveWifiCredentials`, default
+  unchanged otherwise -- this uses the existing, already-implemented saved-
+  credential mechanism, not anything new).
+- Once connected, check the `sd-card-files/` templates against the public
+  GitHub repo. Show what differs; the operator confirms before anything is
+  written to the card. No silent auto-apply -- this is a notification-and
+  -confirm flow, not an unattended updater.
+
+### 11. Signed firmware OTA updates
+
+**Status: implemented, manual trigger only.** See `docs/ota-updates.md` for
+the full design and known gaps. Summary of what shipped vs. what was
+originally sketched here:
+
+- Triggered from **Settings > Firmware Update**, not yet from item 10's
+  "connected, check in" moment -- item 10 itself isn't built yet, so there's
+  nothing to hang an auto-check off of. `setup()`'s `autoConnectWifi` block
+  is the natural place to add that hook once item 10 lands.
+- `board_build.partitions = default_8MB.csv` already provisions `app0`/`app1`
+  (ota_0/ota_1, 0x330000 each) and `otadata` -- every device already flashed
+  via USB already has a free, ready OTA slot. No repartitioning and no
+  one-time migration reflash needed; this was the main cost the SD/device
+  encryption path would have carried and it simply isn't here.
+- Signing uses **ECDSA P-256, not Ed25519** -- the bundled mbedTLS 2.28.7
+  build has no EdDSA support compiled in (confirmed by inspecting the SDK's
+  mbedTLS config directly). P-256 is fully supported and gives the same
+  security property; `release.yml` signs with `openssl dgst -sha256 -sign`
+  and the public key is embedded in firmware.
+- Checks the public repo's latest release tag against the running version,
+  notifies, and requires operator confirmation before downloading anything.
+- Streams the release's `firmware.bin` asset directly into `Update.write()`
+  in chunks, computing SHA-256 as it goes; never buffers the full image in
+  RAM (no PSRAM).
+- Verifies the ECDSA-P256 signature before calling `Update.end()`/committing
+  -- an unsigned or tampered image is rejected before it's written.
+- After rebooting into the new image, an NVS boot-attempt counter plus (if
+  available) ESP-IDF's native pending-verify mechanism roll back
+  automatically to the previous OTA partition if the new image never
+  reaches a healthy checkpoint. See `docs/ota-updates.md`'s "Boot safety"
+  section for the honest limits of this -- bootloader-level rollback
+  support on this exact board hasn't been confirmed on real hardware yet.
+- Not yet added: refusing to start while another radio operation or capture
+  is active.
+- Bootloader/partition-table changes remain USB-reflash-only; this covers the
+  application partition, not literally everything.
+
+**Done when:** a signed test release round-trips end-to-end (check, confirm,
+download, verify, flash, reboot, self-validate), an unsigned or tampered
+image is rejected before it's written, and a forced bad boot triggers
+automatic rollback without operator intervention.
+
+- [x] Signing, verification, and rollback logic implemented; builds clean
+      (`pio run -e cardputer_adv`) and native unit tests pass
+      (`pio test -e native`).
+- [ ] End-to-end round-trip against a real signed release -- blocked on
+      cutting an actual tagged release (none published yet).
+- [ ] Forced-bad-boot rollback exercised on real hardware.
+- [ ] Refuse-to-start-during-active-capture guard.
+
 ## Later — useful, but needs design or soak testing
 
-### 10. ESP-NOW field exchange
+### 12. ESP-NOW field exchange
 
 - Pair two Ghostwire devices and exchange small logs, configuration bundles, or
   text notes with visible identity and confirmation on both ends.
 - Define integrity checking, interruption recovery, and strict receive-size
   limits before implementation.
 
-### 11. Local Web UI
+### 13. Local Web UI
 
 - Read-only dashboards and log download first.
 - Mutating actions require authentication, CSRF protection, session expiry, and
   an on-device enable indicator.
 - Bind only while explicitly enabled and stop the service on exit or timeout.
 
-### 12. WiGLE-compatible export
+### 14. WiGLE-compatible export
 
 - Export wardrive data in a WiGLE-compatible format after validating coordinates,
   timestamps, privacy implications, and schema details.
 - Upload is a separate later decision; local export provides most of the value
   without storing credentials or automating disclosure of location data.
 
-### 13. WireGuard client
+### 15. WireGuard client
 
 - Consider only after measuring RAM/flash cost and coexistence with TLS, SSH,
   logging, and the UI.
 - Target secure access to an administrator's own network, with explicit tunnel
   state and fail-closed key handling.
 
-### 14. Optional accessory framework
+### 16. Optional accessory framework
 
 - Detect and configure supported CC1101, nRF24, PN532, or IR-receiver modules
   through a common accessory screen.

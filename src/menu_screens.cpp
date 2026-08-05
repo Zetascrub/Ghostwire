@@ -293,13 +293,14 @@ void MenuScreens::drawTools() {
 void MenuScreens::drawSettings() {
     static const char* const items[] = {
         "Display & Audio", "Boot Experience", "Connectivity",
-        "Restore Defaults",
+        "Restore Defaults", "Firmware Update",
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Theme, sound and navigation", "Animation, sound and boot speed",
             "Saved Wi-Fi connection options", "Return preferences to defaults",
+            "Check for a signed release",
         };
         ScreenChrome::drawNavigationCard("Settings", items[listSelection_],
                                          descriptions[listSelection_],
