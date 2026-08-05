@@ -33,6 +33,7 @@
 #include "settings_names.h"
 #include "settings_screens.h"
 #include "ota_service.h"
+#include "operation_coordinator.h"
 #include "ota_screens.h"
 #include "system_screens.h"
 #include "eapol_parser.h"
@@ -323,6 +324,7 @@ WifiSnifferScreen wifiSnifferScreen(wifiSnifferService,
                                     recentWifiProbes);
 PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
+OperationCoordinator operationCoordinator;
 Preferences preferences;
 std::vector<String> audioFiles;
 std::vector<String> duckyScripts;
@@ -450,7 +452,6 @@ constexpr uint8_t kDefaultBootAnimation = 0;
 constexpr uint8_t kDefaultBootSoundPreset = 0;
 constexpr uint8_t kDefaultFamiliarCue = 0;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
-constexpr size_t kSystemDiagnosticCount = 22;
 // Boot/settings name tables: see include/settings_names.h.
 
 String csvSafePayload(const String& payload);
@@ -517,6 +518,65 @@ void recoverKeyboardAfterBlockingOperation() {
     }
 }
 
+void syncOperationCoordinator() {
+    operationCoordinator.clear();
+    operationCoordinator.setActive(OperationKind::WifiGuardian,
+                                   wifiGuardianService.isActive());
+    operationCoordinator.setActive(OperationKind::HandshakeCapture,
+                                   handshakeCaptureLogger.isActive());
+    operationCoordinator.setActive(
+        OperationKind::WifiCapture,
+        (wifiSnifferService.isActive() || wifiSnifferLogger.isActive() ||
+         wifiPassiveCaptureLogger.isActive()) &&
+            !wifiGuardianService.isActive() &&
+            !handshakeCaptureLogger.isActive());
+    operationCoordinator.setActive(OperationKind::WarDrive,
+                                   warDriveService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleCapture,
+        bleScanner.isContinuous() || bleCaptureLogger.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleTransmit,
+        bleSpamService.isActive() || bleKeyboardService.isActive());
+    operationCoordinator.setActive(OperationKind::FamiliarPatrol,
+                                   familiarPatrolService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::NetworkScan,
+        networkHostScanService.isActive() || networkPortScanService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::RemoteSession,
+        telnetClient.connected() || sshService.isConnected());
+    operationCoordinator.setActive(OperationKind::Audio,
+                                   audioService.isPlaying() ||
+                                       audioService.isMicrophoneActive());
+}
+
+bool prepareOperationStart(OperationKind requested, String& reason) {
+    syncOperationCoordinator();
+    OperationKind conflict = OperationKind::Count;
+    if (operationCoordinator.canStart(requested, &conflict)) return true;
+    reason = String("Stop ") + OperationCoordinator::label(conflict) +
+             " before starting " + OperationCoordinator::label(requested) +
+             ".";
+    return false;
+}
+
+bool requireOperationStart(OperationKind requested) {
+    String reason;
+    if (prepareOperationStart(requested, reason)) return true;
+    ScreenChrome::drawHeader("Operation Busy");
+    M5Cardputer.Display.setTextColor(Branding::warning,
+                                     Branding::background);
+    M5Cardputer.Display.setTextWrap(true);
+    M5Cardputer.Display.setCursor(8, 38);
+    M5Cardputer.Display.print(reason);
+    M5Cardputer.Display.setTextWrap(false);
+    ScreenChrome::drawFooter("Stop active work, then retry");
+    delay(1400);
+    drawCurrentScreen();
+    return false;
+}
+
 // Queries the public repo's latest release (see OtaService::checkForUpdate)
 // and lands on Screen::OtaCheck either way -- same "please wait" blocking
 // convention as scanWifiNetworks()/connectSsh().
@@ -538,6 +598,15 @@ void checkForFirmwareUpdate() {
 // waitDuckyDelay(). Reboots on success; otherwise returns to Screen::OtaCheck
 // with the failure reason so the operator can retry or back out.
 void installFirmwareUpdate() {
+    String conflictReason;
+    if (!prepareOperationStart(OperationKind::FirmwareUpdate,
+                               conflictReason)) {
+        otaService.setStatusMessage(conflictReason);
+        currentScreen = Screen::OtaCheck;
+        drawCurrentScreen();
+        return;
+    }
+    operationCoordinator.setActive(OperationKind::FirmwareUpdate, true);
     currentScreen = Screen::OtaInstalling;
     otaScreens.drawInstalling();
     unsigned long lastRedrawMs = 0;
@@ -568,6 +637,7 @@ void installFirmwareUpdate() {
         ESP.restart();
         return;
     }
+    operationCoordinator.setActive(OperationKind::FirmwareUpdate, false);
     currentScreen = Screen::OtaCheck;
     drawCurrentScreen();
 }
@@ -663,16 +733,10 @@ void initSd() {
 void drawHeaderStatus(bool force = false) {
     auto& display = M5Cardputer.Display;
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
-    const bool captureActive = wifiSnifferService.isActive() ||
-                               wifiGuardianService.isActive() ||
-                               bleSpamService.isActive() ||
-                               warDriveService.isActive() ||
-                               handshakeCaptureLogger.isActive() ||
-                               bleCaptureLogger.isActive() ||
-                               gnssLogger.isActive() ||
-                               loraLogger.isActive() ||
-                               imuLogger.isActive() ||
-                               familiarPatrolService.isActive();
+    syncOperationCoordinator();
+    const bool captureActive = operationCoordinator.anyActive() ||
+                               gnssLogger.isActive() || loraLogger.isActive() ||
+                               imuLogger.isActive();
     const uint8_t battery = batteryPercentage();
     const uint32_t clockMinute =
         clockSynced ? static_cast<uint32_t>(time(nullptr) / 60) : 0;
@@ -1236,6 +1300,7 @@ void exportWifiResults() {
 }
 
 void scanWifiNetworks() {
+    if (!requireOperationStart(OperationKind::WifiCapture)) return;
     drawHeader("Wi-Fi Discovery");
     M5Cardputer.Display.setTextColor(Branding::warning,
                                     Branding::background);
@@ -1371,6 +1436,7 @@ void exportBleResults() {
 }
 
 void scanBleDevices() {
+    if (!requireOperationStart(OperationKind::BleCapture)) return;
     bleCaptureLogger.stop();
     bleScanner.stop();
     drawHeader("BLE Advertisement Sniffer");
@@ -1471,6 +1537,7 @@ constexpr size_t kNetworkPortScanPortCount =
     sizeof(kNetworkPortScanPorts) / sizeof(kNetworkPortScanPorts[0]);
 
 void scanNetworkPorts(IPAddress target) {
+    if (!requireOperationStart(OperationKind::NetworkScan)) return;
     networkPortScanTarget = target;
     networkPortResults.clear();
     networkPortScanExportStatus = "";
@@ -1530,6 +1597,7 @@ void exportNetworkPortResults() {
 // scanNetworkPorts(), acceptable here for the same reason: one bounded
 // attempt, not a scan across many targets.
 void connectTelnet() {
+    if (!requireOperationStart(OperationKind::RemoteSession)) return;
     String host = telnetHostInput;
     uint16_t port = 23;
     const int colon = host.lastIndexOf(':');
@@ -1649,6 +1717,7 @@ String sshFingerprintPreferenceKey() {
 // SSH Password/Session screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 void connectSsh() {
+    if (!requireOperationStart(OperationKind::RemoteSession)) return;
     preferences.putUChar("ssh_stage", 4);
     sshService.begin();
     preferences.putUChar("ssh_stage", 5);
@@ -2293,9 +2362,19 @@ String formatUptime() {
 
 std::vector<SystemDiagnostic> systemDiagnostics() {
     std::vector<SystemDiagnostic> rows;
-    rows.reserve(22);
+    rows.reserve(24);
+    syncOperationCoordinator();
     rows.push_back({"Firmware", Branding::version});
     rows.push_back({"Uptime", formatUptime()});
+    String operationStatus = operationCoordinator.primaryLabel();
+    if (operationCoordinator.activeCount() > 1) {
+        operationStatus += " +" +
+                           String(operationCoordinator.activeCount() - 1);
+    }
+    rows.push_back({"Operations", operationStatus,
+                    operationCoordinator.anyActive()
+                        ? DiagnosticState::Information
+                        : DiagnosticState::Ready});
     const esp_reset_reason_t resetReason = esp_reset_reason();
     rows.push_back({"Last reset", resetReasonName(resetReason),
                     resetReason == ESP_RST_PANIC ||
@@ -2492,6 +2571,7 @@ bool syncClockFromNtp() {
 
 bool startWifiGuardian() {
     guardianLastEvent = "Starting passive watch...";
+    if (!requireOperationStart(OperationKind::WifiGuardian)) return false;
     if (!sdAvailable) {
         guardianLastEvent = "microSD required for evidence";
         return false;
@@ -3894,6 +3974,7 @@ void stopAllActiveOperations() {
     telnetClient.stop();
     sshService.stop();
     audioService.stopPlayback();
+    audioService.endMicrophone();
 
     imuLogger.stop();
     gnssLogger.stop();
@@ -4571,6 +4652,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (!bleKeyboardService.isActive()) {
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleTransmit)) {
+                    return;
+                }
                 bleKeyboardService.begin(batteryPercentage());
             }
             bleScreens.drawKeyboard();
@@ -4959,11 +5043,17 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     drawCurrentScreen();
                     scanWifiNetworks();
                 } else if (listSelection == 2) {
+                    if (!requireOperationStart(OperationKind::WifiCapture)) {
+                        return;
+                    }
                     currentScreen = Screen::WifiSniffer;
                     recentWifiProbes.clear();
                     wifiSnifferService.begin();
                     drawCurrentScreen();
                 } else if (listSelection == 3) {
+                    if (!requireOperationStart(OperationKind::WifiGuardian)) {
+                        return;
+                    }
                     currentScreen = Screen::WifiGuardian;
                     startWifiGuardian();
                     drawCurrentScreen();
@@ -5012,6 +5102,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             if (pressedLetter(keys, 'h') && !accessPoints.empty()) {
+                if (!requireOperationStart(
+                        OperationKind::HandshakeCapture)) return;
                 handshakeEapolFrameCount = 0;
                 for (bool& seen : handshakeMessageSeen) seen = false;
                 handshakePmkidFound = false;
@@ -5236,6 +5328,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (up) moveSelection(-1, BleSpamScreen::kModeCount);
             if (down) moveSelection(1, BleSpamScreen::kModeCount);
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleTransmit)) {
+                    break;
+                }
                 bleSpamService.begin(
                     BleSpamScreen::modeForSelection(listSelection));
                 currentScreen = Screen::BleSpam;
@@ -5345,6 +5440,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     bleCaptureLogger.stop();
                     bleStatus = "Continuous capture stopped";
                 } else {
+                    if (!requireOperationStart(OperationKind::BleCapture)) {
+                        return;
+                    }
                     bleDevices.clear();
                     bleExportStatus = "";
                     if (bleScanner.beginContinuous(bleStatus) && sdAvailable) {
@@ -5442,6 +5540,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             if (keys.enter && sdAvailable && WiFi.status() == WL_CONNECTED) {
+                if (!requireOperationStart(OperationKind::FamiliarPatrol)) {
+                    return;
+                }
                 if (familiarPatrolService.start(WiFi.localIP(),
                         WiFi.subnetMask(), familiarPatrolContinuousChoice,
                         kFamiliarPatrolIntervals[familiarPatrolIntervalIndex])) {
@@ -5729,8 +5830,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 initSd();
                 diagnosticExportStatus = "";
             }
-            if (up) moveSelection(-1, kSystemDiagnosticCount);
-            if (down) moveSelection(1, kSystemDiagnosticCount);
+            if (up || down) {
+                const size_t diagnosticCount = systemDiagnostics().size();
+                if (up) moveSelection(-1, diagnosticCount);
+                if (down) moveSelection(1, diagnosticCount);
+            }
             if (pressedLetter(keys, 'e')) exportSystemDiagnostics();
             if (keys.enter) {
                 currentScreen = Screen::TimeStatus;
@@ -5774,6 +5878,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::WarDrive:
             if (refresh) {
                 if (!warDriveService.isActive()) {
+                    if (!requireOperationStart(OperationKind::WarDrive)) {
+                        return;
+                    }
                     warDriveService.start();
                     if (sdAvailable) {
                         const String wigleHeader =
@@ -5837,6 +5944,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (refresh) {
                 if (!networkHostScanService.isActive()) {
+                    if (!requireOperationStart(OperationKind::NetworkScan)) {
+                        return;
+                    }
                     networkHostResults.clear();
                     networkHostScanExportStatus = "";
                     listSelection = 0;

@@ -8,7 +8,7 @@ persistent cyber familiar is the project's guide and memory: it reacts to what
 the deck discovers without pretending the Cardputer is a replacement for a
 laptop-class assessment suite.
 
-Current development firmware: **Ghostwire 0.4.9-dev**. The firmware's
+Current development firmware: **Ghostwire 0.5.0-dev**. The firmware's
 canonical version string is maintained in
 [`include/branding.h`](include/branding.h).
 

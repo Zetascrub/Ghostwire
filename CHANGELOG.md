@@ -6,6 +6,14 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Begin the 0.5 Field Reliability milestone with a central operation inventory
+  and tested radio-conflict policy. System Diagnostics now reports the active
+  operation, and firmware installation refuses to begin until other ongoing
+  work is stopped.
+- Derive the System screen's navigation bounds from its live diagnostics rows
+  instead of a fixed count, keeping selection correct when conditional rows
+  appear.
+
 - Preserve the originating parent-menu selection when backing out of Wi-Fi,
   Network, Settings, and Utility screens instead of jumping to the first item.
 - Make headers, list rows, and footers explicitly single-line regions and

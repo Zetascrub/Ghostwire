@@ -2,17 +2,29 @@
 
 ## Product direction
 
-Ghostwire 0.4 moves from a collection of subsystem demos toward a coherent
-field companion. Its core loop is **Observe -> Scout -> Record**. The Familiar
+Ghostwire 0.5 builds field reliability on the coherent companion introduced in
+0.4. Its core loop remains **Observe -> Scout -> Record**. The Familiar
 connects those stages by reacting to discoveries and changes; it is not merely
 another tool in the menu. Ghostwire should complement workstation tooling by
 collecting bounded, explainable evidence in the field.
 
 The mission-led home screen and unified Evidence browser are implemented in the
 current development build. Screen/controller extraction from `src/main.cpp` is
-complete (see `docs/screen-extraction.md`). The next product work is persistent
-named network profiles, a single operation/radio coordinator, and first-run
-guidance.
+complete (see `docs/screen-extraction.md`). A central operation/radio
+coordinator is now active; the remaining 0.5 product work is persistent named
+network profiles, first-run guidance, and repeated hardware reliability tests.
+
+## 0.5 — Field Reliability
+
+- [x] Central inventory of long-running Wi-Fi, BLE, network, audio, remote, and
+  firmware-update operations.
+- [x] Tested conflict policy and clear on-device refusal when a requested radio
+  mode cannot safely coexist with active work.
+- [x] Active operation visibility in System Diagnostics and the header status.
+- [ ] Named Wi-Fi/network profiles with deliberate save, select, and delete.
+- [ ] First-run guidance for the Observe -> Scout -> Record workflow.
+- [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
+  low-memory behaviour, and recovery after interruption.
 
 This roadmap favours features that are useful during authorised assessment,
 network administration, or field diagnostics on the Cardputer ADV. Inspiration
@@ -171,8 +183,8 @@ originally sketched here:
   reaches a healthy checkpoint. See `docs/ota-updates.md`'s "Boot safety"
   section for the honest limits of this -- bootloader-level rollback
   support on this exact board hasn't been confirmed on real hardware yet.
-- Not yet added: refusing to start while another radio operation or capture
-  is active.
+- Firmware installation is refused while another tracked operation or capture
+  is active, with the conflicting operation named on screen.
 - Bootloader/partition-table changes remain USB-reflash-only; this covers the
   application partition, not literally everything.
 
@@ -184,10 +196,10 @@ automatic rollback without operator intervention.
 - [x] Signing, verification, and rollback logic implemented; builds clean
       (`pio run -e cardputer_adv`) and native unit tests pass
       (`pio test -e native`).
-- [ ] End-to-end round-trip against a real signed release -- blocked on
-      cutting an actual tagged release (none published yet).
+- [x] End-to-end round-trip completed on real hardware against the signed
+      0.4.8 release.
 - [ ] Forced-bad-boot rollback exercised on real hardware.
-- [ ] Refuse-to-start-during-active-capture guard.
+- [x] Refuse-to-start-during-active-capture guard.
 
 ## Later — useful, but needs design or soak testing
 
