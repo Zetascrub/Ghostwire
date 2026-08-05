@@ -17,31 +17,54 @@
 
 #include "branding.h"
 #include "app_screen.h"
+#include "file_screens.h"
 #include "ble_scanner.h"
 #include "ble_keyboard_service.h"
+#include "ble_screens.h"
 #include "ble_spam_service.h"
+#include "ble_spam_screen.h"
 #include "biscuit_pro_client.h"
 #include "chameleon_ultra_client.h"
+#include "device_screens.h"
 #include "cyber_familiar.h"
+#include "familiar_screens.h"
+#include "menu_screens.h"
+#include "settings_names.h"
+#include "settings_screens.h"
+#include "system_screens.h"
 #include "eapol_parser.h"
 #include "familiar_patrol_service.h"
 #include "ir_service.h"
 #include "ir_screen.h"
 #include "screen_chrome.h"
 #include "hid_service.h"
+#include "hid_presets.h"
+#include "usb_hid_screens.h"
+#include "audio_screens.h"
+#include "familiar_phrases.h"
+#include "qr_screens.h"
 #include "audio_service.h"
 #include "ai_service.h"
 #include "gnss_service.h"
+#include "gnss_screen.h"
 #include "lora_service.h"
+#include "lora_screen.h"
 #include "network_host_scan_service.h"
 #include "network_port_scan_service.h"
+#include "network_scan_screens.h"
 #include "ssh_service.h"
+#include "ssh_screens.h"
+#include "telnet_screens.h"
 #include "terminal_buffer.h"
 #include "pcap_logger.h"
 #include "sd_logger.h"
+#include "imu_screen.h"
 #include "war_drive_service.h"
 #include "wifi_sniffer_service.h"
+#include "wifi_sniffer_screen.h"
+#include "wifi_screens.h"
 #include "wifi_guardian_service.h"
+#include "wifi_guardian_screen.h"
 
 namespace {
 
@@ -54,18 +77,7 @@ constexpr int kSdCompatibilityPin = 5;
 constexpr uint32_t kSdFrequency = 4000000;
 constexpr size_t kVisibleRows = 6;
 
-struct FileEntry {
-    String name;
-    bool directory;
-    uint64_t size;
-};
-
-struct LogEntry {
-    String name;
-    String type;
-    String path;
-    uint64_t size;
-};
+// FileEntry / LogEntry: see include/file_screens.h.
 
 // One-off per-screen actions (export, deauth, disconnect, etc.) live in a
 // Tab-triggered menu instead of individually memorized letters -- see
@@ -75,18 +87,8 @@ struct ActionMenuItem {
     String label;
 };
 
-const char* const kMenuItems[] = {
-    "My Familiar", "Observe signals", "Scout network", "Evidence",
-    "Field kit", "Settings",
-};
-constexpr size_t kMenuCount = sizeof(kMenuItems) / sizeof(kMenuItems[0]);
-const char* const kHidPresetNames[] = {
-    "Ghostwire signature",
-    "Keyboard layout sample",
-    "Slow typing cadence",
-};
-constexpr size_t kHidPresetCount =
-    sizeof(kHidPresetNames) / sizeof(kHidPresetNames[0]);
+// Main menu items: see MenuScreens::kMenuItems/kMenuCount.
+// HID preset labels: see include/hid_presets.h.
 
 Screen currentScreen = Screen::MainMenu;
 size_t menuSelection = 0;
@@ -136,12 +138,21 @@ std::vector<String> previewLines;
 size_t previewTopLine = 0;
 size_t previewColumn = 0;
 bool previewTruncated = false;
+FileScreens fileScreens(files, listSelection, listOffset, currentPath,
+                        sdAvailable, previewLines, previewTopLine,
+                        previewColumn, previewTruncated, currentScreen);
+LogScreens logScreens(logSessions, logSelection, logOffset, sdAvailable,
+                      selectedLogRows, currentScreen);
 std::vector<wifi_ap_record_t> accessPoints;
 std::vector<BleDeviceInfo> bleDevices;
 std::vector<WifiProbeRecord> recentWifiProbes;
 BleScanner bleScanner;
 BleKeyboardService bleKeyboardService;
+BleScreens bleScreens(bleDevices, listSelection, listOffset, currentScreen,
+                      bleStatus, bleExportStatus, bleScanner,
+                      bleKeyboardService);
 BleSpamService bleSpamService;
+BleSpamScreen bleSpamScreen(bleSpamService);
 BiscuitProClient biscuitClient;
 String biscuitResultTitle;
 std::vector<String> biscuitResultLines;
@@ -149,6 +160,10 @@ size_t biscuitResultOffset = 0;
 bool biscuitWardriveActive = false;
 uint32_t biscuitWardriveApCount = 0;
 uint32_t biscuitWardriveBleCount = 0;
+BiscuitScreens biscuitScreens(biscuitClient, listSelection, listOffset,
+                              biscuitWardriveActive, biscuitWardriveApCount,
+                              biscuitWardriveBleCount, biscuitResultTitle,
+                              biscuitResultLines, biscuitResultOffset);
 std::vector<String> biscuitWardriveBssids;
 std::vector<String> biscuitWardriveBleMacs;
 String biscuitWardriveParseTail;
@@ -196,6 +211,9 @@ uint16_t telnetPort = 23;
 std::vector<String> telnetLines;
 String telnetPendingLine;
 String telnetStatus;
+TelnetScreens telnetScreens(telnetHostInput, telnetStatus, telnetClient,
+                            telnetHost, telnetPort, telnetLines,
+                            telnetPendingLine);
 unsigned long lastTelnetDraw = 0;
 TerminalEscState telnetEscState = TerminalEscState::None;
 constexpr size_t kMaxSshLines = 64;
@@ -208,6 +226,8 @@ String sshPasswordInput;
 String sshStatus;
 std::vector<String> sshLines;
 String sshPendingLine;
+SshScreens sshScreens(sshHostInput, sshStatus, sshUsername, sshHost, sshPort,
+                      sshPasswordInput, sshService, sshLines, sshPendingLine);
 TerminalEscState sshEscState = TerminalEscState::None;
 unsigned long lastSshDraw = 0;
 bool sshTrustPending = false;
@@ -225,21 +245,11 @@ FamiliarPatrolState lastFamiliarPatrolState = FamiliarPatrolState::Idle;
 unsigned long lastFamiliarPatrolDraw = 0;
 bool familiarPatrolContinuousChoice = false;
 uint8_t familiarPatrolIntervalIndex = 1;
-constexpr uint32_t kFamiliarPatrolIntervals[] = {
-    60000, 300000, 900000, 1800000, 3600000,
-};
+// kFamiliarPatrolIntervals / FamiliarReaction: see include/familiar_screens.h.
 uint8_t familiarPage = 0;
 unsigned long lastFamiliarDraw = 0;
 bool familiarIdleActive = false;
 bool familiarIdleDrawn = false;
-enum class FamiliarReaction : uint8_t {
-    None,
-    Searching,
-    HostFound,
-    ServiceFound,
-    Warning,
-    Complete,
-};
 FamiliarReaction familiarReaction = FamiliarReaction::None;
 unsigned long familiarReactionUntil = 0;
 uint32_t familiarObservedPatrolHosts = 0;
@@ -257,23 +267,14 @@ uint32_t ttsLabPlaybackMs = 0;
 String aiNotice;
 size_t aiScrollLines = 0;
 String familiarWorkflowStatus;
+AiChatScreen aiChatScreen(aiService, aiPrompt, aiNotice, aiScrollLines);
+FamiliarScreens familiarScreens(
+    cyberFamiliar, familiarPatrolService, familiarPage, familiarWorkflowStatus,
+    familiarReaction, familiarReactionUntil, familiarSpeechBubble,
+    familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
+    familiarPatrolIntervalIndex, sdAvailable);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
-struct FamiliarPhrase {
-    const char* name;
-    const char* words[4];
-    uint8_t wordCount;
-};
-constexpr FamiliarPhrase kTtsLabPhrases[] = {
-    {"New host discovered", {"new", "host", "discovered"}, 3},
-    {"New host detected", {"new", "host", "detected"}, 3},
-    {"Interesting service found", {"interesting", "service", "found"}, 3},
-    {"Patrol started", {"patrol", "started"}, 2},
-    {"Patrol completed", {"patrol", "completed"}, 2},
-    {"Warning: service detected", {"warning", "service", "detected"}, 3},
-    {"Error", {"error"}, 1},
-};
-constexpr size_t kTtsLabPhraseCount =
-    sizeof(kTtsLabPhrases) / sizeof(kTtsLabPhrases[0]);
+// Familiar phrase word bank: see include/familiar_phrases.h.
 constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
 String familiarWordPath(const char* word) {
     return String(kFamiliarAudioPath) + word + ".mp3";
@@ -284,17 +285,34 @@ uint8_t familiarVoiceWord = 0;
 unsigned long familiarVoiceReadyMs = 0;
 constexpr char kAiRecordingPath[] = "/ghostwire/ai_voice.wav";
 GnssService gnssService;
+SdLogger gnssLogger;
+GnssScreen gnssScreen(gnssService, gnssLogger);
+NetworkScanScreens networkScanScreens(
+    warDriveService, gnssService, listSelection, listOffset,
+    networkHostScanService, networkHostResults, networkHostScanExportStatus,
+    networkPortScanService, networkPortResults, networkPortScanExportStatus,
+    networkPortScanTarget, networkPortScanIsFull);
 LoRaService loraService;
 WifiSnifferService wifiSnifferService;
 WifiGuardianService wifiGuardianService;
 SdLogger imuLogger;
-SdLogger gnssLogger;
 SdLogger loraLogger;
+LoRaScreen loraScreen(loraService, loraLogger);
 SdLogger wifiSnifferLogger;
 SdLogger guardianEventLogger;
 SdLogger chameleonLogger;
+ChameleonScreen chameleonScreen(chameleonClient, chameleonHasReadings,
+                                chameleonAppMajor, chameleonAppMinor,
+                                chameleonBatteryMv, chameleonBatteryPct,
+                                chameleonScanAttempted, chameleonHfFound,
+                                chameleonHfTag, chameleonLfFound, chameleonLfId,
+                                chameleonWorkflowStatus, chameleonContinuousScan,
+                                chameleonLogger);
 SdLogger bleCaptureLogger;
 PcapLogger wifiPassiveCaptureLogger;
+WifiSnifferScreen wifiSnifferScreen(wifiSnifferService,
+                                    wifiPassiveCaptureLogger,
+                                    recentWifiProbes);
 PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
 Preferences preferences;
@@ -305,6 +323,12 @@ size_t duckyUnsupportedCount = 0;
 uint32_t duckyDeclaredDelayMs = 0;
 String duckyRunStatus;
 uint16_t microphoneLevel = 0;
+UsbHidScreens usbHidScreens(listSelection, listOffset, duckyScripts,
+                           duckyCommandCount, duckyUnsupportedCount,
+                           duckyDeclaredDelayMs, duckyRunStatus);
+AudioScreens audioScreens(listSelection, listOffset, ttsLabPhrase, ttsLabStatus,
+                          ttsLabPlaybackMs, microphoneLevel, audioFiles);
+QrScreens qrScreens(qrText);
 int bleCaptureRssiFilter = -100;
 unsigned long lastBleCaptureDraw = 0;
 bool bleCaptureUiDirty = false;
@@ -320,10 +344,20 @@ bool autoConnectWifi = false;
 bool cyberdeckIdleEnabled = false;
 uint8_t cyberdeckIdleStyle = 0;
 bool cardNavigationEnabled = false;
+MenuScreens menuScreens(listSelection, listOffset, menuSelection,
+                        cardNavigationEnabled, cyberFamiliar,
+                        wifiGuardianService, familiarPatrolService,
+                        warDriveService, sdAvailable);
 size_t themeIndex = 0;
 uint8_t bootAnimationIndex = 0;
 uint8_t bootSoundIndex = 0;
 uint8_t familiarCueIndex = 0;
+SettingsScreens settingsScreens(
+    listSelection, listOffset, speakerVolume, screenBrightness,
+    screenTimeoutSeconds, cyberdeckIdleEnabled, themeIndex, familiarCueIndex,
+    cardNavigationEnabled, cyberdeckIdleStyle, bootSoundEnabled,
+    bootSoundIndex, bootAnimationIndex, bootSpeedIndex, saveWifiCredentials,
+    autoConnectWifi, placeholderTitle);
 bool screenSleeping = false;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
@@ -341,6 +375,8 @@ int8_t idleNodeDx[kIdleNodeCount]{};
 int8_t idleNodeDy[kIdleNodeCount]{};
 bool clockSynced = false;
 String clockStatus = "Waiting for GNSS UTC";
+SystemScreens systemScreens(listSelection, listOffset, diagnosticExportStatus,
+                            clockSynced, clockStatus);
 unsigned long lastClockSyncAttempt = 0;
 unsigned long lastHeaderStatusDraw = 0;
 unsigned long lastTimeStatusDraw = 0;
@@ -354,6 +390,9 @@ uint32_t lastLoggedLoRaPacket = 0;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
+WifiGuardianScreen wifiGuardianScreen(wifiGuardianService, wifiSnifferService,
+                                      guardianEvidenceLogger,
+                                      guardianLastEvent);
 uint8_t guardianLastChannel = 0;
 int8_t guardianLastRssi = 0;
 unsigned long lastBleSpamDraw = 0;
@@ -364,6 +403,13 @@ uint32_t handshakeEapolFrameCount = 0;
 bool handshakeMessageSeen[5] = {};  // Index 1-4 used; 0 unused.
 bool handshakePmkidFound = false;
 uint8_t handshakePmkid[16] = {};
+WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
+                        wifiStatus, wifiExportStatus, wifiDeauthStatus,
+                        wifiSnifferService, handshakeEapolFrameCount,
+                        handshakeMessageSeen, handshakePmkidFound,
+                        handshakePmkid, handshakeCaptureLogger,
+                        wifiConnectSavedSsid, wifiConnectSsid,
+                        wifiConnectPasswordInput, wifiConnectStatusText);
 unsigned long lastImuDraw = 0;
 unsigned long lastImuLog = 0;
 m5::imu_data_t imuData{};
@@ -373,6 +419,9 @@ uint16_t imuCalibrationSamples = 0;
 float gyroOffsetX = 0.0F;
 float gyroOffsetY = 0.0F;
 float gyroOffsetZ = 0.0F;
+ImuScreen imuScreen(imuAvailable, imuData, imuCalibrating,
+                    imuCalibrationSamples, gyroOffsetX, gyroOffsetY,
+                    gyroOffsetZ, imuLogger);
 float gyroCalibrationSumX = 0.0F;
 float gyroCalibrationSumY = 0.0F;
 float gyroCalibrationSumZ = 0.0F;
@@ -392,31 +441,7 @@ constexpr uint8_t kDefaultBootSoundPreset = 0;
 constexpr uint8_t kDefaultFamiliarCue = 0;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 constexpr size_t kSystemDiagnosticCount = 22;
-const char* const kBootAnimationNames[] = {
-    "System Console", "Cipher Reveal", "Radar Sweep", "Minimal",
-    "Neon Breach", "Hacker Terminal", "Silly Bounce", "Synthwave Grid",
-};
-constexpr size_t kBootAnimationCount =
-    sizeof(kBootAnimationNames) / sizeof(kBootAnimationNames[0]);
-const char* const kBootSoundNames[] = {
-    "Classic Chime", "Hero Signal", "Arcade Ready",
-    "Starship", "Mystic Spark",
-};
-const char* const kBootSpeedNames[] = {"Slow", "Normal", "Fast"};
-constexpr size_t kBootSpeedCount =
-    sizeof(kBootSpeedNames) / sizeof(kBootSpeedNames[0]);
-constexpr size_t kBootSoundCount =
-    sizeof(kBootSoundNames) / sizeof(kBootSoundNames[0]);
-const char* const kFamiliarCueNames[] = {
-    "No sound", "Subtle", "Chirps", "Arcade", "Mystic", "Voice pack",
-};
-const char* const kCyberdeckIdleStyleNames[] = {
-    "Data Rain", "Signal Radar", "Node Drift",
-};
-constexpr size_t kCyberdeckIdleStyleCount =
-    sizeof(kCyberdeckIdleStyleNames) / sizeof(kCyberdeckIdleStyleNames[0]);
-constexpr size_t kFamiliarCueCount =
-    sizeof(kFamiliarCueNames) / sizeof(kFamiliarCueNames[0]);
+// Boot/settings name tables: see include/settings_names.h.
 
 String csvSafePayload(const String& payload);
 String utcTimestamp();
@@ -1006,337 +1031,17 @@ void drawNavigationCard(const char* header, const String& label,
     drawFooter("Left/Right: browse   Enter: open");
 }
 
-void drawMainMenu() {
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Your companion and scout", "Watch the air around you",
-            "Explore a connected network", "Review what Ghostwire saved",
-            "Accessories, notes and tools", "Make the deck feel like yours",
-        };
-        String badge;
-        if (menuSelection == 0) badge = "LEVEL " + String(cyberFamiliar.level());
-        else if (menuSelection == 1 && wifiGuardianService.isActive()) badge = "WATCHING";
-        else if (menuSelection == 2 && familiarPatrolService.isActive()) badge = "PATROL LIVE";
-        else if (menuSelection == 3) badge = sdAvailable ? "SD READY" : "NO SD";
-        const String title = String(Branding::productName) + " // " +
-                             cyberFamiliar.name();
-        drawNavigationCard(title.c_str(), kMenuItems[menuSelection],
-                           descriptions[menuSelection], menuSelection,
-                           kMenuCount, static_cast<uint8_t>(menuSelection), badge);
-        return;
-    }
-    const String title = String(Branding::productName) + " // " +
-                         cyberFamiliar.name();
-    drawHeader(title.c_str());
-    drawHeaderPosition(menuSelection + 1, kMenuCount);
-    const size_t offset =
-        menuSelection >= kVisibleRows ? menuSelection - kVisibleRows + 1 : 0;
-    for (size_t row = 0; row < kVisibleRows && row + offset < kMenuCount;
-         ++row) {
-        const size_t item = row + offset;
-        String suffix;
-        if (item == 0) {
-            suffix = "Lv" + String(cyberFamiliar.level());
-        } else if (item == 1 && wifiGuardianService.isActive()) {
-            suffix = "WATCH";
-        } else if (item == 2 && familiarPatrolService.isActive()) {
-            suffix = "LIVE";
-        } else if (item == 3) {
-            suffix = sdAvailable ? "SD" : "NO SD";
-        }
-        drawListRow(row, kMenuItems[item], item == menuSelection, suffix);
-    }
-    drawFooter("Choose a mission   Enter: open");
-}
+// Main/Observe/Field kit menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawObserveMenu() {
-    static const char* const items[] = {
-        "Wi-Fi airspace", "Bluetooth nearby", "Position / GPS",
-        "Mesh signals", "War drive survey",
-    };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Discover networks and watch Wi-Fi", "Inspect nearby Bluetooth devices",
-            "Find position and record a trail", "Listen to LoRa and mesh traffic",
-            "Survey Wi-Fi, BLE and position",
-        };
-        static constexpr uint8_t icons[] = {1, 6, 7, 1, 7};
-        String badge;
-        if (listSelection == 0 && wifiGuardianService.isActive()) badge = "WATCHING";
-        if (listSelection == 4 && warDriveService.isActive()) badge = "SURVEY LIVE";
-        drawNavigationCard("Observe signals", items[listSelection],
-                           descriptions[listSelection], listSelection, count,
-                           icons[listSelection], badge);
-        return;
-    }
-    drawHeader("Observe signals");
-    normalizeListPosition(count);
-    drawHeaderPosition(listSelection + 1, count);
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < count;
-         ++row) {
-        const size_t item = row + listOffset;
-        String suffix;
-        if (item == 0 && wifiGuardianService.isActive()) suffix = "WATCH";
-        if (item == 4 && warDriveService.isActive()) suffix = "LIVE";
-        drawListRow(row, items[item], item == listSelection, suffix);
-    }
-    drawFooter("Observe first. Save what matters.");
-}
+// AI Chat screen: see include/familiar_screens.h/src/familiar_screens.cpp.
 
-void drawFieldKitMenu() {
-    static const char* const items[] = {
-        "Connected devices", "AI field notes", "Utility tools",
-    };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Work with supported accessories", "Capture and develop field notes",
-            "Deck diagnostics and utilities",
-        };
-        static constexpr uint8_t icons[] = {4, 8, 9};
-        drawNavigationCard("Field kit", items[listSelection],
-                           descriptions[listSelection], listSelection, count,
-                           icons[listSelection]);
-        return;
-    }
-    drawHeader("Field kit");
-    normalizeListPosition(count);
-    drawHeaderPosition(listSelection + 1, count);
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 82);
-    display.print("Accessories, notes and deck utilities.");
-    drawFooter("Enter: open   Q: missions");
-}
+// Wi-Fi auth-mode label: see WifiScreens::authName.
 
-void appendWrappedAiLines(std::vector<String>& lines, const String& prefix,
-                          const String& text) {
-    constexpr size_t width = 38;
-    String remaining = prefix + text;
-    remaining.replace("\r", "");
-    while (!remaining.isEmpty()) {
-        int newline = remaining.indexOf('\n');
-        size_t take = std::min(width, remaining.length());
-        if (newline >= 0 && static_cast<size_t>(newline) < take) {
-            take = static_cast<size_t>(newline);
-        } else if (take < remaining.length()) {
-            const int space = remaining.substring(0, take + 1).lastIndexOf(' ');
-            if (space > 4) take = static_cast<size_t>(space);
-        }
-        lines.push_back(remaining.substring(0, take));
-        size_t remove = take;
-        while (remove < remaining.length() &&
-               (remaining[remove] == ' ' || remaining[remove] == '\n')) {
-            ++remove;
-        }
-        remaining.remove(0, remove);
-        if (take == 0 && remove == 0) break;
-    }
-}
+// Wi-Fi Discovery / Channel Analyzer screens: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-void drawAiComposer() {
-    auto& display = M5Cardputer.Display;
-    display.fillRect(4, 86, display.width() - 8, 31,
-                     Branding::background);
-    display.drawFastHLine(4, 85, display.width() - 8, Branding::panel);
-    display.setTextSize(1);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(6, 91);
-    const String promptLine = "> " + aiPrompt;
-    display.print(promptLine.substring(
-        promptLine.length() > 38 ? promptLine.length() - 38 : 0));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(6, 106);
-    const String notice = aiNotice.isEmpty() ? aiService.status() : aiNotice;
-    display.print(notice.substring(0, 39));
-}
-
-void drawAiChat() {
-    String title = "AI: " + String(aiService.providerName());
-    drawHeader(title.c_str());
-    auto& display = M5Cardputer.Display;
-    display.setTextSize(1);
-    std::vector<String> lines;
-    for (const auto& turn : aiService.history()) {
-        appendWrappedAiLines(lines, turn.role == "user" ? "> " : "< ",
-                             turn.text);
-    }
-    constexpr size_t shown = 4;
-    const size_t maxScroll = lines.size() > shown ? lines.size() - shown : 0;
-    if (aiScrollLines > maxScroll) aiScrollLines = maxScroll;
-    const size_t end = lines.size() > aiScrollLines
-                           ? lines.size() - aiScrollLines
-                           : 0;
-    const size_t start = end > shown ? end - shown : 0;
-    for (size_t index = start; index < end; ++index) {
-        display.setTextColor(lines[index].startsWith("> ")
-                                 ? Branding::accent
-                                 : Branding::text,
-                             Branding::background);
-        display.setCursor(6, 27 + (index - start) * 14);
-        display.print(lines[index].substring(0, 39));
-    }
-    drawAiComposer();
-    drawFooter("Up/Down scroll Enter send Tab provider");
-}
-
-const char* authName(wifi_auth_mode_t mode) {
-    switch (mode) {
-        case WIFI_AUTH_OPEN: return "OPEN";
-        case WIFI_AUTH_WEP: return "WEP";
-        case WIFI_AUTH_WPA_PSK: return "WPA";
-        case WIFI_AUTH_WPA2_PSK: return "WPA2";
-        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA+2";
-        case WIFI_AUTH_WPA3_PSK: return "WPA3";
-        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2+3";
-        default: return "SEC";
-    }
-}
-
-void drawWifiRecon() {
-    drawHeader("Wi-Fi Discovery");
-    normalizeListPosition(accessPoints.size());
-    drawHeaderPosition(listSelection + 1, accessPoints.size());
-    if (accessPoints.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(wifiStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < accessPoints.size();
-             ++row) {
-            const auto& ap = accessPoints[row + listOffset];
-            String ssid = reinterpret_cast<const char*>(ap.ssid);
-            if (ssid.isEmpty()) ssid = "<hidden>";
-            String suffix = String(ap.primary) + "/" + String(ap.rssi);
-            drawListRow(row, ssid, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter(wifiExportStatus.isEmpty()
-                   ? "R: scan  Enter: details  Tab: actions  Q: back"
-                   : wifiExportStatus.c_str());
-}
-
-void drawWifiChannelAnalyzer() {
-    drawHeader("2.4 GHz Channels");
-    auto& display = M5Cardputer.Display;
-    uint8_t counts[14]{};
-    int strongest[14];
-    for (int channel = 0; channel < 14; ++channel) strongest[channel] = -100;
-    for (const auto& ap : accessPoints) {
-        if (ap.primary < 1 || ap.primary > 13) continue;
-        ++counts[ap.primary];
-        strongest[ap.primary] = std::max(strongest[ap.primary],
-                                         static_cast<int>(ap.rssi));
-    }
-
-    int bestChannel = 1;
-    int bestScore = INT_MAX;
-    static constexpr int candidates[] = {1, 6, 11};
-    for (int candidate : candidates) {
-        int score = 0;
-        for (int channel = 1; channel <= 13; ++channel) {
-            const int distance = abs(candidate - channel);
-            if (distance > 4) continue;
-            const int signal = strongest[channel] <= -100
-                                   ? 0
-                                   : std::max(1, strongest[channel] + 101);
-            score += counts[channel] * signal * (5 - distance);
-        }
-        if (score < bestScore) {
-            bestScore = score;
-            bestChannel = candidate;
-        }
-    }
-
-    const int baseline = 103;
-    const int barWidth = 13;
-    const int gap = 4;
-    const int startX = 9;
-    display.drawFastHLine(startX, baseline, 13 * (barWidth + gap) - gap,
-                          Branding::muted);
-    for (int channel = 1; channel <= 13; ++channel) {
-        const int x = startX + (channel - 1) * (barWidth + gap);
-        const int height = std::min(62, static_cast<int>(counts[channel]) * 9);
-        const uint16_t colour = channel == bestChannel
-                                    ? Branding::accent
-                                    : (counts[channel] >= 4 ? Branding::warning
-                                                            : Branding::text);
-        if (height > 0) display.fillRect(x, baseline - height, barWidth, height,
-                                         colour);
-        display.setTextColor(channel == bestChannel ? Branding::accent
-                                                    : Branding::muted,
-                             Branding::background);
-        display.setCursor(x + (channel < 10 ? 4 : 1), baseline + 4);
-        display.print(channel);
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 27);
-    if (accessPoints.empty()) {
-        display.print("No scan data - press R");
-    } else {
-        display.printf("%u APs  Suggested channel: %d",
-                       static_cast<unsigned>(accessPoints.size()), bestChannel);
-    }
-    drawFooter("R: rescan   Q: back");
-}
-
-void drawWifiDetail() {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    drawHeader("Access Point");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 32);
-    display.printf("SSID: %s",
-                   ap.ssid[0] ? reinterpret_cast<const char*>(ap.ssid)
-                              : "<hidden>");
-    display.setCursor(8, 50);
-    display.printf("Channel: %u   RSSI: %d", ap.primary, ap.rssi);
-    display.setCursor(8, 68);
-    display.printf("Security: %s", authName(ap.authmode));
-    display.setCursor(8, 86);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    drawFooter(wifiDeauthStatus.isEmpty() ? "Tab: actions   Esc: back"
-                                         : wifiDeauthStatus.c_str());
-}
-
-void drawWifiDeauthConfirm() {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    String ssid = reinterpret_cast<const char*>(ap.ssid);
-    if (ssid.isEmpty()) ssid = "<hidden>";
-    drawHeader("Deauth AP?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 32);
-    display.print(ssid.substring(0, 30));
-    display.setCursor(8, 50);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 72);
-    display.print("Sends deauth frames to this AP.");
-    display.setCursor(8, 88);
-    display.print("Authorized targets only.");
-    drawFooter("Enter: DEAUTH   Backspace/Q: cancel");
-}
+// Wi-Fi Detail / Deauth Confirm screens: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
 void transmitWifiDeauth(const wifi_ap_record_t& ap) {
     drawHeader("Deauth AP?");
@@ -1405,75 +1110,13 @@ void transmitWifiDeauth(const wifi_ap_record_t& ap) {
                   " (ch " + String(static_cast<int>(channelResult)) + ")";
 }
 
-void drawWifiHandshakeCapture(bool fullDraw = true) {
-    if (accessPoints.empty() || listSelection >= accessPoints.size()) {
-        currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
-        return;
-    }
-    const auto& ap = accessPoints[listSelection];
-    String ssid = reinterpret_cast<const char*>(ap.ssid);
-    if (ssid.isEmpty()) ssid = "<hidden>";
-    beginContentUpdate("Handshake Capture", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(
-        wifiSnifferService.isActive() ? Branding::accent : Branding::warning,
-        Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s  CH %u", ssid.substring(0, 20).c_str(), ap.primary);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("BSSID: %02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
-                   ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4],
-                   ap.bssid[5]);
-    display.setCursor(8, 63);
-    display.printf(
-        "EAPOL frames: %lu",
-        static_cast<unsigned long>(handshakeEapolFrameCount));
-
-    display.setCursor(8, 80);
-    display.setTextColor(Branding::text, Branding::background);
-    display.print("Messages: ");
-    for (uint8_t message = 1; message <= 4; ++message) {
-        display.setTextColor(handshakeMessageSeen[message] ? Branding::accent
-                                                           : Branding::muted,
-                             Branding::background);
-        display.printf("M%u ", message);
-    }
-
-    display.setCursor(8, 97);
-    if (handshakePmkidFound) {
-        String pmkidHex;
-        pmkidHex.reserve(32);
-        for (uint8_t index = 0; index < 16; ++index) {
-            char byteText[3];
-            snprintf(byteText, sizeof(byteText), "%02X", handshakePmkid[index]);
-            pmkidHex += byteText;
-        }
-        display.setTextColor(Branding::accent, Branding::background);
-        display.printf("PMKID: %s", pmkidHex.c_str());
-    } else {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print("PMKID: none yet");
-    }
-
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 114);
-    if (handshakeCaptureLogger.isActive()) {
-        display.printf(
-            "REC %lu frames",
-            static_cast<unsigned long>(handshakeCaptureLogger.rowCount()));
-    } else {
-        display.print("Not recording");
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: stop");
-}
+// Handshake Capture screen: see include/wifi_screens.h/src/wifi_screens.cpp.
 
 void exportWifiResults() {
     if (!sdAvailable || accessPoints.empty()) {
         wifiExportStatus =
             sdAvailable ? "Nothing to export" : "Export failed: no SD card";
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     SdLogger logger;
@@ -1481,7 +1124,7 @@ void exportWifiResults() {
             "wifi",
             "timestamp_utc,ssid,bssid,channel,rssi_dbm,security")) {
         wifiExportStatus = "Export failed: " + logger.status();
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     for (const auto& ap : accessPoints) {
@@ -1493,7 +1136,7 @@ void exportWifiResults() {
                  ap.bssid[4], ap.bssid[5]);
         const String row = utcTimestamp() + "," + csvSafePayload(ssid) + "," +
                            bssid + "," + String(ap.primary) + "," +
-                           String(ap.rssi) + "," + authName(ap.authmode);
+                           String(ap.rssi) + "," + WifiScreens::authName(ap.authmode);
         if (!logger.append(row)) break;
     }
     String name = logger.path();
@@ -1503,7 +1146,7 @@ void exportWifiResults() {
     logger.stop();
     wifiExportStatus =
         success ? "Saved " + name : "Export failed: " + logger.status();
-    drawWifiRecon();
+    wifiScreens.drawRecon();
 }
 
 void scanWifiNetworks() {
@@ -1568,30 +1211,7 @@ void scanWifiNetworks() {
     drawCurrentScreen();
 }
 
-void drawWifiConnectSelect() {
-    drawHeader("Wi-Fi Connect");
-    normalizeListPosition(accessPoints.size());
-    drawHeaderPosition(listSelection + 1, accessPoints.size());
-    if (accessPoints.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(wifiStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < accessPoints.size();
-             ++row) {
-            const auto& ap = accessPoints[row + listOffset];
-            String ssid = reinterpret_cast<const char*>(ap.ssid);
-            if (ssid.isEmpty()) ssid = "<hidden>";
-            String suffix = String(ap.primary) + "/" + String(ap.rssi);
-            drawListRow(row, ssid, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter(wifiConnectSavedSsid.isEmpty()
-                   ? "R: rescan   Enter: select   Backspace/Q: back"
-                   : "R: rescan  Enter: select  Tab: actions  Q: back");
-}
+// Wi-Fi Connect picker: see include/wifi_screens.h/src/wifi_screens.cpp.
 
 void drawTextEntryRow(int y, const char* label, const String& value,
                       bool masked = false) {
@@ -1615,73 +1235,19 @@ void drawTextEntryRow(int y, const char* label, const String& value,
     }
 }
 
-void drawWifiConnectPassword() {
-    drawHeader("Wi-Fi Connect");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 36);
-    display.printf("SSID: %s", wifiConnectSsid.c_str());
-    drawTextEntryRow(54, "Password: ", wifiConnectPasswordInput, true);
-    drawFooter("Enter: connect   Esc: cancel");
-}
+// Wi-Fi Connect password screen: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-void drawWifiConnectStatus(bool fullDraw = true) {
-    beginContentUpdate("Wi-Fi Connect", fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool connected = WiFi.status() == WL_CONNECTED;
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("SSID: %s", wifiConnectSsid.c_str());
-    display.setCursor(8, 44);
-    display.print(wifiConnectStatusText);
-    display.setTextColor(Branding::text, Branding::background);
-    if (connected) {
-        display.setCursor(8, 58);
-        display.printf("IP: %s", WiFi.localIP().toString().c_str());
-        display.setCursor(8, 72);
-        display.printf("Gateway: %s", WiFi.gatewayIP().toString().c_str());
-        display.setCursor(8, 86);
-        display.printf("RSSI: %d dBm", WiFi.RSSI());
-    }
-    drawFooter("Tab: actions   Backspace/Q: back");
-}
+// Wi-Fi Connect status screen: see
+// include/wifi_screens.h/src/wifi_screens.cpp.
 
-void drawBleDiscovery() {
-    drawHeader("BLE Advertisement Sniffer");
-    normalizeListPosition(bleDevices.size());
-    drawHeaderPosition(listSelection + 1, bleDevices.size());
-    if (bleDevices.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print(bleStatus);
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < bleDevices.size();
-             ++row) {
-            const BleDeviceInfo& device = bleDevices[row + listOffset];
-            drawListRow(row, device.name,
-                        row + listOffset == listSelection,
-                        String(device.rssi));
-        }
-    }
-    if (bleScanner.isContinuous()) {
-        drawFooter(("Tab: actions LIVE:" +
-                    String(bleScanner.advertisementCount()) + " D:" +
-                    String(bleScanner.droppedCount())).c_str());
-    } else {
-        drawFooter(bleExportStatus.isEmpty()
-                       ? "R: scan  Enter: details  Tab: actions  Q: back"
-                       : bleExportStatus.c_str());
-    }
-}
+// BLE Discovery screen: see include/ble_screens.h/src/ble_screens.cpp.
 
 void exportBleResults() {
     if (!sdAvailable || bleDevices.empty()) {
         bleExportStatus =
             sdAvailable ? "Nothing to export" : "Export failed: no SD card";
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     SdLogger logger;
@@ -1691,7 +1257,7 @@ void exportBleResults() {
             "advertisement_type,payload_bytes,service_count,service_uuids,"
             "manufacturer,manufacturer_data_hex,payload_hex")) {
         bleExportStatus = "Export failed: " + logger.status();
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     for (const auto& device : bleDevices) {
@@ -1715,7 +1281,7 @@ void exportBleResults() {
     logger.stop();
     bleExportStatus =
         success ? "Saved " + name : "Export failed: " + logger.status();
-    drawBleDiscovery();
+    bleScreens.drawDiscovery();
 }
 
 void scanBleDevices() {
@@ -1736,7 +1302,7 @@ void scanBleDevices() {
     recoverKeyboardAfterBlockingOperation();
     listSelection = 0;
     listOffset = 0;
-    drawBleDiscovery();
+    bleScreens.drawDiscovery();
 }
 
 // War Driving intentionally logs every scan result every phase, unlike the
@@ -1756,7 +1322,7 @@ void logWarDriveWifiResult(const WarDriveWifiResult& ap) {
     // WiGLE CSV 1.6: directly importable without a desktop conversion step.
     const String row =
         String(bssid) + "," + csvSafePayload(ssid) + "," +
-        csvSafePayload(String("[") + authName(ap.authmode) + "]") + "," +
+        csvSafePayload(String("[") + WifiScreens::authName(ap.authmode) + "]") + "," +
         utcTimestamp() + "," + String(ap.channel) + "," + String(ap.rssi) +
         "," + String(fix ? gnssService.latitude() : 0.0, 6) + "," +
         String(fix ? gnssService.longitude() : 0.0, 6) + "," +
@@ -1780,52 +1346,11 @@ void logWarDriveBleResult(const WarDriveBleResult& device) {
 }
 
 // Redraws only the lines that actually change, via targeted fillRect calls
-// instead of drawWarDrive()'s full drawHeader()-triggered screen clear --
+// instead of networkScanScreens.drawWarDrive()'s full drawHeader()-triggered screen clear --
 // called on every periodic tick, so a full-screen flicker there would be
 // very noticeable (and was, before this split).
-void drawWarDriveDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int width = display.width();
-
-    display.fillRect(0, 27, width, 13, Branding::background);
-    display.setTextColor(warDriveService.isActive() ? Branding::accent
-                                                     : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(warDriveService.isActive() ? "ACTIVE" : "STOPPED");
-
-    display.fillRect(0, 42, width, 13, Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 44);
-    if (gnssService.hasFix()) {
-        display.printf("Lat: %.6f  Lon: %.6f", gnssService.latitude(),
-                       gnssService.longitude());
-    } else {
-        display.print("GPS: no fix yet");
-    }
-
-    display.fillRect(0, 56, width, 13, Branding::background);
-    display.setCursor(8, 58);
-    display.printf("Phase: %s", warDriveService.currentPhaseName());
-
-    display.fillRect(0, 70, width, 13, Branding::background);
-    display.setCursor(8, 72);
-    display.printf(
-        "Unique APs: %lu",
-        static_cast<unsigned long>(warDriveService.wifiUniqueCount()));
-
-    display.fillRect(0, 84, width, 13, Branding::background);
-    display.setCursor(8, 86);
-    display.printf(
-        "Unique devices: %lu",
-        static_cast<unsigned long>(warDriveService.bleUniqueCount()));
-}
-
-void drawWarDrive() {
-    drawHeader("War Drive");
-    drawWarDriveDynamic();
-    drawFooter("R: start/stop   Backspace/Q: back");
-}
+// War Drive screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
 void exportNetworkHostResults() {
     if (!sdAvailable || networkHostResults.empty()) {
@@ -1850,62 +1375,8 @@ void exportNetworkHostResults() {
         success ? "Saved " + name : "Export failed: " + logger.status();
 }
 
-void drawNetworkHostScan(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(WiFi.status()) << 28) ^
-        (static_cast<uint32_t>(networkHostScanService.isActive()) << 27) ^
-        (static_cast<uint32_t>(networkHostScanService.scannedCount()) << 12) ^
-        static_cast<uint32_t>(networkHostResults.size());
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("Host Discovery", fullDraw);
-    auto& display = M5Cardputer.Display;
-    if (WiFi.status() != WL_CONNECTED) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 36);
-        display.print("Connect to Wi-Fi first");
-        drawFooter("Wi-Fi > Connect   Backspace/Q: back");
-        return;
-    }
-    normalizeListPosition(networkHostResults.size());
-    if (!networkHostScanService.isActive()) {
-        drawHeaderPosition(listSelection + 1, networkHostResults.size());
-    }
-    if (networkHostResults.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 36);
-        if (networkHostScanService.isActive()) {
-            display.printf(
-                "Scanning... %u/%u",
-                static_cast<unsigned>(networkHostScanService.scannedCount()),
-                static_cast<unsigned>(networkHostScanService.totalCount()));
-        } else {
-            display.print("No hosts found. Press R to scan.");
-        }
-    } else {
-        for (size_t row = 0; row < kVisibleRows &&
-                             row + listOffset < networkHostResults.size();
-             ++row) {
-            const auto& host = networkHostResults[row + listOffset];
-            drawListRow(row, host.ip.toString(),
-                       row + listOffset == listSelection);
-        }
-    }
-    String footer;
-    if (!networkHostScanExportStatus.isEmpty()) {
-        footer = networkHostScanExportStatus;
-    } else if (networkHostScanService.isActive()) {
-        footer = "Scanning " + String(networkHostScanService.scannedCount()) +
-                 "/" + String(networkHostScanService.totalCount()) +
-                 "  Found: " + String(networkHostResults.size());
-    } else {
-        footer = networkHostResults.empty()
-                     ? "R: start/stop  Backspace/Q: back"
-                     : "Enter: scan  Tab: actions  Q: back";
-    }
-    drawFooter(footer.c_str());
-}
+// Host Discovery screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
 const uint16_t kNetworkPortScanPorts[] = {21,  22,  23,  25,   53,  80,
                                           110, 139, 143, 443, 445, 3389,
@@ -1962,96 +1433,10 @@ void exportNetworkPortResults() {
         success ? "Saved " + name : "Export failed: " + logger.status();
 }
 
-void drawNetworkPortScan(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(networkPortScanService.isActive()) << 31) ^
-        (static_cast<uint32_t>(networkPortScanService.scannedCount()) << 12) ^
-        static_cast<uint32_t>(networkPortResults.size());
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    const String title = "Port Scan " + networkPortScanTarget.toString();
-    beginContentUpdate(title.c_str(), fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool fullActive =
-        networkPortScanIsFull && networkPortScanService.isActive();
-    if (networkPortResults.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 36);
-        if (fullActive) {
-            display.printf(
-                "Scanning... %u/%u",
-                static_cast<unsigned>(networkPortScanService.scannedCount()),
-                static_cast<unsigned>(networkPortScanService.totalCount()));
-        } else {
-            display.print("No open ports found");
-        }
-    } else {
-        normalizeListPosition(networkPortResults.size());
-        for (size_t row = 0; row < kVisibleRows &&
-                             row + listOffset < networkPortResults.size();
-             ++row) {
-            drawListRow(row, String(networkPortResults[row + listOffset]),
-                       row + listOffset == listSelection);
-        }
-    }
-    String footer;
-    if (!networkPortScanExportStatus.isEmpty()) {
-        footer = networkPortScanExportStatus;
-    } else if (fullActive) {
-        footer = "Scanning " + String(networkPortScanService.scannedCount()) +
-                 "/" + String(networkPortScanService.totalCount()) +
-                 "  Found: " + String(networkPortResults.size()) +
-                 "  Q: stop";
-    } else {
-        footer = "R: rescan  Tab: actions  Backspace/Q: back";
-    }
-    drawFooter(footer.c_str());
-}
+// Port Scan screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
-void drawTelnetConnect() {
-    drawHeader("Telnet Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    drawTextEntryRow(36, "Host: ", telnetHostInput);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 54);
-    display.print("Format: host or host:port (default 23)");
-    drawFooter(telnetStatus.isEmpty() ? "Enter: connect   Esc: cancel"
-                                      : telnetStatus.c_str());
-}
-
-// Redraws just the scrolling text area (content between header and
-// footer) -- called on every new byte from the remote host, so it must
-// not touch drawHeader()'s fillScreen()/drawFooter() or the whole
-// screen would flicker on every incoming character, the same lesson
-// drawWarDriveDynamic() already established.
-void drawTelnetSessionDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int top = 24;
-    const int bottom = display.height() - 15;
-    display.fillRect(0, top, display.width(), bottom - top,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-
-    std::vector<const String*> visible;
-    for (const auto& line : telnetLines) visible.push_back(&line);
-    visible.push_back(&telnetPendingLine);
-    const size_t total = visible.size();
-    const size_t shown = std::min(kVisibleRows, total);
-    for (size_t row = 0; row < shown; ++row) {
-        const String& line = *visible[total - shown + row];
-        display.setCursor(4, top + 2 + static_cast<int>(row) * 15);
-        display.print(line.substring(0, 39));
-    }
-}
-
-void drawTelnetSession() {
-    drawHeader(("Telnet " + telnetHost + ":" + String(telnetPort)).c_str());
-    drawTelnetSessionDynamic();
-    drawFooter(telnetClient.connected() ? "Esc: disconnect"
-                                        : "Disconnected   Esc: back");
-}
+// Telnet Client screens: see include/telnet_screens.h/src/telnet_screens.cpp.
 
 // Parses the optional ":port" suffix off telnetHostInput (defaulting to
 // 23), then does a single bounded blocking connect -- same
@@ -2075,7 +1460,7 @@ void connectTelnet() {
     }
     if (host.isEmpty()) {
         telnetStatus = "Enter a host";
-        drawTelnetConnect();
+        telnetScreens.drawConnect();
         return;
     }
 
@@ -2099,21 +1484,11 @@ void connectTelnet() {
         drawCurrentScreen();
     } else {
         telnetStatus = "Connection failed";
-        drawTelnetConnect();
+        telnetScreens.drawConnect();
     }
 }
 
-void drawSshConnect() {
-    drawHeader("SSH Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    drawTextEntryRow(36, "Target: ", sshHostInput);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 54);
-    display.print("Format: user@host or user@host:port");
-    drawFooter(sshStatus.isEmpty() ? "Enter: next   Tab: history"
-                                  : sshStatus.c_str());
-}
+// SSH Client screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 // Parses "user@host" or "user@host:port" (default 22) out of
 // sshHostInput. Returns false (and sets sshStatus) on a bad format
@@ -2185,47 +1560,7 @@ String sshFingerprintPreferenceKey() {
     return String(key);
 }
 
-void drawSshPassword() {
-    drawHeader("SSH Client");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 36);
-    display.printf("%s@%s:%u", sshUsername.c_str(), sshHost.c_str(), sshPort);
-    drawTextEntryRow(54, "Password: ", sshPasswordInput, true);
-    drawFooter(sshStatus.isEmpty() ? "Enter: connect   Esc: back"
-                                  : sshStatus.c_str());
-}
-
-// Redraws just the scrolling text area, same split/reasoning as
-// drawTelnetSessionDynamic() -- must not touch drawHeader()'s
-// fillScreen()/drawFooter() or the screen flickers on every incoming
-// byte.
-void drawSshSessionDynamic() {
-    auto& display = M5Cardputer.Display;
-    const int top = 24;
-    const int bottom = display.height() - 15;
-    display.fillRect(0, top, display.width(), bottom - top,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-
-    std::vector<const String*> visible;
-    for (const auto& line : sshLines) visible.push_back(&line);
-    visible.push_back(&sshPendingLine);
-    const size_t total = visible.size();
-    const size_t shown = std::min(kVisibleRows, total);
-    for (size_t row = 0; row < shown; ++row) {
-        const String& line = *visible[total - shown + row];
-        display.setCursor(4, top + 2 + static_cast<int>(row) * 15);
-        display.print(line.substring(0, 39));
-    }
-}
-
-void drawSshSession() {
-    drawHeader(("SSH " + sshUsername + "@" + sshHost).c_str());
-    drawSshSessionDynamic();
-    drawFooter(sshService.isConnected() ? "Esc: disconnect"
-                                        : "Disconnected   Esc: back");
-}
+// SSH Password/Session screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 void connectSsh() {
     preferences.putUChar("ssh_stage", 4);
@@ -2258,7 +1593,7 @@ void connectSsh() {
         sshStatus = "Unknown host - Enter to trust/connect";
         preferences.putUChar("ssh_stage", 3);
         currentScreen = Screen::SshPassword;
-        drawSshPassword();
+        sshScreens.drawPassword();
         return;
     }
     struct SshConnectWork {
@@ -2329,60 +1664,17 @@ void connectSsh() {
         sshStatus = sshService.statusMessage();
         sshTrustPending = sshService.needsHostTrust();
         currentScreen = Screen::SshPassword;
-        drawSshPassword();
+        sshScreens.drawPassword();
     }
 }
 
-void drawBleDetail() {
-    if (bleDevices.empty() || listSelection >= bleDevices.size()) {
-        currentScreen = Screen::BleDiscovery;
-        drawBleDiscovery();
-        return;
-    }
-    const BleDeviceInfo& device = bleDevices[listSelection];
-    drawHeader("BLE Device");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 27);
-    display.printf("Name: %s", device.name.substring(0, 31).c_str());
-    display.setCursor(8, 42);
-    display.printf("%s  %d dBm", device.address.c_str(), device.rssi);
-    display.setCursor(8, 57);
-    display.printf("Addr type: %u  ADV: %u  %s", device.addressType,
-                   device.advertisementType,
-                   device.connectable ? "CONNECT" : "BEACON");
-    display.setCursor(8, 72);
-    display.printf("Mfr: %s", device.manufacturer.c_str());
-    display.setCursor(8, 87);
-    display.printf("Services (%u): %s", device.serviceCount,
-                   device.service.isEmpty()
-                       ? "none"
-                       : device.service.substring(0, 22).c_str());
-    display.setCursor(8, 102);
-    display.printf("Payload %uB: %s", device.payloadLength,
-                   device.payloadData.isEmpty()
-                       ? "not available"
-                       : device.payloadData.substring(0, 24).c_str());
-    drawFooter("Backspace/Q: results");
-}
+// BLE Device detail screen: see include/ble_screens.h/src/ble_screens.cpp.
 
 // Infrared self-test screen: see include/ir_screen.h/src/ir_screen.cpp.
 // (First screen extracted out of this file -- see docs/screen-extraction.md.)
 
-void drawUsbHid() {
-    drawHeader("USB / HID");
-    constexpr size_t kUsbHidItemCount = kHidPresetCount + 1;
-    normalizeListPosition(kUsbHidItemCount);
-    for (size_t row = 0;
-         row < kVisibleRows && row + listOffset < kUsbHidItemCount; ++row) {
-        const size_t item = row + listOffset;
-        drawListRow(row,
-                    item < kHidPresetCount ? kHidPresetNames[item]
-                                           : "Run DuckyScript",
-                    item == listSelection);
-    }
-    drawFooter("Enter: review test  Backspace/Q: back");
-}
+// USB/HID and DuckyScript screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 void loadDuckyScripts() {
     duckyScripts.clear();
@@ -2445,48 +1737,8 @@ void preflightDuckyScript() {
     if (file) file.close();
 }
 
-void drawDuckyScripts() {
-    drawHeader("DuckyScript Files");
-    normalizeListPosition(duckyScripts.size());
-    drawHeaderPosition(listSelection + 1, duckyScripts.size());
-    if (duckyScripts.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                         Branding::background);
-        M5Cardputer.Display.setCursor(8, 36);
-        M5Cardputer.Display.print("No .txt/.duck scripts in");
-        M5Cardputer.Display.setCursor(8, 53);
-        M5Cardputer.Display.print("/ghostwire/scripts");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < duckyScripts.size();
-             ++row) {
-            drawListRow(row, duckyScripts[row + listOffset],
-                        row + listOffset == listSelection);
-        }
-    }
-    drawFooter("Enter: inspect  R: reload  Q: back");
-}
-
-void drawDuckyConfirm() {
-    drawHeader("Confirm DuckyScript");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 28);
-    display.print(duckyScripts[listSelection].substring(0, 35));
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 47);
-    display.printf("Commands: %u  Unsupported: %u",
-                   static_cast<unsigned>(duckyCommandCount),
-                   static_cast<unsigned>(duckyUnsupportedCount));
-    display.setCursor(8, 65);
-    display.printf("Declared delays: %lus",
-                   static_cast<unsigned long>(duckyDeclaredDelayMs / 1000));
-    display.setCursor(8, 83);
-    display.print("Focus the authorized USB host.");
-    display.setCursor(8, 101);
-    display.print("3 second cancelable countdown.");
-    drawFooter("Enter: RUN   Esc: cancel");
-}
+// DuckyScript Files/Confirm screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 bool waitDuckyDelay(uint32_t durationMs) {
     const unsigned long started = millis();
@@ -2564,32 +1816,8 @@ void runSelectedDuckyScript() {
     drawCurrentScreen();
 }
 
-void drawDuckyResult() {
-    drawHeader("DuckyScript Result");
-    M5Cardputer.Display.setTextColor(Branding::text, Branding::background);
-    M5Cardputer.Display.setCursor(8, 42);
-    M5Cardputer.Display.print(duckyRunStatus);
-    M5Cardputer.Display.setTextColor(Branding::muted, Branding::background);
-    M5Cardputer.Display.setCursor(8, 65);
-    M5Cardputer.Display.print("All HID keys released.");
-    drawFooter("Enter/Esc: scripts");
-}
-
-void drawUsbHidConfirmation() {
-    drawHeader("Confirm HID Test");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 31);
-    display.print("Focus a blank text editor now.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 51);
-    display.printf("Preset: %s", kHidPresetNames[listSelection]);
-    display.setCursor(8, 70);
-    display.print("This sends text only.");
-    display.setCursor(8, 88);
-    display.print("No commands or shortcuts.");
-    drawFooter("Enter: TYPE NOW  Backspace/Q: cancel");
-}
+// DuckyScript Result / USB HID Confirm screens: see
+// include/usb_hid_screens.h/src/usb_hid_screens.cpp.
 
 void runUsbHidPreset() {
     drawHeader("USB / HID Self-Test");
@@ -2604,80 +1832,13 @@ void runUsbHidPreset() {
     Serial.printf("[usb] HID preset=%u sent\n",
                   static_cast<unsigned>(listSelection));
     currentScreen = Screen::UsbHid;
-    drawUsbHid();
+    usbHidScreens.drawUsbHid();
 }
 
-void drawAudio() {
-    static const char* const items[] = {
-        "Speaker tone test", "Microphone level", "Play MP3 from SD",
-        "Familiar phrase lab",
-    };
-    drawHeader("Audio Self-Test");
-    normalizeListPosition(4);
-    for (size_t row = 0; row < 4; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open/run  Backspace/Q: back");
-}
+// Audio Self-Test / Familiar Phrase Lab screens: see
+// include/audio_screens.h/src/audio_screens.cpp.
 
-void drawTtsLab() {
-    drawHeader("Familiar Phrase Lab");
-    auto& display = M5Cardputer.Display;
-    const auto& phrase = kTtsLabPhrases[ttsLabPhrase];
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 31);
-    display.printf("Phrase %u/%u: %s", ttsLabPhrase + 1,
-                   static_cast<unsigned>(kTtsLabPhraseCount), phrase.name);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 55);
-    display.print("Words: ");
-    for (uint8_t i = 0; i < phrase.wordCount; ++i) {
-        if (i != 0) display.print(" + ");
-        display.print(phrase.words[i]);
-    }
-    display.setCursor(8, 78);
-    display.print(ttsLabStatus.substring(0, 37));
-    display.setCursor(8, 95);
-    if (ttsLabPlaybackMs > 0) {
-        display.printf("Sequence time: %lums",
-                       static_cast<unsigned long>(ttsLabPlaybackMs));
-    } else {
-        display.print("Streams individual MP3s from SD.");
-    }
-    drawFooter("Tab: phrase  Enter: play  Esc: back");
-}
-
-void drawMicrophone() {
-    drawHeader("Microphone Level");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 35);
-    display.printf("Input level: %u%%", microphoneLevel);
-    display.drawRect(8, 58, display.width() - 16, 22, Branding::muted);
-    display.fillRect(10, 60,
-                     (display.width() - 20) * microphoneLevel / 100, 18,
-                     microphoneLevel > 75 ? Branding::warning
-                                          : Branding::accent);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 93);
-    display.print("Speak or tap near the microphone.");
-    drawFooter("Backspace/Q: stop and return");
-}
-
-void updateMicrophoneMeter() {
-    auto& display = M5Cardputer.Display;
-    display.fillRect(8, 32, display.width() - 16, 18,
-                     Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 35);
-    display.printf("Input level: %u%%", microphoneLevel);
-    display.fillRect(9, 59, display.width() - 18, 20,
-                     Branding::background);
-    display.fillRect(10, 60,
-                     (display.width() - 20) * microphoneLevel / 100, 18,
-                     microphoneLevel > 75 ? Branding::warning
-                                          : Branding::accent);
-}
+// Microphone Level screen: see include/audio_screens.h/src/audio_screens.cpp.
 
 void loadAudioFiles() {
     audioFiles.clear();
@@ -2703,27 +1864,7 @@ void loadAudioFiles() {
     listOffset = 0;
 }
 
-void drawAudioFiles() {
-    drawHeader("MP3 Files");
-    normalizeListPosition(audioFiles.size());
-    drawHeaderPosition(listSelection + 1, audioFiles.size());
-    if (audioFiles.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("No MP3 files in");
-        M5Cardputer.Display.setCursor(8, 55);
-        M5Cardputer.Display.print("/ghostwire/audio");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < audioFiles.size();
-             ++row) {
-            drawListRow(row, audioFiles[row + listOffset],
-                        row + listOffset == listSelection);
-        }
-    }
-    drawFooter("Enter: play  R: reload  Backspace/Q: back");
-}
+// MP3 Files screen: see include/audio_screens.h/src/audio_screens.cpp.
 
 void startSelectedMp3() {
     if (audioFiles.empty() || listSelection >= audioFiles.size()) return;
@@ -2742,40 +1883,12 @@ void startSelectedMp3() {
     nowPlayingName = audioFiles[listSelection];
     nowPlayingSource = "/ghostwire/audio";
     currentScreen = Screen::AudioPlaying;
-    drawHeader("Now Playing");
-    M5Cardputer.Display.setTextColor(Branding::text, Branding::background);
-    M5Cardputer.Display.setCursor(8, 40);
-    M5Cardputer.Display.print(audioFiles[listSelection].substring(0, 34));
-    M5Cardputer.Display.setTextColor(Branding::muted,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 64);
-    M5Cardputer.Display.print("MP3 from /ghostwire/audio");
-    drawFooter("Enter/Backspace/Q: stop");
+    audioScreens.drawNowPlaying(audioFiles[listSelection],
+                                "MP3 from /ghostwire/audio");
 }
 
-String formatFileSize(uint64_t bytes) {
-    if (bytes >= 1024ULL * 1024ULL) {
-        return String(static_cast<double>(bytes) / (1024.0 * 1024.0), 1) +
-               " MiB";
-    }
-    if (bytes >= 1024ULL) {
-        return String(static_cast<double>(bytes) / 1024.0, 1) + " KiB";
-    }
-    return String(bytes) + " bytes";
-}
-
-bool isMp3File(const String& name) {
-    String lower = name;
-    lower.toLowerCase();
-    return lower.endsWith(".mp3");
-}
-
-bool isPreviewableFile(const String& name) {
-    String lower = name;
-    lower.toLowerCase();
-    return lower.endsWith(".csv") || lower.endsWith(".txt") ||
-           lower.endsWith(".log");
-}
+// formatFileSize/isMp3File/isPreviewableFile: see
+// FileScreens::formatFileSize/isMp3File/isPreviewableFile.
 
 String selectedFilePath() {
     if (files.empty() || listSelection >= files.size()) return "";
@@ -2813,38 +1926,7 @@ void loadDirectory() {
     listOffset = 0;
 }
 
-void drawFiles() {
-    drawHeader("Files");
-    if (!sdAvailable) {
-        M5Cardputer.Display.setTextColor(Branding::warning,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 35);
-        M5Cardputer.Display.print("microSD unavailable");
-        M5Cardputer.Display.setCursor(8, 52);
-        M5Cardputer.Display.print("Press R to retry");
-    } else if (files.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 35);
-        M5Cardputer.Display.print("This folder is empty");
-    } else {
-        normalizeListPosition(files.size());
-        drawHeaderPosition(listSelection + 1, files.size());
-        for (size_t row = 0;
-             row < kVisibleRows && row + listOffset < files.size(); ++row) {
-            const auto& entry = files[row + listOffset];
-            String label = entry.directory ? "[" + entry.name + "]" : entry.name;
-            String suffix;
-            if (!entry.directory) {
-                suffix = entry.size >= 1024
-                             ? String(entry.size / 1024) + "K"
-                             : String(entry.size) + "B";
-            }
-            drawListRow(row, label, row + listOffset == listSelection, suffix);
-        }
-    }
-    drawFooter((currentPath + "   R: remount  Esc: up/back").c_str());
-}
+// Files browser screen: see include/file_screens.h/src/file_screens.cpp.
 
 String logTypeFromName(const String& name) {
     String lower = name;
@@ -2909,56 +1991,8 @@ void loadLogSessions() {
               });
 }
 
-void normalizeLogPosition() {
-    if (logSessions.empty()) {
-        logSelection = 0;
-        logOffset = 0;
-        return;
-    }
-    if (logSelection >= logSessions.size()) {
-        logSelection = logSessions.size() - 1;
-    }
-    if (logSelection < logOffset) logOffset = logSelection;
-    if (logSelection >= logOffset + kVisibleRows) {
-        logOffset = logSelection - kVisibleRows + 1;
-    }
-}
-
-String evidenceDisplayName(const LogEntry& entry) {
-    if (entry.type != "Patrol") return entry.name;
-    const int fileSlash = entry.path.lastIndexOf('/');
-    if (fileSlash <= 0) return entry.name;
-    const String parentPath = entry.path.substring(0, fileSlash);
-    const int parentSlash = parentPath.lastIndexOf('/');
-    const String session = parentPath.substring(parentSlash + 1);
-    return session + "/" + entry.name;
-}
-
-void drawLogSessions() {
-    drawHeader("Evidence");
-    normalizeLogPosition();
-    drawHeaderPosition(logSelection + 1, logSessions.size());
-    if (!sdAvailable) {
-        M5Cardputer.Display.setTextColor(Branding::warning,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("microSD unavailable");
-    } else if (logSessions.empty()) {
-        M5Cardputer.Display.setTextColor(Branding::muted,
-                                        Branding::background);
-        M5Cardputer.Display.setCursor(8, 38);
-        M5Cardputer.Display.print("No evidence saved yet");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && logOffset + row < logSessions.size();
-             ++row) {
-            const auto& entry = logSessions[logOffset + row];
-            drawListRow(row, evidenceDisplayName(entry),
-                        logOffset + row == logSelection, entry.type);
-        }
-    }
-    drawFooter("Enter: inspect   R: refresh   Q: back");
-}
+// Evidence/log sessions screen: see
+// include/file_screens.h/src/file_screens.cpp.
 
 uint32_t countCsvRows(const String& path) {
     File file = SD.open(path, FILE_READ);
@@ -2991,79 +2025,10 @@ void openLogDetail() {
     currentScreen = Screen::LogDetail;
 }
 
-void drawLogDetail() {
-    if (logSessions.empty() || logSelection >= logSessions.size()) {
-        currentScreen = Screen::LogSessions;
-        drawLogSessions();
-        return;
-    }
-    const auto& entry = logSessions[logSelection];
-    drawHeader("Session Details");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 31);
-    display.print(evidenceDisplayName(entry).substring(0, 37));
-    display.setCursor(8, 50);
-    display.printf("Source: %s", entry.type.c_str());
-    display.setCursor(8, 69);
-    display.printf("Size: %s", formatFileSize(entry.size).c_str());
-    display.setCursor(8, 88);
-    String lower = entry.name;
-    lower.toLowerCase();
-    if (lower.endsWith(".csv")) {
-        display.printf("Data rows: %lu",
-                       static_cast<unsigned long>(selectedLogRows));
-    } else {
-        display.print(isPreviewableFile(entry.name)
-                          ? "Readable evidence file"
-                          : "Binary capture / asset");
-    }
-    drawFooter(isPreviewableFile(entry.name)
-                   ? "Enter: preview   Tab: actions   Q: evidence"
-                   : "Tab: actions   Q: evidence");
-}
+// Session Details screen: see include/file_screens.h/src/file_screens.cpp.
 
-void drawLogDeleteConfirm() {
-    drawHeader("Delete Session?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 40);
-    display.print(logSessions[logSelection].name.substring(0, 37));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 65);
-    display.print("This cannot be undone.");
-    drawFooter("Enter: DELETE   Backspace/Q: cancel");
-}
-
-void drawFileDetail() {
-    if (files.empty() || listSelection >= files.size()) {
-        currentScreen = Screen::Files;
-        drawFiles();
-        return;
-    }
-    const FileEntry& entry = files[listSelection];
-    drawHeader("File Details");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 31);
-    display.print(entry.name.substring(0, 36));
-    display.setCursor(8, 49);
-    display.printf("Type: %s", isMp3File(entry.name)
-                                   ? "MP3 audio"
-                                   : (isPreviewableFile(entry.name)
-                                          ? "Text / CSV"
-                                          : "File"));
-    display.setCursor(8, 67);
-    display.printf("Size: %s", formatFileSize(entry.size).c_str());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 85);
-    display.print(currentPath.substring(0, 36));
-    drawFooter(isMp3File(entry.name)
-                   ? "Enter: play   Backspace/Q: files"
-                   : (isPreviewableFile(entry.name)
-                          ? "Enter: preview   Backspace/Q: files"
-                          : "Backspace/Q: files"));
-}
+// Log Delete Confirm / File Details screens: see
+// include/file_screens.h/src/file_screens.cpp.
 
 bool loadTextPreview() {
     previewLines.clear();
@@ -3093,36 +2058,11 @@ bool loadTextPreview() {
     return true;
 }
 
-void drawTextPreview() {
-    drawHeader("Text Preview");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    if (previewLines.empty()) {
-        display.setCursor(8, 38);
-        display.print("(empty file)");
-    } else {
-        for (size_t row = 0;
-             row < kVisibleRows && previewTopLine + row < previewLines.size();
-             ++row) {
-            const String& source = previewLines[previewTopLine + row];
-            display.setCursor(4, 27 + row * 15);
-            if (previewColumn < source.length()) {
-                display.print(source.substring(previewColumn,
-                                               previewColumn + 39));
-            }
-        }
-    }
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(125, 7);
-    display.printf("%u/%u%s", static_cast<unsigned>(previewTopLine + 1),
-                   static_cast<unsigned>(previewLines.size()),
-                   previewTruncated ? "+" : "");
-    drawFooter("W/S: lines  A/D: columns  Q: back");
-}
+// Text Preview screen: see include/file_screens.h/src/file_screens.cpp.
 
 void playSelectedBrowserMp3() {
     if (files.empty() || listSelection >= files.size() ||
-        !isMp3File(files[listSelection].name)) {
+        !FileScreens::isMp3File(files[listSelection].name)) {
         return;
     }
     String path = currentPath;
@@ -3135,15 +2075,7 @@ void playSelectedBrowserMp3() {
     nowPlayingName = files[listSelection].name;
     nowPlayingSource = currentPath;
     currentScreen = Screen::AudioPlaying;
-    drawHeader("Now Playing");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 40);
-    display.print(nowPlayingName.substring(0, 34));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 64);
-    display.print(nowPlayingSource.substring(0, 36));
-    drawFooter("Enter/Backspace/Q: stop");
+    audioScreens.drawNowPlaying(nowPlayingName, nowPlayingSource);
 }
 
 const char* resetReasonName(esp_reset_reason_t reason) {
@@ -3213,25 +2145,7 @@ String formatUptime() {
     return String(value);
 }
 
-enum class DiagnosticState {
-    Information,
-    Ready,
-    Warning,
-};
-
-struct SystemDiagnostic {
-    String label;
-    String value;
-    DiagnosticState state;
-
-    SystemDiagnostic(const String& diagnosticLabel,
-                     const String& diagnosticValue,
-                     DiagnosticState diagnosticState =
-                         DiagnosticState::Information)
-        : label(diagnosticLabel),
-          value(diagnosticValue),
-          state(diagnosticState) {}
-};
+// DiagnosticState / SystemDiagnostic: see include/system_screens.h.
 
 std::vector<SystemDiagnostic> systemDiagnostics() {
     std::vector<SystemDiagnostic> rows;
@@ -3367,23 +2281,7 @@ bool exportSystemDiagnostics() {
     return true;
 }
 
-void drawSystem() {
-    drawHeader("System Diagnostics");
-    const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
-    normalizeListPosition(diagnostics.size());
-    drawHeaderPosition(listSelection + 1, diagnostics.size());
-    for (size_t row = 0;
-         row < kVisibleRows && row + listOffset < diagnostics.size(); ++row) {
-        const auto& diagnostic = diagnostics[row + listOffset];
-        String label = diagnostic.label;
-        while (label.length() < 13) label += ' ';
-        label += diagnostic.value;
-        drawListRow(row, label, row + listOffset == listSelection);
-    }
-    drawFooter(diagnosticExportStatus.isEmpty()
-                   ? "W/S: browse  Enter: clock  Tab: actions  Q: back"
-                   : diagnosticExportStatus.c_str());
-}
+// System Diagnostics screen: see include/system_screens.h/src/system_screens.cpp.
 
 String utcTimestamp() {
     if (!clockSynced) return "";
@@ -3444,117 +2342,9 @@ bool syncClockFromNtp() {
     return true;
 }
 
-void drawTimeReadouts() {
-    auto& display = M5Cardputer.Display;
-    display.fillRect(0, 45, display.width(), 40, Branding::background);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 52);
-    if (clockSynced) {
-        const time_t now = time(nullptr);
-        struct tm local {};
-        localtime_r(&now, &local);
-        char localValue[32];
-        strftime(localValue, sizeof(localValue), "%Y-%m-%d %H:%M:%S %Z",
-                 &local);
-        display.printf("Local: %s", localValue);
-        display.setCursor(8, 69);
-        display.printf("UTC:   %s", utcTimestamp().c_str());
-    } else {
-        display.print("Local: ----/--/-- --:--:--");
-        display.setCursor(8, 69);
-        display.print("UTC:   ----/--/-- --:--:--");
-    }
-}
+// System Clock screen: see include/system_screens.h/src/system_screens.cpp.
 
-void drawTimeStatus() {
-    drawHeader("System Clock");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(clockSynced ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 32);
-    display.print(clockSynced ? "System clock synchronized"
-                              : "System clock not synchronized");
-    drawTimeReadouts();
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 87);
-    display.print(clockStatus.substring(0, 37));
-    display.setCursor(8, 103);
-    display.print("Clock resets after full power-off.");
-    drawFooter("Tab: actions   Q: back");
-}
-
-void drawGnss(bool fullDraw = true) {
-    beginContentUpdate("GNSS Foundation", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(gnssService.hasFix() ? Branding::accent
-                                              : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    if (!gnssService.hasData()) {
-        display.print("UART: waiting for NMEA data");
-    } else if (!gnssService.hasFix()) {
-        display.print("GNSS: data received, no fix");
-    } else {
-        display.printf("GNSS: position fix%s",
-                       gnssLogger.isActive() ? "  REC" : "");
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Sat: %lu  HDOP: %.1f  UTC: %s",
-                   static_cast<unsigned long>(gnssService.satellites()),
-                   gnssService.hdop(),
-                   gnssService.utcTime().c_str());
-    display.setCursor(8, 64);
-    if (gnssService.hasFix()) {
-        display.printf("Lat: %.6f", gnssService.latitude());
-        display.setCursor(8, 81);
-        display.printf("Lon: %.6f", gnssService.longitude());
-        display.setCursor(8, 98);
-        display.printf("Altitude: %.1f m", gnssService.altitudeMetres());
-        if (gnssLogger.isActive()) {
-            display.printf("  REC %lu",
-                           static_cast<unsigned long>(gnssLogger.rowCount()));
-        }
-    } else {
-        display.printf(
-            "NMEA bytes: %lu",
-            static_cast<unsigned long>(gnssService.charactersProcessed()));
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 82);
-        display.print("Move outdoors for first fix.");
-        if (gnssLogger.isActive()) {
-            display.setCursor(8, 98);
-            display.printf("REC %lu rows",
-                           static_cast<unsigned long>(gnssLogger.rowCount()));
-        }
-    }
-    if (fullDraw) drawFooter("R: restart GNSS   Tab: actions   Q: back");
-}
-
-void drawWifiMenu() {
-    static const char* const items[] = {
-        "Discovery", "Channel Analyzer", "Sniffer", "Guardian", "Connect",
-    };
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Find nearby access points", "Compare channel congestion",
-            "Passively inspect Wi-Fi traffic", "Watch for disruption bursts",
-            "Join a network for scouting",
-        };
-        String badge = listSelection == 3 && wifiGuardianService.isActive()
-                           ? "WATCHING" : "";
-        drawNavigationCard("Wi-Fi airspace", items[listSelection],
-                           descriptions[listSelection], listSelection, 5, 1,
-                           badge);
-        return;
-    }
-    drawHeader("Wi-Fi");
-    normalizeListPosition(5);
-    for (size_t row = 0; row < 5; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// GNSS screen: see include/gnss_screen.h/src/gnss_screen.cpp.
 
 bool startWifiGuardian() {
     guardianLastEvent = "Starting passive watch...";
@@ -3606,119 +2396,12 @@ void stopWifiGuardian() {
     }
 }
 
-void drawWifiGuardian(bool fullDraw = true) {
-    beginContentUpdate("Familiar Guardian", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(wifiGuardianService.isActive() ? Branding::accent
-                                                        : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s  CH %u  %s",
-                   wifiGuardianService.isActive() ? "WATCHING" : "STOPPED",
-                   wifiSnifferService.currentChannel(),
-                   wifiGuardianService.sensitivityName());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Mgmt:%lu  Beacon:%lu Probe:%lu",
-                   static_cast<unsigned long>(
-                       wifiGuardianService.managementFrames()),
-                   static_cast<unsigned long>(wifiGuardianService.beaconFrames()),
-                   static_cast<unsigned long>(wifiGuardianService.probeFrames()));
-    display.setCursor(8, 63);
-    display.printf("Deauth:%lu Disassoc:%lu Recent:%u",
-                   static_cast<unsigned long>(wifiGuardianService.deauthFrames()),
-                   static_cast<unsigned long>(
-                       wifiGuardianService.disassocFrames()),
-                   wifiGuardianService.recentDisruptionFrames());
-    display.setCursor(8, 80);
-    display.printf("Alerts:%lu Evidence:%lu Drop:%lu",
-                   static_cast<unsigned long>(wifiGuardianService.alertCount()),
-                   static_cast<unsigned long>(guardianEvidenceLogger.rowCount()),
-                   static_cast<unsigned long>(
-                       wifiSnifferService.droppedRawFrameCount()));
-    display.setTextColor(
-        wifiGuardianService.alertCount() > 0 ? Branding::warning
-                                              : Branding::muted,
-        Branding::background);
-    display.setCursor(8, 97);
-    display.print(guardianLastEvent.substring(0, 37));
-    if (fullDraw) drawFooter("S: sensitivity  R: restart  Q: save/exit");
-}
+// Familiar Guardian screen: see
+// include/wifi_guardian_screen.h/src/wifi_guardian_screen.cpp.
 
-void drawBleMenu() {
-    static const char* const items[] = {
-        "Advertisement Sniffer", "BLE Keyboard", "Spam",
-    };
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Inspect nearby advertisements", "Use the deck as a BLE keyboard",
-            "Experimental pairing broadcasts",
-        };
-        drawNavigationCard("Bluetooth nearby", items[listSelection],
-                           descriptions[listSelection], listSelection, 3, 6);
-        return;
-    }
-    drawHeader("BLE");
-    normalizeListPosition(3);
-    for (size_t row = 0; row < 3; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Wi-Fi/BLE/Devices menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawDevicesMenu() {
-    static const char* const items[] = {"Biscuit Pro", "Chameleon Ultra"};
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Connect to a Biscuit Pro", "Read and manage test identities",
-        };
-        drawNavigationCard("Connected devices", items[listSelection],
-                           descriptions[listSelection], listSelection, 2, 4);
-        return;
-    }
-    drawHeader("Devices");
-    normalizeListPosition(2);
-    for (size_t row = 0; row < 2; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-void drawBiscuit() {
-    drawHeader("Biscuit Pro");
-    auto& display = M5Cardputer.Display;
-    const bool connected = biscuitClient.isConnected();
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(connected ? "CONNECTED - READY" :
-                              biscuitClient.lastStatus());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 52);
-    display.printf("%s  FW %s", biscuitClient.model().c_str(),
-                   biscuitClient.firmware().c_str());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 72);
-    display.printf("C5 %s", biscuitClient.c5Firmware().c_str());
-    display.setCursor(8, 92);
-    display.printf("Device: %s", biscuitClient.deviceStatus().c_str());
-    drawFooter(connected ? "Enter: tools   R: reconnect   Q: back"
-                         : "Enter/R: connect   Q: back");
-}
-
-void drawBiscuitTools() {
-    static const char* const items[] = {
-        "Device information", "Wi-Fi AP scan", "Station scan",
-        "Packet count", "Current channel", "Node list", "Wardrive monitor",
-    };
-    drawHeader("Biscuit: Read-only tools");
-    normalizeListPosition(7);
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < 7; ++row) {
-        const size_t index = row + listOffset;
-        drawListRow(row, items[index], index == listSelection);
-    }
-    drawFooter("Enter: run   Backspace/Q: back");
-}
+// Biscuit Pro screens: see include/device_screens.h/src/device_screens.cpp.
 
 void appendBiscuitWardriveData(const String& raw) {
     // Both payloads begin "name,MAC,..." (AP uses SSID,BSSID). A record may
@@ -3783,32 +2466,7 @@ void stopBiscuitWardrive() {
     biscuitWardriveActive = false;
 }
 
-void drawBiscuitWardrive(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(biscuitWardriveActive) << 31) ^
-        (biscuitWardriveApCount * 2654435761UL) ^ biscuitWardriveBleCount;
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("Biscuit Wardrive", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(biscuitWardriveActive ? Branding::accent
-                                               : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 28);
-    display.print(biscuitWardriveActive ? "MONITORING" : "STOPPED");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setTextSize(2);
-    display.setCursor(18, 54);
-    display.printf("AP  %lu", static_cast<unsigned long>(
-                                  biscuitWardriveApCount));
-    display.setCursor(18, 82);
-    display.printf("BLE %lu", static_cast<unsigned long>(
-                                  biscuitWardriveBleCount));
-    display.setTextSize(1);
-    drawFooter(biscuitWardriveActive ? "Enter: stop   Q: back"
-                                     : "Enter: start   Q: back");
-}
+// Biscuit Wardrive screen: see include/device_screens.h/src/device_screens.cpp.
 
 void prepareBiscuitResult(const String& raw) {
     biscuitResultLines.clear();
@@ -3834,111 +2492,15 @@ void prepareBiscuitResult(const String& raw) {
     if (biscuitResultLines.empty()) biscuitResultLines.push_back("No data");
 }
 
-void drawBiscuitResult() {
-    drawHeader(biscuitResultTitle.c_str());
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    for (size_t row = 0; row < kVisibleRows &&
-                         biscuitResultOffset + row < biscuitResultLines.size();
-         ++row) {
-        display.setCursor(8, 29 + row * 15);
-        display.print(biscuitResultLines[biscuitResultOffset + row]);
-    }
-    drawFooter("Up/Down: scroll   Backspace/Q: tools");
-}
+// Biscuit Result screen: see include/device_screens.h/src/device_screens.cpp.
 
-void drawBleKeyboard(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(bleKeyboardService.isActive()) << 31) ^
-        (static_cast<uint32_t>(bleKeyboardService.isConnected()) << 30) ^
-        bleKeyboardService.charactersSent();
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("BLE Keyboard", fullDraw);
-    auto& display = M5Cardputer.Display;
-    const bool connected = bleKeyboardService.isConnected();
-    display.setTextColor(connected ? Branding::accent : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 30);
-    if (!bleKeyboardService.isActive()) {
-        display.print("STOPPED");
-    } else if (connected) {
-        display.print("CONNECTED - LIVE INPUT");
-    } else {
-        display.print("ADVERTISING / WAITING");
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 49);
-    display.print("Device: Ghostwire Keyboard");
-    display.setCursor(8, 67);
-    display.printf("Characters sent: %lu",
-                   static_cast<unsigned long>(
-                       bleKeyboardService.charactersSent()));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 86);
-    display.print(bleKeyboardService.isActive()
-                      ? "Typed keys go to the paired host."
-                      : "Enter starts pairing/advertising.");
-    display.setCursor(8, 102);
-    display.print("Use only on a device you control.");
-    drawFooter(bleKeyboardService.isActive()
-                   ? "Esc: stop/disconnect"
-                   : "Enter: start   Esc: back");
-}
+// BLE Keyboard screen: see include/ble_screens.h/src/ble_screens.cpp.
 
-void drawBleSpamSelect() {
-    static const char* const items[] = {
-        "Apple", "Fast Pair", "Swift Pair", "All",
-    };
-    drawHeader("BLE Spam");
-    normalizeListPosition(4);
-    for (size_t row = 0; row < 4; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: start   Backspace/Q: back");
-}
+// BLE Spam screens: see include/ble_spam_screen.h/src/ble_spam_screen.cpp.
 
-void drawBleSpam(bool fullDraw = true) {
-    beginContentUpdate("BLE Spam", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(bleSpamService.isActive() ? Branding::accent
-                                                    : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s", bleSpamService.isActive() ? "SPAMMING" : "STOPPED");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Type: %s", bleSpamService.currentTypeName());
-    display.setCursor(8, 64);
-    display.printf("Sent: %lu",
-                   static_cast<unsigned long>(bleSpamService.packetsSent()));
-    const uint8_t* mac = bleSpamService.currentAddress();
-    display.setCursor(8, 81);
-    display.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4],
-                   mac[3], mac[2], mac[1], mac[0]);
-    if (fullDraw) drawFooter("Q: stop");
-}
+// RFID menu: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawRfidMenu() {
-    static const char* const items[] = {
-        "Chameleon Ultra",
-    };
-    drawHeader("RFID");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
-
-String chameleonHexId(const uint8_t* data, size_t len) {
-    String hex;
-    for (size_t i = 0; i < len; ++i) {
-        if (i > 0) hex += ':';
-        if (data[i] < 0x10) hex += '0';
-        hex += String(data[i], HEX);
-    }
-    return hex;
-}
+// Chameleon hex ID formatting: see ChameleonScreen::hexId.
 
 bool saveChameleonIdentity() {
     if (!sdAvailable || (!chameleonHfFound && !chameleonLfFound)) {
@@ -3969,12 +2531,12 @@ bool saveChameleonIdentity() {
     }
     if (chameleonHfFound) {
         file.printf("HF14A,%s,%04X,%02X\n",
-                    chameleonHexId(chameleonHfTag.uid,
+                    ChameleonScreen::hexId(chameleonHfTag.uid,
                                    chameleonHfTag.uidLen).c_str(),
                     chameleonHfTag.atqa, chameleonHfTag.sak);
     } else {
         file.printf("EM410X,%s,,\n",
-                    chameleonHexId(chameleonLfId, 5).c_str());
+                    ChameleonScreen::hexId(chameleonLfId, 5).c_str());
     }
     file.close();
     chameleonSavedPath = path;
@@ -4053,70 +2615,7 @@ bool loadChameleonIdentity() {
     return true;
 }
 
-void drawChameleonEmulateConfirm() {
-    drawHeader("Confirm Identity Emulation");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 32);
-    display.print("This changes Chameleon slot 8.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 50);
-    display.print(chameleonHfFound ? "HF identity only; not card data."
-                                   : "EM410x ID will be staged.");
-    display.setCursor(8, 68);
-    display.print("Use only with an authorised tag.");
-    display.setCursor(8, 88);
-    display.print("Enter: stage + emulate");
-    drawFooter("Enter: confirm   Esc: cancel");
-}
-
-void drawChameleon(bool fullDraw = true) {
-    beginContentUpdate("Chameleon Ultra", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(chameleonClient.isConnected() ? Branding::accent
-                                                        : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.print(chameleonClient.lastStatus());
-    display.setTextColor(Branding::text, Branding::background);
-    if (chameleonHasReadings) {
-        display.setCursor(8, 44);
-        display.printf("App version: %u.%u", chameleonAppMajor,
-                       chameleonAppMinor);
-        display.setCursor(8, 58);
-        display.printf("Battery: %u%%  (%u mV)", chameleonBatteryPct,
-                       chameleonBatteryMv);
-    }
-    if (chameleonScanAttempted) {
-        display.setCursor(8, 72);
-        if (chameleonHfFound) {
-            display.printf(
-                "UID: %s",
-                chameleonHexId(chameleonHfTag.uid, chameleonHfTag.uidLen)
-                    .c_str());
-            display.setCursor(8, 86);
-            display.printf("ATQA: 0x%04X  SAK: 0x%02X", chameleonHfTag.atqa,
-                           chameleonHfTag.sak);
-        } else if (chameleonLfFound) {
-            display.printf("EM410x ID: %s",
-                           chameleonHexId(chameleonLfId, 5).c_str());
-        } else {
-            display.print("No tag found");
-        }
-    }
-    display.setCursor(8, 100);
-    if (!chameleonWorkflowStatus.isEmpty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print(chameleonWorkflowStatus.substring(0, 37));
-    } else {
-        display.printf("Continuous: %s", chameleonContinuousScan ? "ON" : "OFF");
-        if (chameleonLogger.isActive()) {
-            display.printf("  Logged: %lu",
-                           static_cast<unsigned long>(chameleonLogger.rowCount()));
-        }
-    }
-    if (fullDraw) drawFooter("R: reconnect  Tab: actions  Q: back");
-}
+// Chameleon Ultra screens: see include/device_screens.h/src/device_screens.cpp.
 
 void attemptChameleonConnection() {
     if (chameleonClient.isConnected()) return;
@@ -4125,7 +2624,7 @@ void attemptChameleonConnection() {
     ++chameleonConnectAttempts;
     chameleonWorkflowStatus = "Auto-connect attempt " +
                               String(chameleonConnectAttempts);
-    drawChameleon(false);
+    chameleonScreen.draw(false);
 
     // A bounded scan keeps automatic retries responsive enough that the
     // user can still leave the screen between attempts.
@@ -4145,7 +2644,7 @@ void attemptChameleonConnection() {
         chameleonWorkflowStatus = "Retrying automatically...";
     }
     recoverKeyboardAfterBlockingOperation();
-    drawChameleon(false);
+    chameleonScreen.draw(false);
 }
 
 // Runs one HF-then-LF scan attempt, updates the on-screen result state, and
@@ -4160,13 +2659,13 @@ void performChameleonScan() {
 
     String signature, csvType, csvId, csvAtqa, csvSak;
     if (chameleonHfFound) {
-        csvId = chameleonHexId(chameleonHfTag.uid, chameleonHfTag.uidLen);
+        csvId = ChameleonScreen::hexId(chameleonHfTag.uid, chameleonHfTag.uidLen);
         signature = "HF:" + csvId;
         csvType = "HF14A";
         csvAtqa = String(chameleonHfTag.atqa, HEX);
         csvSak = String(chameleonHfTag.sak, HEX);
     } else if (chameleonLfFound) {
-        csvId = chameleonHexId(chameleonLfId, 5);
+        csvId = ChameleonScreen::hexId(chameleonLfId, 5);
         signature = "LF:" + csvId;
         csvType = "EM410x";
     }
@@ -4186,273 +2685,19 @@ void performChameleonScan() {
     }
 }
 
-void drawGpsMenu() {
-    static const char* const items[] = {
-        "GNSS Monitor",
-    };
-    if (cardNavigationEnabled) {
-        drawNavigationCard("Position / GPS", items[0],
-                           "Monitor fixes and record a trail", 0, 1, 7);
-        return;
-    }
-    drawHeader("GPS");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// GPS/Mesh/Network menus: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawMeshMenu() {
-    static const char* const items[] = {
-        "LoRa / Meshtastic",
-    };
-    if (cardNavigationEnabled) {
-        drawNavigationCard("Mesh signals", items[0],
-                           "Listen to LoRa and Meshtastic", 0, 1, 1);
-        return;
-    }
-    drawHeader("Mesh");
-    normalizeListPosition(1);
-    drawListRow(0, items[0], listSelection == 0);
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Network Dashboard screen: see
+// include/network_scan_screens.h/src/network_scan_screens.cpp.
 
-void drawNetworkMenu() {
-    static const char* const items[] = {
-        "Network Dashboard",
-        "Host Discovery",
-        "Telnet Client",
-        "SSH Client",
-    };
-    constexpr size_t kNetworkMenuCount = sizeof(items) / sizeof(items[0]);
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Review the current network", "Find responsive local hosts",
-            "Open a plain-text session", "Open a secure shell session",
-        };
-        String badge = familiarPatrolService.isActive() ? "PATROL LIVE" : "";
-        drawNavigationCard("Scout network", items[listSelection],
-                           descriptions[listSelection], listSelection,
-                           kNetworkMenuCount, 2, badge);
-        return;
-    }
-    drawHeader("Network");
-    normalizeListPosition(kNetworkMenuCount);
-    for (size_t row = 0; row < kNetworkMenuCount; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Tools menu: see include/menu_screens.h/src/menu_screens.cpp.
 
-void drawNetworkDashboard() {
-    drawHeader("Network Dashboard");
-    auto& display = M5Cardputer.Display;
-    display.setTextSize(1);
-    if (WiFi.status() != WL_CONNECTED) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 36);
-        display.print("Wi-Fi is not connected");
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 55);
-        display.print("Use Wi-Fi > Connect first.");
-        drawFooter("R: refresh   Q: back");
-        return;
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 28);
-    display.printf("SSID: %s  %d dBm", WiFi.SSID().c_str(), WiFi.RSSI());
-    display.setCursor(8, 44);
-    display.printf("IP:   %s", WiFi.localIP().toString().c_str());
-    display.setCursor(8, 60);
-    display.printf("GW:   %s", WiFi.gatewayIP().toString().c_str());
-    display.setCursor(8, 76);
-    display.printf("Mask: %s", WiFi.subnetMask().toString().c_str());
-    display.setCursor(8, 92);
-    display.printf("DNS:  %s", WiFi.dnsIP().toString().c_str());
-    display.setCursor(8, 108);
-    display.printf("MAC:  %s", WiFi.macAddress().c_str());
-    drawFooter("R: refresh   Q: back");
-}
+// QR Generator screens: see include/qr_screens.h/src/qr_screens.cpp.
 
-void drawToolsMenu() {
-    static const char* const items[] = {
-        "Infrared",     "USB / HID", "Audio",  "Logs / Sessions",
-        "Motion / IMU", "Files",     "QR Generator", "System", "About",
-    };
-    constexpr size_t kToolsCount = sizeof(items) / sizeof(items[0]);
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Test the infrared transmitter", "Keyboard and guarded scripts",
-            "Speaker, microphone and phrases", "Browse saved log sessions",
-            "Inspect motion sensor data", "Browse the microSD card",
-            "Create an offline QR code", "Inspect deck health and time",
-            "Version and project identity",
-        };
-        drawNavigationCard("Utility tools", items[listSelection],
-                           descriptions[listSelection], listSelection,
-                           kToolsCount, 9);
-        return;
-    }
-    drawHeader("Tools");
-    normalizeListPosition(kToolsCount);
-    drawHeaderPosition(listSelection + 1, kToolsCount);
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < kToolsCount;
-         ++row) {
-        drawListRow(row, items[row + listOffset],
-                    row + listOffset == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// LoRa screen: see include/lora_screen.h/src/lora_screen.cpp.
 
-void drawQrEntry() {
-    drawHeader("QR Generator");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 34);
-    display.print("Enter text, URL, or short note:");
-    drawTextEntryRow(56, "> ", qrText);
-    display.setCursor(8, 78);
-    display.printf("%u / 100 characters", static_cast<unsigned>(qrText.length()));
-    display.setCursor(8, 96);
-    display.print("Generated entirely offline.");
-    drawFooter("Enter: generate   Esc: back");
-}
-
-void drawQrDisplay() {
-    drawHeader("QR Code");
-    auto& display = M5Cardputer.Display;
-    display.fillRect(0, 22, display.width(), display.height() - 37,
-                     TFT_WHITE);
-    display.qrcode(qrText, 74, 25, 92, 6);
-    drawFooter("Enter: edit   Esc: back");
-}
-
-void drawLoRa(bool fullDraw = true) {
-    const uint32_t signature =
-        (static_cast<uint32_t>(loraService.isReady()) << 31) ^
-        (static_cast<uint32_t>(loraLogger.isActive()) << 30) ^
-        (static_cast<uint32_t>(loraService.profile()) << 28) ^
-        loraService.packetCount() ^ (loraLogger.rowCount() << 8);
-    static uint32_t lastSignature = UINT32_MAX;
-    if (!fullDraw && signature == lastSignature) return;
-    lastSignature = signature;
-    beginContentUpdate("LoRa Receive", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(loraService.isReady() ? Branding::accent
-                                               : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    if (loraService.isReady()) {
-        display.printf("SX1262 ready %.3f MHz",
-                       loraService.frequencyMhz());
-    } else {
-        display.printf("Radio init failed: %d", loraService.status());
-    }
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 47);
-    display.printf("Packets: %lu",
-                   static_cast<unsigned long>(loraService.packetCount()));
-    if (loraLogger.isActive()) {
-        display.printf("  REC %lu",
-                       static_cast<unsigned long>(loraLogger.rowCount()));
-    }
-    display.setCursor(8, 64);
-    if (loraService.packetCount() > 0) {
-        display.printf("RSSI %.1f dBm  SNR %.1f dB", loraService.lastRssi(),
-                       loraService.lastSnr());
-        display.setCursor(8, 82);
-        const auto& decoded = loraService.lastDecoded();
-        if (decoded.valid) {
-            display.printf("Mesh %08lX  %s",
-                           static_cast<unsigned long>(decoded.from),
-                           MeshtasticDecoder::portName(decoded.port));
-            display.setCursor(8, 99);
-            display.print(decoded.summary.substring(0, 37));
-        } else {
-            display.print(loraService.lastPacket().substring(0, 36));
-            display.setCursor(8, 99);
-            display.setTextColor(Branding::muted, Branding::background);
-            display.print("Encrypted / unsupported payload");
-        }
-    } else {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.print(loraService.profileName());
-        display.setCursor(8, 82);
-        if (loraService.profile() ==
-            LoRaService::Profile::MeshtasticEuLongFast) {
-            display.print("BW250 SF11 CR4/5 sync 0x2B");
-        } else {
-            display.print("BW125 SF12 CR4/5 sync 0x34");
-        }
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: back");
-}
-
-void drawWifiSniffer(bool fullDraw = true) {
-    beginContentUpdate("Wi-Fi Sniffer", fullDraw);
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(wifiSnifferService.isActive() ? Branding::accent
-                                                       : Branding::warning,
-                         Branding::background);
-    display.setCursor(8, 29);
-    display.printf("RF %s  CH %-2u%s  %-9s",
-                   wifiSnifferService.isActive() ? "ON" : "OFF",
-                   wifiSnifferService.currentChannel(),
-                   wifiSnifferService.channelLocked() ? "L" : "H",
-                   wifiSnifferService.captureModeName());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf(
-        "Probes: %lu  Unique: %u",
-        static_cast<unsigned long>(wifiSnifferService.probeCount()),
-        static_cast<unsigned>(wifiSnifferService.uniqueDeviceCount()));
-    const uint32_t dropped = wifiSnifferService.droppedProbeCount();
-    if (dropped > 0) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(184, 46);
-        display.printf("D:%lu", static_cast<unsigned long>(dropped));
-    }
-    if (wifiPassiveCaptureLogger.isActive()) {
-        display.setTextColor(Branding::accent, Branding::background);
-        display.setCursor(8, 58);
-        display.printf("PCAP %lu frames  %llu KiB  drop %lu",
-                       static_cast<unsigned long>(
-                           wifiPassiveCaptureLogger.rowCount()),
-                       wifiPassiveCaptureLogger.byteCount() / 1024ULL,
-                       static_cast<unsigned long>(
-                           wifiSnifferService.droppedRawFrameCount()));
-    } else if (wifiPassiveCaptureLogger.rowCount() > 0) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 58);
-        display.printf("PCAP SAVED  %lu frames  %llu KiB",
-                       static_cast<unsigned long>(
-                           wifiPassiveCaptureLogger.rowCount()),
-                       wifiPassiveCaptureLogger.byteCount() / 1024ULL);
-    }
-
-    if (recentWifiProbes.empty()) {
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 72);
-        display.print("Waiting for probe requests...");
-    } else {
-        constexpr int kLineHeight = 13;
-        constexpr int kFirstLineY = 72;
-        constexpr size_t kVisibleLines = 4;
-        const size_t total = recentWifiProbes.size();
-        const size_t shown = std::min(kVisibleLines, total);
-        display.setTextColor(Branding::text, Branding::background);
-        for (size_t row = 0; row < shown; ++row) {
-            const WifiProbeRecord& probe = recentWifiProbes[total - 1 - row];
-            String ssid = String(probe.ssid);
-            if (ssid.isEmpty()) ssid = "<wildcard>";
-            display.setCursor(8,
-                              kFirstLineY + static_cast<int>(row) * kLineHeight);
-            display.printf("%02X:%02X:%02X %-12s %d", probe.mac[3],
-                           probe.mac[4], probe.mac[5],
-                           ssid.substring(0, 12).c_str(), probe.rssi);
-        }
-    }
-    if (fullDraw) drawFooter("R: restart   Tab: actions   Q: back");
-}
+// Wi-Fi Sniffer screen: see
+// include/wifi_sniffer_screen.h/src/wifi_sniffer_screen.cpp.
 
 String csvSafePayload(const String& payload) {
     String safe = "\"";
@@ -4474,29 +2719,7 @@ String csvSafePayload(const String& payload) {
     return safe;
 }
 
-const char* familiarFace() {
-    const bool blink = (millis() / 180U) % 23U == 0;
-    if (blink) return "(-_-)";
-    if (millis() < familiarReactionUntil) {
-        switch (familiarReaction) {
-            case FamiliarReaction::HostFound: return "(^.^)!";
-            case FamiliarReaction::ServiceFound: return "(o.o)+";
-            case FamiliarReaction::Warning: return "(O.O)!";
-            case FamiliarReaction::Complete: return "(^.^)7";
-            case FamiliarReaction::Searching: return "(o.o)?";
-            default: break;
-        }
-    }
-    switch (cyberFamiliar.mood()) {
-        case FamiliarMood::Curious: return "(o_o)?";
-        case FamiliarMood::Excited: return "(^o^)";
-        case FamiliarMood::Sleepy: return "(-.-)z";
-        case FamiliarMood::Proud: return "(^_^)7";
-        case FamiliarMood::Worried: return "(O_O)!";
-        case FamiliarMood::Dizzy: return "(@_@)";
-        default: return "(._.)";
-    }
-}
+// familiarFace(): see FamiliarScreens::face (private).
 
 void triggerFamiliarReaction(FamiliarReaction reaction,
                              uint32_t durationMs = 1800) {
@@ -4639,17 +2862,7 @@ void playFamiliarCue(FamiliarCue cue) {
     if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
 }
 
-void drawFamiliarSpeechBubble(int x, int y, int width) {
-    if (familiarSpeechBubble.isEmpty() ||
-        millis() >= familiarSpeechBubbleUntil) return;
-    auto& display = M5Cardputer.Display;
-    display.fillRoundRect(x, y, width, 18, 5, Branding::text);
-    display.fillTriangle(x + 12, y + 17, x + 20, y + 17,
-                         x + 16, y + 23, Branding::text);
-    display.setTextColor(Branding::background, Branding::text);
-    display.setCursor(x + 5, y + 5);
-    display.print(familiarSpeechBubble.substring(0, (width - 10) / 6));
-}
+// drawFamiliarSpeechBubble(): see FamiliarScreens::drawSpeechBubble.
 
 bool familiarSensitivePort(uint16_t port) {
     switch (port) {
@@ -4661,62 +2874,9 @@ bool familiarSensitivePort(uint16_t port) {
     }
 }
 
-void drawFamiliarCreature(int centerX, int baseY, bool large) {
-    auto& display = M5Cardputer.Display;
-    const uint32_t phase = millis() / 180U;
-    const int bob = (phase % 8U == 1U || phase % 8U == 2U) ? -1 : 0;
-    const int width = large ? 68 : 50;
-    const int height = large ? 40 : 29;
-    const int x = centerX - width / 2;
-    const int y = baseY - height + bob;
-    const uint16_t color =
-        familiarReaction == FamiliarReaction::Warning &&
-                millis() < familiarReactionUntil
-            ? Branding::warning
-            : Branding::accent;
-
-    // Tail, ears and rounded body are redrawn procedurally: no frame buffers.
-    const int tailLift = (phase / 2U) % 2U == 0U ? 0 : 4;
-    display.drawLine(x + width - 2, y + height - 10,
-                     x + width + 10, y + height - 15 - tailLift, color);
-    display.drawLine(x + width + 10, y + height - 15 - tailLift,
-                     x + width + 14, y + height - 10 - tailLift, color);
-    display.fillTriangle(x + 7, y + 7, x + 14, y - 6,
-                         x + 23, y + 5, color);
-    display.fillTriangle(x + width - 23, y + 5, x + width - 14, y - 6,
-                         x + width - 7, y + 7, color);
-    display.fillRoundRect(x, y, width, height, large ? 10 : 7, color);
-    display.fillRoundRect(x + 3, y + 3, width - 6, height - 6,
-                          large ? 8 : 5, Branding::background);
-
-    display.setTextSize(large ? 2 : 1);
-    display.setTextColor(color, Branding::background);
-    const String face = familiarFace();
-    display.setCursor(centerX - static_cast<int>(face.length()) *
-                                    (large ? 6 : 3),
-                      y + (large ? 12 : 10));
-    display.print(face);
-
-    const bool searching = familiarPatrolService.isActive() &&
-                           familiarPatrolService.state() ==
-                               FamiliarPatrolState::Discovery;
-    if (searching) {
-        const int radius = 4 + static_cast<int>((phase % 4U) * 3U);
-        display.drawCircle(x - 8, y + height / 2, radius, color);
-        display.drawPixel(x - 8, y + height / 2, Branding::text);
-    }
-    display.setTextSize(1);
-}
-
-String familiarAgeText() {
-    const uint32_t seconds = cyberFamiliar.ageSeconds();
-    const uint32_t days = seconds / 86400U;
-    const uint8_t hours = (seconds / 3600U) % 24U;
-    char value[24];
-    snprintf(value, sizeof(value), "%lud %uh",
-             static_cast<unsigned long>(days), hours);
-    return String(value);
-}
+// drawFamiliarCreature(): see FamiliarScreens::drawCreature.
+// familiarAgeText(): inlined into FamiliarScreens::drawFamiliar (its only
+// caller).
 
 bool looksLikeMac(const String& value) {
     if (value.length() != 17) return false;
@@ -4823,170 +2983,8 @@ void importFamiliarCaptureLogs() {
                              " new / " + String(rows) + " rows";
 }
 
-void drawCyberFamiliarResetConfirm() {
-    drawHeader("Reset Cyber Familiar");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 34);
-    display.print("This clears progression, bond,");
-    display.setCursor(8, 50);
-    display.print("discoveries, journal and tools.");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 76);
-    display.print("Name and idle preference remain.");
-    drawFooter("Enter: reset   Esc: cancel");
-}
-
-void drawCyberFamiliar(bool fullDraw = true) {
-    if (fullDraw || familiarPage != 0) {
-        beginContentUpdate(cyberFamiliar.name().c_str(), fullDraw);
-    } else {
-        // Preserve the static dashboard; only invalidate the animated zone.
-        M5Cardputer.Display.fillRect(74, 22, 162, 46,
-                                     Branding::background);
-    }
-    auto& display = M5Cardputer.Display;
-    if (familiarPage == 0) {
-        drawFamiliarCreature(120, 66, false);
-        drawFamiliarSpeechBubble(145, 29, 88);
-        display.setTextColor(Branding::text, Branding::background);
-        display.setCursor(8, 70);
-        display.printf("Lv %u  %s  Bond %u",
-                       static_cast<unsigned>(cyberFamiliar.level()),
-                       cyberFamiliar.evolutionName(),
-                       static_cast<unsigned>(cyberFamiliar.bond()));
-        const uint32_t levelStart =
-            static_cast<uint32_t>(cyberFamiliar.level() - 1U) * 100U;
-        const uint32_t progress = cyberFamiliar.xp() - levelStart;
-        display.drawRect(8, 84, 224, 8, Branding::muted);
-        display.fillRect(10, 86, std::min<uint32_t>(220, progress * 220 / 100),
-                         4, Branding::accent);
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 98);
-        display.print((familiarWorkflowStatus.isEmpty()
-                           ? cyberFamiliar.lastMessage()
-                           : familiarWorkflowStatus).substring(0, 37));
-    } else if (familiarPage == 1) {
-        display.setTextColor(Branding::text, Branding::background);
-        display.setCursor(8, 30);
-        display.printf("Mood:        %s", cyberFamiliar.moodName());
-        display.setCursor(8, 47);
-        display.printf("Age:         %s", familiarAgeText().c_str());
-        display.setCursor(8, 64);
-        display.printf("Wi-Fi seen:  %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.wifiDiscoveries()));
-        display.setCursor(8, 81);
-        display.printf("BLE seen:    %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.bleDiscoveries()));
-        display.setCursor(8, 98);
-        display.printf("Tools known: %lu", static_cast<unsigned long>(
-                                              cyberFamiliar.toolCount()));
-    } else {
-        const auto& journal = cyberFamiliar.journal();
-        display.setTextColor(Branding::text, Branding::background);
-        const size_t shown = std::min<size_t>(6, journal.size());
-        const size_t start = journal.size() - shown;
-        for (size_t row = 0; row < shown; ++row) {
-            display.setCursor(6, 27 + static_cast<int>(row) * 15);
-            display.print(("> " + journal[start + row]).substring(0, 39));
-        }
-    }
-    if (fullDraw) {
-        drawFooter("Up/Down: pages   Tab: menu");
-    }
-}
-
-void drawFamiliarPatrolConfirm() {
-    drawHeader("Confirm Familiar Patrol");
-    auto& display = M5Cardputer.Display;
-    if (!sdAvailable || WiFi.status() != WL_CONNECTED) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 34);
-        display.print(!sdAvailable ? "microSD card required"
-                                   : "Connect Wi-Fi first");
-        drawFooter("Esc: cancel");
-        return;
-    }
-    const String scope = FamiliarPatrolService::cidrText(
-        WiFi.localIP(), WiFi.subnetMask());
-    const uint32_t count = FamiliarPatrolService::usableAddressCount(
-        WiFi.localIP(), WiFi.subnetMask());
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 28);
-    display.print("AUTHORIZED SCOPE REQUIRED");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 47);
-    display.printf("Scope: %s", scope.c_str());
-    display.setCursor(8, 63);
-    display.printf("Addresses: %lu", static_cast<unsigned long>(count));
-    display.setCursor(8, 79);
-    display.printf("Mode: %s", familiarPatrolContinuousChoice
-                                   ? "Continuous Watch" : "One-shot scout");
-    display.setCursor(8, 95);
-    display.printf("Interval: %lus", static_cast<unsigned long>(
-        kFamiliarPatrolIntervals[familiarPatrolIntervalIndex] / 1000));
-    drawFooter("C: mode  V: interval  Enter: go");
-}
-
-void drawFamiliarPatrol(bool fullDraw = true) {
-    beginContentUpdate("Familiar Patrol", fullDraw);
-    auto& display = M5Cardputer.Display;
-    const FamiliarPatrolState state = familiarPatrolService.state();
-    display.setTextColor(
-        state == FamiliarPatrolState::Error ? Branding::warning
-        : familiarPatrolService.isActive() ? Branding::accent
-                                            : Branding::text,
-        Branding::background);
-    display.setCursor(8, 28);
-    display.printf("%s", familiarPatrolService.stateName());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(158, 28);
-    display.printf("Mood:%s", cyberFamiliar.moodName());
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 44);
-    if (state == FamiliarPatrolState::WatchWait) {
-        display.printf("Cycle %lu; next scan in %lus",
-            static_cast<unsigned long>(familiarPatrolService.cycle()),
-            static_cast<unsigned long>(familiarPatrolService.nextScanSeconds()));
-    } else if (state == FamiliarPatrolState::Discovery) {
-        display.printf("Addresses: %lu / %lu",
-            static_cast<unsigned long>(familiarPatrolService.discoveryScanned()),
-            static_cast<unsigned long>(familiarPatrolService.addressCount()));
-    } else {
-        display.printf("Host: %lu / %lu",
-            static_cast<unsigned long>(familiarPatrolService.hostIndex() + 1),
-            static_cast<unsigned long>(familiarPatrolService.cycleHostsFound()));
-    }
-    display.setCursor(8, 60);
-    display.printf("Found: %lu hosts  %lu open ports",
-        static_cast<unsigned long>(familiarPatrolService.hostsFound()),
-        static_cast<unsigned long>(familiarPatrolService.openPortsFound()));
-    display.setCursor(8, 76);
-    const uint32_t port = familiarPatrolService.currentPort();
-    if (port > 0) {
-        display.printf("%s : %lu",
-            familiarPatrolService.currentHost().toString().c_str(),
-            static_cast<unsigned long>(port));
-    } else {
-        display.print(familiarPatrolService.status().substring(0, 37));
-    }
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 94);
-    if (!familiarSpeechBubble.isEmpty() &&
-        millis() < familiarSpeechBubbleUntil) {
-        drawFamiliarSpeechBubble(7, 91, 226);
-    } else {
-        String path = familiarPatrolService.sessionPath();
-        const int slash = path.lastIndexOf('/');
-        if (slash >= 0) path = path.substring(slash + 1);
-        display.print(path.substring(0, 37));
-    }
-    if (fullDraw) {
-        drawFooter(familiarPatrolService.isActive()
-                       ? "Tab: stop menu   Q: background"
-                       : "Q: back");
-    }
-}
+// Cyber Familiar / Familiar Patrol screens: see
+// include/familiar_screens.h/src/familiar_screens.cpp.
 
 void drawCyberFamiliarIdle() {
     auto& display = M5Cardputer.Display;
@@ -4998,8 +2996,8 @@ void drawCyberFamiliarIdle() {
         // The creature and bubble are the only animated idle elements.
         display.fillRect(0, 0, display.width(), 80, Branding::background);
     }
-    drawFamiliarCreature(120, 75, true);
-    drawFamiliarSpeechBubble(15, 4, 210);
+    familiarScreens.drawCreature(120, 75, true);
+    familiarScreens.drawSpeechBubble(15, 4, 210);
     display.setTextColor(Branding::text, Branding::background);
     display.setCursor(8, 82);
     display.printf("%s  Lv%u  %s", cyberFamiliar.name().c_str(),
@@ -5014,209 +3012,11 @@ void drawCyberFamiliarIdle() {
                    batteryPercentage());
 }
 
-void drawSettings() {
-    static const char* const items[] = {
-        "Display & Audio", "Boot Experience", "Connectivity",
-        "Restore Defaults",
-    };
-    constexpr size_t count = sizeof(items) / sizeof(items[0]);
-    if (cardNavigationEnabled) {
-        static const char* const descriptions[] = {
-            "Theme, sound and navigation", "Animation, sound and boot speed",
-            "Saved Wi-Fi connection options", "Return preferences to defaults",
-        };
-        drawNavigationCard("Settings", items[listSelection],
-                           descriptions[listSelection], listSelection, count,
-                           5);
-        return;
-    }
-    drawHeader("Settings");
-    normalizeListPosition(count);
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, items[row], row == listSelection);
-    }
-    drawFooter("Enter: open   Backspace/Q: back");
-}
+// Settings root menu: see MenuScreens::drawSettings.
+// Settings sub-screens, About, Placeholder: see
+// include/settings_screens.h/src/settings_screens.cpp.
 
-void drawSettingsDisplay() {
-    drawHeader("Settings: Display");
-    constexpr size_t count = 8;
-    normalizeListPosition(count);
-    const String timeout =
-        screenTimeoutSeconds == 0 ? "Off"
-                                  : String(screenTimeoutSeconds) + "s";
-    const char* const labels[count] = {
-        "Speaker volume", "Screen brightness", "Screen timeout",
-        "Cyberdeck idle", "Theme", "Familiar cues", "Navigation style",
-        "Idle animation",
-    };
-    const String values[count] = {
-        String((speakerVolume * 100U) / 255U) + "%",
-        String((screenBrightness * 100U) / 255U) + "%",
-        timeout, cyberdeckIdleEnabled ? "On" : "Off",
-        Branding::kThemes[themeIndex].name,
-        kFamiliarCueNames[familiarCueIndex],
-        cardNavigationEnabled ? "Cards" : "Compact",
-        kCyberdeckIdleStyleNames[cyberdeckIdleStyle],
-    };
-    for (size_t row = 0; row < kVisibleRows && row + listOffset < count;
-         ++row) {
-        const size_t item = row + listOffset;
-        drawListRow(row, labels[item], item == listSelection, values[item]);
-    }
-    drawFooter("Up/Down: select  Left/Right: adjust");
-}
-
-void drawSettingsBoot() {
-    drawHeader("Settings: Boot");
-    constexpr size_t count = 6;
-    normalizeListPosition(count);
-    const char* const labels[count] = {
-        "Boot sound", "Sound style", "Animation style", "Boot speed",
-        "Preview sound", "Preview animation",
-    };
-    const String values[count] = {
-        bootSoundEnabled ? "On" : "Off",
-        kBootSoundNames[bootSoundIndex],
-        kBootAnimationNames[bootAnimationIndex],
-        kBootSpeedNames[bootSpeedIndex], "Enter", "Enter",
-    };
-    for (size_t row = 0; row < count; ++row) {
-        drawListRow(row, labels[row], row == listSelection, values[row]);
-    }
-    drawFooter("Left/Right: adjust  Enter: preview");
-}
-
-void drawSettingsConnectivity() {
-    drawHeader("Settings: Connectivity");
-    constexpr size_t count = 2;
-    normalizeListPosition(count);
-    drawListRow(0, "Save Wi-Fi login", listSelection == 0,
-                saveWifiCredentials ? "On" : "Off");
-    drawListRow(1, "Auto-connect Wi-Fi", listSelection == 1,
-                autoConnectWifi ? "On" : "Off");
-    drawFooter("Left/Right: toggle   Q: back");
-}
-
-void drawSettingsReset() {
-    drawHeader("Restore Settings?");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::warning, Branding::background);
-    display.setCursor(8, 42);
-    display.print("Reset all preferences?");
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 64);
-    display.print("This does not erase SD files.");
-    drawFooter("Enter: restore   Backspace/Q: cancel");
-}
-
-void drawPlaceholder() {
-    drawHeader(placeholderTitle.c_str());
-    M5Cardputer.Display.setTextColor(Branding::muted,
-                                    Branding::background);
-    M5Cardputer.Display.setCursor(8, 42);
-    M5Cardputer.Display.print("Module slots ready.");
-    M5Cardputer.Display.setCursor(8, 59);
-    M5Cardputer.Display.print("Tools arrive in later builds.");
-    drawFooter("Esc: back");
-}
-
-void drawAbout() {
-    drawHeader("About");
-    auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 34);
-    display.printf("%s %s", Branding::productName, Branding::version);
-    display.setTextColor(Branding::accent, Branding::background);
-    display.setCursor(8, 54);
-    display.printf("by %s", Branding::creatorName);
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 76);
-    display.print("Pocket network and radio scout");
-    display.setCursor(8, 92);
-    display.print("Observe. Scout. Bring evidence.");
-    drawFooter("Esc: back");
-}
-
-const char* imuTypeName() {
-    switch (M5.Imu.getType()) {
-        case m5::imu_bmi270: return "BMI270";
-        case m5::imu_mpu6050: return "MPU6050";
-        case m5::imu_mpu6886: return "MPU6886";
-        case m5::imu_mpu9250: return "MPU9250";
-        case m5::imu_sh200q: return "SH200Q";
-        case m5::imu_none: return "not detected";
-        default: return "unknown";
-    }
-}
-
-void drawImu(bool fullDraw = true) {
-    beginContentUpdate("Motion / IMU", fullDraw);
-    auto& display = M5Cardputer.Display;
-    if (!imuAvailable) {
-        display.setTextColor(Branding::warning, Branding::background);
-        display.setCursor(8, 38);
-        display.printf("Sensor: %s", imuTypeName());
-        display.setTextColor(Branding::muted, Branding::background);
-        display.setCursor(8, 58);
-        display.print("IMU is unavailable.");
-        drawFooter("R: retry   Backspace/Q: back");
-        return;
-    }
-
-    const float gx = imuData.gyro.x - gyroOffsetX;
-    const float gy = imuData.gyro.y - gyroOffsetY;
-    const float gz = imuData.gyro.z - gyroOffsetZ;
-    const float accelMagnitude =
-        sqrtf(imuData.accel.x * imuData.accel.x +
-              imuData.accel.y * imuData.accel.y +
-              imuData.accel.z * imuData.accel.z);
-    const float gyroMagnitude = sqrtf(gx * gx + gy * gy + gz * gz);
-    // The sensor's native XY frame is rotated relative to the landscape
-    // screen/keyboard. Rotate it 90 degrees clockwise for human-facing
-    // pitch and roll while retaining native axes in the diagnostic rows.
-    const float screenAccelX = imuData.accel.y;
-    const float screenAccelY = -imuData.accel.x;
-    const float roll =
-        atan2f(screenAccelY, imuData.accel.z) * 180.0F / PI;
-    const float pitch =
-        atan2f(screenAccelX,
-               sqrtf(screenAccelY * screenAccelY +
-                     imuData.accel.z * imuData.accel.z)) *
-        180.0F / PI;
-    const bool stationary =
-        accelMagnitude > 0.85F && accelMagnitude < 1.15F &&
-        gyroMagnitude < 2.0F;
-
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 29);
-    display.printf("%s  %s%s", imuTypeName(),
-                   imuCalibrating ? "CALIBRATING" :
-                   (stationary ? "STILL" : "MOVING"),
-                   imuLogger.isActive() ? "  REC" : "");
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 46);
-    display.printf("Accel g  X%6.2f Y%6.2f Z%6.2f",
-                   imuData.accel.x, imuData.accel.y, imuData.accel.z);
-    display.setCursor(8, 63);
-    display.printf("Gyro d/s X%6.1f Y%6.1f Z%6.1f", gx, gy, gz);
-    display.setCursor(8, 80);
-    display.printf("Pitch %6.1f   Roll %6.1f", pitch, roll);
-    display.setCursor(8, 97);
-    if (imuCalibrating) {
-        display.printf("Keep still: %u%%", imuCalibrationSamples);
-    } else if (imuLogger.isActive()) {
-        String logName = imuLogger.path();
-        const int slash = logName.lastIndexOf('/');
-        if (slash >= 0) logName = logName.substring(slash + 1);
-        display.printf("%s  %lu rows", logName.c_str(),
-                       static_cast<unsigned long>(imuLogger.rowCount()));
-    } else {
-        display.printf("|a| %.2fg   |w| %.1f d/s", accelMagnitude,
-                       gyroMagnitude);
-    }
-    drawFooter("Tab: actions   Q: back");
-}
+// IMU screen: see include/imu_screen.h/src/imu_screen.cpp.
 
 void beginImuCalibration() {
     if (!imuAvailable) return;
@@ -5258,87 +3058,90 @@ void updateImu() {
 
 void drawCurrentScreen() {
     switch (currentScreen) {
-        case Screen::MainMenu: drawMainMenu(); break;
-        case Screen::ObserveMenu: drawObserveMenu(); break;
-        case Screen::FieldKitMenu: drawFieldKitMenu(); break;
-        case Screen::WifiMenu: drawWifiMenu(); break;
-        case Screen::WifiRecon: drawWifiRecon(); break;
-        case Screen::WifiChannelAnalyzer: drawWifiChannelAnalyzer(); break;
-        case Screen::WifiDetail: drawWifiDetail(); break;
-        case Screen::WifiDeauthConfirm: drawWifiDeauthConfirm(); break;
-        case Screen::WifiHandshakeCapture: drawWifiHandshakeCapture(); break;
-        case Screen::WifiConnectSelect: drawWifiConnectSelect(); break;
-        case Screen::WifiConnectPassword: drawWifiConnectPassword(); break;
-        case Screen::WifiConnectStatus: drawWifiConnectStatus(); break;
-        case Screen::BleMenu: drawBleMenu(); break;
-        case Screen::DevicesMenu: drawDevicesMenu(); break;
-        case Screen::AiChat: drawAiChat(); break;
-        case Screen::CyberFamiliar: drawCyberFamiliar(); break;
-        case Screen::FamiliarPatrol: drawFamiliarPatrol(); break;
-        case Screen::FamiliarPatrolConfirm: drawFamiliarPatrolConfirm(); break;
+        case Screen::MainMenu: menuScreens.drawMain(); break;
+        case Screen::ObserveMenu: menuScreens.drawObserve(); break;
+        case Screen::FieldKitMenu: menuScreens.drawFieldKit(); break;
+        case Screen::WifiMenu: menuScreens.drawWifi(); break;
+        case Screen::WifiRecon: wifiScreens.drawRecon(); break;
+        case Screen::WifiChannelAnalyzer: wifiScreens.drawChannelAnalyzer(); break;
+        case Screen::WifiDetail: wifiScreens.drawDetail(); break;
+        case Screen::WifiDeauthConfirm: wifiScreens.drawDeauthConfirm(); break;
+        case Screen::WifiHandshakeCapture: wifiScreens.drawHandshakeCapture(); break;
+        case Screen::WifiConnectSelect: wifiScreens.drawConnectSelect(); break;
+        case Screen::WifiConnectPassword: wifiScreens.drawConnectPassword(); break;
+        case Screen::WifiConnectStatus: wifiScreens.drawConnectStatus(); break;
+        case Screen::BleMenu: menuScreens.drawBle(); break;
+        case Screen::DevicesMenu: menuScreens.drawDevices(); break;
+        case Screen::AiChat: aiChatScreen.draw(); break;
+        case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
+        case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
+        case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
         case Screen::CyberFamiliarResetConfirm:
-            drawCyberFamiliarResetConfirm();
+            familiarScreens.drawResetConfirm();
             break;
-        case Screen::BleDiscovery: drawBleDiscovery(); break;
-        case Screen::BleDetail: drawBleDetail(); break;
-        case Screen::BleKeyboard: drawBleKeyboard(); break;
-        case Screen::Biscuit: drawBiscuit(); break;
-        case Screen::BiscuitTools: drawBiscuitTools(); break;
-        case Screen::BiscuitResult: drawBiscuitResult(); break;
-        case Screen::BiscuitWardrive: drawBiscuitWardrive(); break;
-        case Screen::BleSpamSelect: drawBleSpamSelect(); break;
-        case Screen::BleSpam: drawBleSpam(); break;
-        case Screen::RfidMenu: drawRfidMenu(); break;
-        case Screen::Chameleon: drawChameleon(); break;
+        case Screen::BleDiscovery: bleScreens.drawDiscovery(); break;
+        case Screen::BleDetail: bleScreens.drawDetail(); break;
+        case Screen::BleKeyboard: bleScreens.drawKeyboard(); break;
+        case Screen::Biscuit: biscuitScreens.drawMain(); break;
+        case Screen::BiscuitTools: biscuitScreens.drawTools(); break;
+        case Screen::BiscuitResult: biscuitScreens.drawResult(); break;
+        case Screen::BiscuitWardrive: biscuitScreens.drawWardrive(); break;
+        case Screen::BleSpamSelect:
+            normalizeListPosition(BleSpamScreen::kModeCount);
+            bleSpamScreen.drawSelect(listSelection);
+            break;
+        case Screen::BleSpam: bleSpamScreen.drawActive(); break;
+        case Screen::RfidMenu: menuScreens.drawRfid(); break;
+        case Screen::Chameleon: chameleonScreen.draw(); break;
         case Screen::ChameleonEmulateConfirm:
-            drawChameleonEmulateConfirm();
+            chameleonScreen.drawEmulateConfirm();
             break;
-        case Screen::ToolsMenu: drawToolsMenu(); break;
+        case Screen::ToolsMenu: menuScreens.drawTools(); break;
         case Screen::Infrared: irScreen.draw(); break;
-        case Screen::UsbHid: drawUsbHid(); break;
-        case Screen::UsbHidConfirm: drawUsbHidConfirmation(); break;
-        case Screen::DuckyScripts: drawDuckyScripts(); break;
-        case Screen::DuckyConfirm: drawDuckyConfirm(); break;
-        case Screen::DuckyResult: drawDuckyResult(); break;
-        case Screen::Audio: drawAudio(); break;
-        case Screen::TtsLab: drawTtsLab(); break;
-        case Screen::AudioMic: drawMicrophone(); break;
-        case Screen::AudioFiles: drawAudioFiles(); break;
+        case Screen::UsbHid: usbHidScreens.drawUsbHid(); break;
+        case Screen::UsbHidConfirm: usbHidScreens.drawUsbHidConfirm(); break;
+        case Screen::DuckyScripts: usbHidScreens.drawDuckyScripts(); break;
+        case Screen::DuckyConfirm: usbHidScreens.drawDuckyConfirm(); break;
+        case Screen::DuckyResult: usbHidScreens.drawDuckyResult(); break;
+        case Screen::Audio: audioScreens.drawMenu(); break;
+        case Screen::TtsLab: audioScreens.drawTtsLab(); break;
+        case Screen::AudioMic: audioScreens.drawMicrophone(); break;
+        case Screen::AudioFiles: audioScreens.drawAudioFiles(); break;
         case Screen::AudioPlaying: break;
-        case Screen::QrEntry: drawQrEntry(); break;
-        case Screen::QrDisplay: drawQrDisplay(); break;
-        case Screen::Files: drawFiles(); break;
-        case Screen::FileDetail: drawFileDetail(); break;
-        case Screen::TextPreview: drawTextPreview(); break;
-        case Screen::LogSessions: drawLogSessions(); break;
-        case Screen::LogDetail: drawLogDetail(); break;
-        case Screen::LogDeleteConfirm: drawLogDeleteConfirm(); break;
-        case Screen::System: drawSystem(); break;
-        case Screen::TimeStatus: drawTimeStatus(); break;
-        case Screen::GpsMenu: drawGpsMenu(); break;
-        case Screen::MeshMenu: drawMeshMenu(); break;
-        case Screen::WarDrive: drawWarDrive(); break;
-        case Screen::NetworkMenu: drawNetworkMenu(); break;
-        case Screen::NetworkDashboard: drawNetworkDashboard(); break;
-        case Screen::NetworkHostScan: drawNetworkHostScan(); break;
-        case Screen::NetworkPortScan: drawNetworkPortScan(); break;
-        case Screen::TelnetConnect: drawTelnetConnect(); break;
-        case Screen::TelnetSession: drawTelnetSession(); break;
-        case Screen::SshConnect: drawSshConnect(); break;
-        case Screen::SshPassword: drawSshPassword(); break;
-        case Screen::SshSession: drawSshSession(); break;
-        case Screen::Gnss: drawGnss(); break;
-        case Screen::LoRa: drawLoRa(); break;
-        case Screen::WifiSniffer: drawWifiSniffer(); break;
-        case Screen::WifiGuardian: drawWifiGuardian(); break;
-        case Screen::Imu: drawImu(); break;
-        case Screen::Settings: drawSettings(); break;
-        case Screen::SettingsDisplay: drawSettingsDisplay(); break;
-        case Screen::SettingsBoot: drawSettingsBoot(); break;
-        case Screen::SettingsConnectivity: drawSettingsConnectivity(); break;
-        case Screen::SettingsReset: drawSettingsReset(); break;
-        case Screen::Placeholder: drawPlaceholder(); break;
-        case Screen::About: drawAbout(); break;
+        case Screen::QrEntry: qrScreens.drawEntry(); break;
+        case Screen::QrDisplay: qrScreens.drawDisplay(); break;
+        case Screen::Files: fileScreens.drawFiles(); break;
+        case Screen::FileDetail: fileScreens.drawFileDetail(); break;
+        case Screen::TextPreview: fileScreens.drawTextPreview(); break;
+        case Screen::LogSessions: logScreens.drawSessions(); break;
+        case Screen::LogDetail: logScreens.drawDetail(); break;
+        case Screen::LogDeleteConfirm: logScreens.drawDeleteConfirm(); break;
+        case Screen::System: systemScreens.drawSystem(systemDiagnostics()); break;
+        case Screen::TimeStatus: systemScreens.drawTimeStatus(); break;
+        case Screen::GpsMenu: menuScreens.drawGps(); break;
+        case Screen::MeshMenu: menuScreens.drawMesh(); break;
+        case Screen::WarDrive: networkScanScreens.drawWarDrive(); break;
+        case Screen::NetworkMenu: menuScreens.drawNetwork(); break;
+        case Screen::NetworkDashboard: networkScanScreens.drawNetworkDashboard(); break;
+        case Screen::NetworkHostScan: networkScanScreens.drawNetworkHostScan(); break;
+        case Screen::NetworkPortScan: networkScanScreens.drawNetworkPortScan(); break;
+        case Screen::TelnetConnect: telnetScreens.drawConnect(); break;
+        case Screen::TelnetSession: telnetScreens.drawSession(); break;
+        case Screen::SshConnect: sshScreens.drawConnect(); break;
+        case Screen::SshPassword: sshScreens.drawPassword(); break;
+        case Screen::SshSession: sshScreens.drawSession(); break;
+        case Screen::Gnss: gnssScreen.draw(); break;
+        case Screen::LoRa: loraScreen.draw(); break;
+        case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
+        case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
+        case Screen::Imu: imuScreen.draw(); break;
+        case Screen::Settings: menuScreens.drawSettings(); break;
+        case Screen::SettingsDisplay: settingsScreens.drawDisplay(); break;
+        case Screen::SettingsBoot: settingsScreens.drawBoot(); break;
+        case Screen::SettingsConnectivity: settingsScreens.drawConnectivity(); break;
+        case Screen::SettingsReset: settingsScreens.drawResetConfirm(); break;
+        case Screen::Placeholder: settingsScreens.drawPlaceholder(); break;
+        case Screen::About: settingsScreens.drawAbout(); break;
     }
 }
 
@@ -5968,7 +3771,7 @@ void stopAllActiveOperations() {
     listSelection = 0;
     listOffset = 0;
     Serial.println("[safety] all active operations stopped");
-    drawMainMenu();
+    menuScreens.drawMain();
     drawFooter("Emergency stop complete");
 }
 
@@ -6030,31 +3833,31 @@ void goBack() {
         const bool wasObserve = currentScreen == Screen::ObserveMenu;
         currentScreen = Screen::MainMenu;
         menuSelection = wasObserve ? 1 : 4;
-        drawMainMenu();
+        menuScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::AiChat) {
         currentScreen = Screen::FieldKitMenu;
         listSelection = 1;
-        drawFieldKitMenu();
+        menuScreens.drawFieldKit();
         return;
     }
     if (currentScreen == Screen::CyberFamiliar) {
         currentScreen = Screen::MainMenu;
         menuSelection = 0;
-        drawMainMenu();
+        menuScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::CyberFamiliarResetConfirm) {
         currentScreen = Screen::CyberFamiliar;
-        drawCyberFamiliar();
+        familiarScreens.drawFamiliar();
         return;
     }
     if (currentScreen == Screen::FamiliarPatrol ||
         currentScreen == Screen::FamiliarPatrolConfirm) {
         currentScreen = Screen::CyberFamiliar;
         familiarPage = 0;
-        drawCyberFamiliar();
+        familiarScreens.drawFamiliar();
         return;
     }
     if (currentScreen == Screen::Imu) {
@@ -6079,26 +3882,26 @@ void goBack() {
     if (currentScreen == Screen::Gnss) {
         currentScreen = Screen::GpsMenu;
         listSelection = 0;
-        drawGpsMenu();
+        menuScreens.drawGps();
         return;
     }
     if (currentScreen == Screen::LoRa) {
         currentScreen = Screen::MeshMenu;
         listSelection = 0;
-        drawMeshMenu();
+        menuScreens.drawMesh();
         return;
     }
     if (currentScreen == Screen::NetworkHostScan) {
         networkHostScanService.stop();
         currentScreen = Screen::NetworkMenu;
         listSelection = 0;
-        drawNetworkMenu();
+        menuScreens.drawNetwork();
         return;
     }
     if (currentScreen == Screen::NetworkDashboard) {
         currentScreen = Screen::NetworkMenu;
         listSelection = 0;
-        drawNetworkMenu();
+        menuScreens.drawNetwork();
         return;
     }
     if (currentScreen == Screen::NetworkPortScan) {
@@ -6106,7 +3909,7 @@ void goBack() {
         currentScreen = Screen::NetworkHostScan;
         listSelection = 0;
         listOffset = 0;
-        drawNetworkHostScan();
+        networkScanScreens.drawNetworkHostScan();
         return;
     }
     if (currentScreen == Screen::SettingsDisplay ||
@@ -6116,20 +3919,20 @@ void goBack() {
         currentScreen = Screen::Settings;
         listSelection = 0;
         listOffset = 0;
-        drawSettings();
+        menuScreens.drawSettings();
         return;
     }
     if (currentScreen == Screen::AudioMic) {
         audioService.endMicrophone();
         M5Cardputer.Speaker.begin();
         currentScreen = Screen::Audio;
-        drawAudio();
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::AudioFiles) {
         currentScreen = Screen::Audio;
         listSelection = 2;
-        drawAudio();
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::AudioPlaying) {
@@ -6140,25 +3943,25 @@ void goBack() {
     }
     if (currentScreen == Screen::QrDisplay) {
         currentScreen = Screen::QrEntry;
-        drawQrEntry();
+        qrScreens.drawEntry();
         return;
     }
     if (currentScreen == Screen::TtsLab) {
         currentScreen = Screen::Audio;
         listSelection = 3;
-        drawAudio();
+        audioScreens.drawMenu();
         return;
     }
     if (currentScreen == Screen::QrEntry) {
         currentScreen = Screen::ToolsMenu;
         listSelection = 6;
         listOffset = 1;
-        drawToolsMenu();
+        menuScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::FileDetail) {
         currentScreen = Screen::Files;
-        drawFiles();
+        fileScreens.drawFiles();
         return;
     }
     if (currentScreen == Screen::TextPreview) {
@@ -6168,74 +3971,74 @@ void goBack() {
     }
     if (currentScreen == Screen::LogDetail) {
         currentScreen = Screen::LogSessions;
-        drawLogSessions();
+        logScreens.drawSessions();
         return;
     }
     if (currentScreen == Screen::LogSessions) {
         currentScreen = evidenceReturnScreen;
         if (currentScreen == Screen::MainMenu) {
             menuSelection = 3;
-            drawMainMenu();
+            menuScreens.drawMain();
         } else {
             listSelection = 3;
-            drawToolsMenu();
+            menuScreens.drawTools();
         }
         return;
     }
     if (currentScreen == Screen::LogDeleteConfirm) {
         currentScreen = Screen::LogDetail;
-        drawLogDetail();
+        logScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::TimeStatus) {
         currentScreen = Screen::System;
-        drawSystem();
+        systemScreens.drawSystem(systemDiagnostics());
         return;
     }
     if (currentScreen == Screen::WifiDetail) {
         currentScreen = Screen::WifiRecon;
-        drawWifiRecon();
+        wifiScreens.drawRecon();
         return;
     }
     if (currentScreen == Screen::WifiDeauthConfirm) {
         currentScreen = Screen::WifiDetail;
-        drawWifiDetail();
+        wifiScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::WifiHandshakeCapture) {
         handshakeCaptureLogger.stop();
         wifiSnifferService.clearHandshakeTarget();
         currentScreen = Screen::WifiDetail;
-        drawWifiDetail();
+        wifiScreens.drawDetail();
         return;
     }
     if (currentScreen == Screen::BleDetail) {
         currentScreen = Screen::BleDiscovery;
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
         return;
     }
     if (currentScreen == Screen::UsbHidConfirm) {
         currentScreen = Screen::UsbHid;
-        drawUsbHid();
+        usbHidScreens.drawUsbHid();
         return;
     }
     if (currentScreen == Screen::DuckyScripts) {
         currentScreen = Screen::UsbHid;
         listSelection = kHidPresetCount;
-        drawUsbHid();
+        usbHidScreens.drawUsbHid();
         return;
     }
     if (currentScreen == Screen::DuckyConfirm ||
         currentScreen == Screen::DuckyResult) {
         currentScreen = Screen::DuckyScripts;
-        drawDuckyScripts();
+        usbHidScreens.drawDuckyScripts();
         return;
     }
     if (currentScreen == Screen::Files && currentPath != "/") {
         const int slash = currentPath.lastIndexOf('/');
         currentPath = slash <= 0 ? "/" : currentPath.substring(0, slash);
         loadDirectory();
-        drawFiles();
+        fileScreens.drawFiles();
         return;
     }
     if (currentScreen == Screen::WifiRecon ||
@@ -6244,18 +4047,18 @@ void goBack() {
         currentScreen == Screen::WifiGuardian) {
         currentScreen = Screen::WifiMenu;
         listSelection = 0;
-        drawWifiMenu();
+        menuScreens.drawWifi();
         return;
     }
     if (currentScreen == Screen::WifiConnectSelect) {
         currentScreen = Screen::WifiMenu;
         listSelection = 4;
-        drawWifiMenu();
+        menuScreens.drawWifi();
         return;
     }
     if (currentScreen == Screen::WifiConnectPassword) {
         currentScreen = Screen::WifiConnectSelect;
-        drawWifiConnectSelect();
+        wifiScreens.drawConnectSelect();
         return;
     }
     if (currentScreen == Screen::WifiConnectStatus) {
@@ -6264,58 +4067,59 @@ void goBack() {
         // background for future network tools to use. Disconnecting is
         // the explicit D key on this screen, not a side effect of leaving.
         currentScreen = Screen::WifiConnectSelect;
-        drawWifiConnectSelect();
+        wifiScreens.drawConnectSelect();
         return;
     }
     if (currentScreen == Screen::BleDiscovery) {
         currentScreen = Screen::BleMenu;
         listSelection = 0;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::BleKeyboard) {
         bleKeyboardService.end();
         currentScreen = Screen::BleMenu;
         listSelection = 1;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::BiscuitResult) {
         currentScreen = Screen::BiscuitTools;
         listSelection = 0;
-        drawBiscuitTools();
+        biscuitScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::BiscuitWardrive) {
         stopBiscuitWardrive();
         currentScreen = Screen::BiscuitTools;
         listSelection = 6;
-        drawBiscuitTools();
+        biscuitScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::BiscuitTools) {
         currentScreen = Screen::Biscuit;
-        drawBiscuit();
+        biscuitScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::Biscuit) {
         biscuitClient.disconnect();
         currentScreen = Screen::DevicesMenu;
         listSelection = 0;
-        drawDevicesMenu();
+        menuScreens.drawDevices();
         return;
     }
     if (currentScreen == Screen::BleSpam) {
         bleSpamService.end();
         currentScreen = Screen::BleSpamSelect;
         listSelection = 0;
-        drawBleSpamSelect();
+        normalizeListPosition(BleSpamScreen::kModeCount);
+        bleSpamScreen.drawSelect(listSelection);
         return;
     }
     if (currentScreen == Screen::BleSpamSelect) {
         currentScreen = Screen::BleMenu;
         listSelection = 2;
-        drawBleMenu();
+        menuScreens.drawBle();
         return;
     }
     if (currentScreen == Screen::Chameleon) {
@@ -6327,12 +4131,12 @@ void goBack() {
         chameleonLastLoggedSignature = "";
         currentScreen = Screen::DevicesMenu;
         listSelection = 1;
-        drawDevicesMenu();
+        menuScreens.drawDevices();
         return;
     }
     if (currentScreen == Screen::ChameleonEmulateConfirm) {
         currentScreen = Screen::Chameleon;
-        drawChameleon();
+        chameleonScreen.draw();
         return;
     }
     if (currentScreen == Screen::Infrared || currentScreen == Screen::UsbHid ||
@@ -6344,13 +4148,13 @@ void goBack() {
         // returns for "go up a directory" when currentPath isn't root.
         currentScreen = Screen::ToolsMenu;
         listSelection = 0;
-        drawToolsMenu();
+        menuScreens.drawTools();
         return;
     }
     if (currentScreen == Screen::DevicesMenu) {
         currentScreen = Screen::FieldKitMenu;
         listSelection = 0;
-        drawFieldKitMenu();
+        menuScreens.drawFieldKit();
         return;
     }
     if (currentScreen == Screen::WarDrive) {
@@ -6359,7 +4163,7 @@ void goBack() {
         if (warDriveBleLogger.isActive()) warDriveBleLogger.stop();
         currentScreen = Screen::ObserveMenu;
         listSelection = 4;
-        drawObserveMenu();
+        menuScreens.drawObserve();
         return;
     }
     if (currentScreen == Screen::WifiMenu || currentScreen == Screen::BleMenu ||
@@ -6369,29 +4173,29 @@ void goBack() {
         listSelection = previous == Screen::WifiMenu ? 0
                         : previous == Screen::BleMenu ? 1
                         : previous == Screen::GpsMenu ? 2 : 3;
-        drawObserveMenu();
+        menuScreens.drawObserve();
         return;
     }
     if (currentScreen == Screen::ToolsMenu) {
         currentScreen = Screen::FieldKitMenu;
         listSelection = 2;
-        drawFieldKitMenu();
+        menuScreens.drawFieldKit();
         return;
     }
     if (currentScreen == Screen::NetworkMenu) {
         currentScreen = Screen::MainMenu;
         menuSelection = 2;
-        drawMainMenu();
+        menuScreens.drawMain();
         return;
     }
     if (currentScreen == Screen::Settings) {
         currentScreen = Screen::MainMenu;
         menuSelection = 5;
-        drawMainMenu();
+        menuScreens.drawMain();
         return;
     }
     currentScreen = Screen::MainMenu;
-    drawMainMenu();
+    menuScreens.drawMain();
 }
 
 void handleInput(const Keyboard_Class::KeysState& keys) {
@@ -6409,7 +4213,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (keys.enter && !qrText.isEmpty()) {
             currentScreen = Screen::QrDisplay;
-            drawQrDisplay();
+            qrScreens.drawDisplay();
             return;
         }
         if (keys.backspace && !qrText.isEmpty()) {
@@ -6426,7 +4230,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             goBack();
         } else if (keys.enter) {
             currentScreen = Screen::QrEntry;
-            drawQrEntry();
+            qrScreens.drawEntry();
         }
         return;
     }
@@ -6434,7 +4238,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         if (keys.esc) { goBack(); return; }
         if (keys.tab) {
             ttsLabPhrase = (ttsLabPhrase + 1) % kTtsLabPhraseCount;
-            drawTtsLab();
+            audioScreens.drawTtsLab();
             return;
         }
         if (keys.enter) {
@@ -6458,7 +4262,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             ttsLabPlaybackMs = millis() - started;
             ttsLabStatus = success ? "Complete" : "Missing or invalid word MP3";
             recoverKeyboardAfterBlockingOperation();
-            drawTtsLab();
+            audioScreens.drawTtsLab();
             return;
         }
         return;
@@ -6472,19 +4276,19 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (keys.up) {
             ++aiScrollLines;
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.down) {
             if (aiScrollLines > 0) --aiScrollLines;
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 'r')) {
             if (!sdAvailable || WiFi.status() != WL_CONNECTED) {
                 aiNotice = !sdAvailable ? "SD card required"
                                         : "Connect Wi-Fi first";
-                drawAiChat();
+                aiChatScreen.draw();
                 return;
             }
             drawHeader("AI: Recording 6 seconds");
@@ -6511,7 +4315,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             SD.remove(kAiRecordingPath);
             recoverKeyboardAfterBlockingOperation();
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 's')) {
@@ -6531,43 +4335,35 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     currentScreen = Screen::AudioPlaying;
                     nowPlayingName = "AI reply";
                     nowPlayingSource = kAiSpeechPath;
-                    drawHeader("Now Playing");
-                    M5Cardputer.Display.setTextColor(
-                        Branding::text, Branding::background);
-                    M5Cardputer.Display.setCursor(8, 40);
-                    M5Cardputer.Display.print("AI reply");
-                    M5Cardputer.Display.setTextColor(
-                        Branding::muted, Branding::background);
-                    M5Cardputer.Display.setCursor(8, 64);
-                    M5Cardputer.Display.print("OpenAI text-to-speech");
-                    drawFooter("Enter/Backspace/Q: stop");
+                    audioScreens.drawNowPlaying("AI reply",
+                                                "OpenAI text-to-speech");
                     recoverKeyboardAfterBlockingOperation();
                     return;
                 }
                 aiNotice = aiService.status();
                 recoverKeyboardAfterBlockingOperation();
             }
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.ctrl && pressedLetter(keys, 'n')) {
             aiService.clearHistory();
             aiNotice = "Conversation cleared";
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.tab) {
             aiService.toggleProvider();
             aiNotice = aiService.isConfigured() ? "Provider changed"
                                                  : "Provider key missing";
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.enter && !aiPrompt.isEmpty()) {
             const String prompt = aiPrompt;
             aiPrompt = "";
             aiNotice = "Waiting for " + String(aiService.providerName()) + "...";
-            drawAiChat();
+            aiChatScreen.draw();
             String answer;
             if (!aiService.send(prompt, answer)) {
                 aiPrompt = prompt;
@@ -6577,7 +4373,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 aiScrollLines = 0;
             }
             recoverKeyboardAfterBlockingOperation();
-            drawAiChat();
+            aiChatScreen.draw();
             return;
         }
         if (keys.backspace && !aiPrompt.isEmpty()) {
@@ -6586,7 +4382,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         for (char value : keys.word) {
             if (!keys.ctrl && aiPrompt.length() < 500) aiPrompt += value;
         }
-        drawAiComposer();
+        aiChatScreen.drawComposer();
         return;
     }
     // This screen forwards ordinary keys, so process it before Ghostwire's
@@ -6597,14 +4393,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             bleKeyboardService.end();
             currentScreen = Screen::BleMenu;
             listSelection = 1;
-            drawBleMenu();
+            menuScreens.drawBle();
             return;
         }
         if (!bleKeyboardService.isActive()) {
             if (keys.enter) {
                 bleKeyboardService.begin(batteryPercentage());
             }
-            drawBleKeyboard();
+            bleScreens.drawKeyboard();
             return;
         }
         if (bleKeyboardService.isConnected()) {
@@ -6613,7 +4409,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.tab) bleKeyboardService.sendAscii('\t');
             for (char value : keys.word) bleKeyboardService.sendAscii(value);
         }
-        drawBleKeyboard();
+        bleScreens.drawKeyboard();
         return;
     }
     // Free-text password entry: every other screen treats individual
@@ -6720,7 +4516,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             preferences.remove("ssh_stage");
-            drawSshConnect();
+            sshScreens.drawConnect();
             return;
         }
         if (keys.tab) {
@@ -6814,7 +4610,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 sshService.write(outgoing, outgoingLength);
             }
             if (!keys.word.empty() || keys.backspace || keys.enter) {
-                drawSshSessionDynamic();
+                sshScreens.drawSessionDynamic();
             }
         }
         return;
@@ -6919,15 +4715,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     switch (currentScreen) {
         case Screen::MainMenu:
             if (up) {
-                menuSelection =
-                    menuSelection == 0 ? kMenuCount - 1 : menuSelection - 1;
+                menuSelection = menuSelection == 0 ? MenuScreens::kMenuCount - 1
+                                                    : menuSelection - 1;
             } else if (down) {
-                menuSelection = (menuSelection + 1) % kMenuCount;
+                menuSelection = (menuSelection + 1) % MenuScreens::kMenuCount;
             } else if (keys.enter) {
                 enterMenuItem();
                 return;
             }
-            drawMainMenu();
+            menuScreens.drawMain();
             break;
 
         case Screen::ObserveMenu:
@@ -6947,7 +4743,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawObserveMenu();
+            menuScreens.drawObserve();
             break;
 
         case Screen::FieldKitMenu:
@@ -6969,7 +4765,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawFieldKitMenu();
+            menuScreens.drawFieldKit();
             break;
 
         case Screen::AiChat:
@@ -7005,7 +4801,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 return;
             }
-            drawWifiMenu();
+            menuScreens.drawWifi();
             break;
 
         case Screen::WifiRecon:
@@ -7022,10 +4818,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !accessPoints.empty()) {
                 wifiDeauthStatus = "";
                 currentScreen = Screen::WifiDetail;
-                drawWifiDetail();
+                wifiScreens.drawDetail();
                 return;
             }
-            drawWifiRecon();
+            wifiScreens.drawRecon();
             break;
 
         case Screen::WifiChannelAnalyzer:
@@ -7033,13 +4829,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 scanWifiNetworks();
                 return;
             }
-            drawWifiChannelAnalyzer();
+            wifiScreens.drawChannelAnalyzer();
             break;
 
         case Screen::WifiDetail:
             if (pressedLetter(keys, 'd') && !accessPoints.empty()) {
                 currentScreen = Screen::WifiDeauthConfirm;
-                drawWifiDeauthConfirm();
+                wifiScreens.drawDeauthConfirm();
                 return;
             }
             if (pressedLetter(keys, 'h') && !accessPoints.empty()) {
@@ -7051,7 +4847,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     accessPoints[listSelection].bssid);
                 handshakeCaptureLogger.begin("handshake");
                 currentScreen = Screen::WifiHandshakeCapture;
-                drawWifiHandshakeCapture();
+                wifiScreens.drawHandshakeCapture();
                 return;
             }
             break;
@@ -7060,7 +4856,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !accessPoints.empty()) {
                 transmitWifiDeauth(accessPoints[listSelection]);
                 currentScreen = Screen::WifiDetail;
-                drawWifiDetail();
+                wifiScreens.drawDetail();
                 return;
             }
             break;
@@ -7068,7 +4864,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::WifiHandshakeCapture:
             if (pressedLetter(keys, 'd') && !accessPoints.empty()) {
                 transmitWifiDeauth(accessPoints[listSelection]);
-                drawWifiHandshakeCapture();
+                wifiScreens.drawHandshakeCapture();
                 return;
             }
             if (refresh && !accessPoints.empty()) {
@@ -7079,7 +4875,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     accessPoints[listSelection].bssid);
                 handshakeCaptureLogger.begin("handshake");
             }
-            drawWifiHandshakeCapture();
+            wifiScreens.drawHandshakeCapture();
             break;
 
         case Screen::WifiConnectSelect: {
@@ -7107,7 +4903,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawWifiConnectSelect();
+            wifiScreens.drawConnectSelect();
             break;
         }
 
@@ -7116,10 +4912,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 WiFi.disconnect(true);
                 wifiConnectAttempting = false;
                 wifiConnectStatusText = "Disconnected";
-                drawWifiConnectStatus();
+                wifiScreens.drawConnectStatus();
                 return;
             }
-            drawWifiConnectStatus();
+            wifiScreens.drawConnectStatus();
             break;
 
         case Screen::BleMenu:
@@ -7141,7 +4937,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 return;
             }
-            drawBleMenu();
+            menuScreens.drawBle();
             break;
 
         case Screen::DevicesMenu:
@@ -7159,7 +4955,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawDevicesMenu();
+            menuScreens.drawDevices();
             break;
 
         case Screen::Biscuit:
@@ -7172,16 +4968,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawFooter("Please wait");
                 biscuitClient.connect();
                 recoverKeyboardAfterBlockingOperation();
-                drawBiscuit();
+                biscuitScreens.drawMain();
                 return;
             }
             if (keys.enter && biscuitClient.isConnected()) {
                 listSelection = 0;
                 currentScreen = Screen::BiscuitTools;
-                drawBiscuitTools();
+                biscuitScreens.drawTools();
                 return;
             }
-            drawBiscuit();
+            biscuitScreens.drawMain();
             break;
 
         case Screen::BiscuitTools: {
@@ -7206,7 +5002,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     biscuitWardriveParseTail = "";
                     biscuitWardriveActive = false;
                     currentScreen = Screen::BiscuitWardrive;
-                    drawBiscuitWardrive();
+                    biscuitScreens.drawWardrive();
                     return;
                 }
                 drawHeader(titles[commandIndex]);
@@ -7224,10 +5020,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 prepareBiscuitResult(response);
                 currentScreen = Screen::BiscuitResult;
                 recoverKeyboardAfterBlockingOperation();
-                drawBiscuitResult();
+                biscuitScreens.drawResult();
                 return;
             }
-            drawBiscuitTools();
+            biscuitScreens.drawTools();
             break;
         }
 
@@ -7248,10 +5044,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         biscuitWardriveParseTail = biscuitClient.lastStatus();
                     }
                 }
-                drawBiscuitWardrive();
+                biscuitScreens.drawWardrive();
                 return;
             }
-            drawBiscuitWardrive();
+            biscuitScreens.drawWardrive();
             break;
 
         case Screen::BiscuitResult:
@@ -7260,31 +5056,26 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                             biscuitResultLines.size()) {
                 ++biscuitResultOffset;
             }
-            drawBiscuitResult();
+            biscuitScreens.drawResult();
             break;
 
         case Screen::BleSpamSelect: {
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, BleSpamScreen::kModeCount);
+            if (down) moveSelection(1, BleSpamScreen::kModeCount);
             if (keys.enter) {
-                BleSpamMode mode;
-                switch (listSelection) {
-                    case 0: mode = BleSpamMode::Apple; break;
-                    case 1: mode = BleSpamMode::FastPair; break;
-                    case 2: mode = BleSpamMode::SwiftPair; break;
-                    default: mode = BleSpamMode::All; break;
-                }
-                bleSpamService.begin(mode);
+                bleSpamService.begin(
+                    BleSpamScreen::modeForSelection(listSelection));
                 currentScreen = Screen::BleSpam;
-                drawBleSpam();
+                bleSpamScreen.drawActive();
                 return;
             }
-            drawBleSpamSelect();
+            normalizeListPosition(BleSpamScreen::kModeCount);
+            bleSpamScreen.drawSelect(listSelection);
             break;
         }
 
         case Screen::BleSpam:
-            drawBleSpam();
+            bleSpamScreen.drawActive();
             break;
 
         case Screen::RfidMenu:
@@ -7298,7 +5089,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawRfidMenu();
+            menuScreens.drawRfid();
             break;
 
         case Screen::Chameleon:
@@ -7312,45 +5103,45 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 lastChameleonConnectAttemptMs =
                     millis() - kChameleonReconnectIntervalMs;
                 chameleonWorkflowStatus = "Automatic connection enabled";
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 's') && chameleonClient.isConnected()) {
                 chameleonWorkflowStatus = "";
                 performChameleonScan();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'c') && chameleonClient.isConnected()) {
                 chameleonWorkflowStatus = "";
                 chameleonContinuousScan = !chameleonContinuousScan;
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'v') && chameleonClient.isConnected()) {
                 saveChameleonIdentity();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'o') && chameleonClient.isConnected()) {
                 loadChameleonIdentity();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'd') && chameleonClient.isConnected()) {
                 chameleonClient.setReaderMode();
                 chameleonWorkflowStatus = chameleonClient.lastStatus();
-                drawChameleon();
+                chameleonScreen.draw();
                 return;
             }
             if (pressedLetter(keys, 'e') && chameleonClient.isConnected() &&
                 (chameleonHfFound || chameleonLfFound)) {
                 chameleonContinuousScan = false;
                 currentScreen = Screen::ChameleonEmulateConfirm;
-                drawChameleonEmulateConfirm();
+                chameleonScreen.drawEmulateConfirm();
                 return;
             }
-            drawChameleon();
+            chameleonScreen.draw();
             break;
 
         case Screen::ChameleonEmulateConfirm:
@@ -7362,7 +5153,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     ? chameleonClient.lastStatus()
                     : "Stage failed: " + chameleonClient.lastStatus();
                 currentScreen = Screen::Chameleon;
-                drawChameleon();
+                chameleonScreen.draw();
             }
             break;
 
@@ -7395,7 +5186,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
                 listSelection = 0;
                 listOffset = 0;
-                drawBleDiscovery();
+                bleScreens.drawDiscovery();
                 return;
             }
             if (pressedLetter(keys, 'f')) {
@@ -7408,17 +5199,17 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 bleCaptureRssiFilter =
                     filters[(selected + 1) %
                             (sizeof(filters) / sizeof(filters[0]))];
-                drawBleDiscovery();
+                bleScreens.drawDiscovery();
                 return;
             }
             if (up) moveSelection(-1, bleDevices.size());
             if (down) moveSelection(1, bleDevices.size());
             if (keys.enter && !bleDevices.empty()) {
                 currentScreen = Screen::BleDetail;
-                drawBleDetail();
+                bleScreens.drawDetail();
                 return;
             }
-            drawBleDiscovery();
+            bleScreens.drawDiscovery();
             break;
 
         case Screen::CyberFamiliar:
@@ -7449,7 +5240,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (pressedLetter(keys, 'z')) {
                 currentScreen = Screen::CyberFamiliarResetConfirm;
-                drawCyberFamiliarResetConfirm();
+                familiarScreens.drawResetConfirm();
                 return;
             }
             if (pressedLetter(keys, 'a')) {
@@ -7459,14 +5250,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawCyberFamiliar();
+            familiarScreens.drawFamiliar();
             break;
 
         case Screen::FamiliarPatrolConfirm:
             if (pressedLetter(keys, 'c')) {
                 familiarPatrolContinuousChoice =
                     !familiarPatrolContinuousChoice;
-                drawFamiliarPatrolConfirm();
+                familiarScreens.drawPatrolConfirm();
                 return;
             }
             if (pressedLetter(keys, 'v')) {
@@ -7474,7 +5265,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     (familiarPatrolIntervalIndex + 1) %
                     (sizeof(kFamiliarPatrolIntervals) /
                      sizeof(kFamiliarPatrolIntervals[0])));
-                drawFamiliarPatrolConfirm();
+                familiarScreens.drawPatrolConfirm();
                 return;
             }
             if (keys.enter && sdAvailable && WiFi.status() == WL_CONNECTED) {
@@ -7499,7 +5290,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 cyberFamiliar.notePatrol("Patrol stopped by operator.", 0,
                                          FamiliarMood::Content);
             }
-            drawFamiliarPatrol();
+            familiarScreens.drawPatrol();
             break;
 
         case Screen::CyberFamiliarResetConfirm:
@@ -7508,7 +5299,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 familiarWorkflowStatus = "Familiar progress reset";
                 familiarPage = 0;
                 currentScreen = Screen::CyberFamiliar;
-                drawCyberFamiliar();
+                familiarScreens.drawFamiliar();
             }
             break;
 
@@ -7550,7 +5341,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawToolsMenu();
+            menuScreens.drawTools();
             break;
 
         case Screen::Infrared:
@@ -7568,14 +5359,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (listSelection == kHidPresetCount) {
                     loadDuckyScripts();
                     currentScreen = Screen::DuckyScripts;
-                    drawDuckyScripts();
+                    usbHidScreens.drawDuckyScripts();
                 } else {
                     currentScreen = Screen::UsbHidConfirm;
-                    drawUsbHidConfirmation();
+                    usbHidScreens.drawUsbHidConfirm();
                 }
                 return;
             }
-            drawUsbHid();
+            usbHidScreens.drawUsbHid();
             break;
 
         case Screen::UsbHidConfirm:
@@ -7592,10 +5383,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && !duckyScripts.empty()) {
                 preflightDuckyScript();
                 currentScreen = Screen::DuckyConfirm;
-                drawDuckyConfirm();
+                usbHidScreens.drawDuckyConfirm();
                 return;
             }
-            drawDuckyScripts();
+            usbHidScreens.drawDuckyScripts();
             break;
 
         case Screen::DuckyConfirm:
@@ -7608,7 +5399,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::DuckyResult:
             if (keys.enter) {
                 currentScreen = Screen::DuckyScripts;
-                drawDuckyScripts();
+                usbHidScreens.drawDuckyScripts();
             }
             break;
 
@@ -7619,24 +5410,24 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (listSelection == 0) {
                     audioService.playToneTest();
                     recoverKeyboardAfterBlockingOperation();
-                    drawAudio();
+                    audioScreens.drawMenu();
                 } else if (listSelection == 1) {
                     microphoneLevel = 0;
                     if (audioService.beginMicrophone()) {
                         currentScreen = Screen::AudioMic;
-                        drawMicrophone();
+                        audioScreens.drawMicrophone();
                     }
                 } else if (listSelection == 2) {
                     loadAudioFiles();
                     currentScreen = Screen::AudioFiles;
-                    drawAudioFiles();
+                    audioScreens.drawAudioFiles();
                 } else {
                     currentScreen = Screen::TtsLab;
-                    drawTtsLab();
+                    audioScreens.drawTtsLab();
                 }
                 return;
             }
-            drawAudio();
+            audioScreens.drawMenu();
             break;
 
         case Screen::AudioMic:
@@ -7654,7 +5445,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 startSelectedMp3();
                 return;
             }
-            drawAudioFiles();
+            audioScreens.drawAudioFiles();
             break;
 
         case Screen::AudioPlaying:
@@ -7680,22 +5471,22 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     loadDirectory();
                 } else {
                     currentScreen = Screen::FileDetail;
-                    drawFileDetail();
+                    fileScreens.drawFileDetail();
                     return;
                 }
             }
-            drawFiles();
+            fileScreens.drawFiles();
             break;
 
         case Screen::FileDetail:
             if (keys.enter) {
-                if (isMp3File(files[listSelection].name)) {
+                if (FileScreens::isMp3File(files[listSelection].name)) {
                     playSelectedBrowserMp3();
-                } else if (isPreviewableFile(files[listSelection].name) &&
+                } else if (FileScreens::isPreviewableFile(files[listSelection].name) &&
                            loadTextPreview()) {
                     textPreviewReturnScreen = Screen::FileDetail;
                     currentScreen = Screen::TextPreview;
-                    drawTextPreview();
+                    fileScreens.drawTextPreview();
                 }
             }
             break;
@@ -7712,7 +5503,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (pressedLetter(keys, 'd') && previewColumn < 120) {
                 previewColumn += 8;
             }
-            drawTextPreview();
+            fileScreens.drawTextPreview();
             break;
 
         case Screen::LogSessions:
@@ -7727,18 +5518,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 logSelection = (logSelection + 1) % logSessions.size();
             } else if (keys.enter && !logSessions.empty()) {
                 openLogDetail();
-                drawLogDetail();
+                logScreens.drawDetail();
                 return;
             }
-            drawLogSessions();
+            logScreens.drawSessions();
             break;
 
         case Screen::LogDetail:
             if (pressedLetter(keys, 'd')) {
                 currentScreen = Screen::LogDeleteConfirm;
-                drawLogDeleteConfirm();
+                logScreens.drawDeleteConfirm();
             } else if (keys.enter &&
-                       isPreviewableFile(logSessions[logSelection].name)) {
+                       FileScreens::isPreviewableFile(logSessions[logSelection].name)) {
                 const auto& log = logSessions[logSelection];
                 const int slash = log.path.lastIndexOf('/');
                 currentPath = slash <= 0 ? "/" : log.path.substring(0, slash);
@@ -7748,7 +5539,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (loadTextPreview()) {
                     textPreviewReturnScreen = Screen::LogDetail;
                     currentScreen = Screen::TextPreview;
-                    drawTextPreview();
+                    fileScreens.drawTextPreview();
                 }
             }
             break;
@@ -7758,7 +5549,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 SD.remove(logSessions[logSelection].path);
                 loadLogSessions();
                 currentScreen = Screen::LogSessions;
-                drawLogSessions();
+                logScreens.drawSessions();
             }
             break;
 
@@ -7772,26 +5563,26 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'e')) exportSystemDiagnostics();
             if (keys.enter) {
                 currentScreen = Screen::TimeStatus;
-                drawTimeStatus();
+                systemScreens.drawTimeStatus();
                 return;
             }
-            drawSystem();
+            systemScreens.drawSystem(systemDiagnostics());
             break;
 
         case Screen::TimeStatus:
             if (pressedLetter(keys, 'g')) syncClockFromGnss();
             if (pressedLetter(keys, 'n')) syncClockFromNtp();
-            drawTimeStatus();
+            systemScreens.drawTimeStatus();
             break;
 
         case Screen::GpsMenu:
             if (keys.enter) {
                 gnssService.begin();
                 currentScreen = Screen::Gnss;
-                drawGnss();
+                gnssScreen.draw();
                 return;
             }
-            drawGpsMenu();
+            menuScreens.drawGps();
             break;
 
         case Screen::MeshMenu:
@@ -7803,10 +5594,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 M5Cardputer.Display.setCursor(8, 42);
                 M5Cardputer.Display.print("Initialising SX1262...");
                 loraService.begin();
-                drawLoRa();
+                loraScreen.draw();
                 return;
             }
-            drawMeshMenu();
+            menuScreens.drawMesh();
             break;
 
         case Screen::WarDrive:
@@ -7832,10 +5623,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     if (warDriveWifiLogger.isActive()) warDriveWifiLogger.stop();
                     if (warDriveBleLogger.isActive()) warDriveBleLogger.stop();
                 }
-                drawWarDriveDynamic();
+                networkScanScreens.drawWarDriveDynamic();
                 return;
             }
-            drawWarDriveDynamic();
+            networkScanScreens.drawWarDriveDynamic();
             break;
 
         case Screen::NetworkMenu:
@@ -7861,16 +5652,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawNetworkMenu();
+            menuScreens.drawNetwork();
             break;
 
         case Screen::NetworkDashboard:
-            if (refresh) drawNetworkDashboard();
+            if (refresh) networkScanScreens.drawNetworkDashboard();
             break;
 
         case Screen::NetworkHostScan:
             if (WiFi.status() != WL_CONNECTED) {
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 break;
             }
             if (refresh) {
@@ -7883,12 +5674,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 } else {
                     networkHostScanService.stop();
                 }
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 return;
             }
             if (pressedLetter(keys, 'e')) {
                 exportNetworkHostResults();
-                drawNetworkHostScan();
+                networkScanScreens.drawNetworkHostScan();
                 return;
             }
             if (up) moveSelection(-1, networkHostResults.size());
@@ -7919,7 +5710,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawNetworkHostScan();
+            networkScanScreens.drawNetworkHostScan();
             break;
 
         case Screen::NetworkPortScan:
@@ -7935,7 +5726,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         networkPortScanService.start(networkPortScanTarget, 1,
                                                      65535);
                     }
-                    drawNetworkPortScan();
+                    networkScanScreens.drawNetworkPortScan();
                 } else {
                     scanNetworkPorts(networkPortScanTarget);
                 }
@@ -7943,12 +5734,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (pressedLetter(keys, 'e')) {
                 exportNetworkPortResults();
-                drawNetworkPortScan();
+                networkScanScreens.drawNetworkPortScan();
                 return;
             }
             if (up) moveSelection(-1, networkPortResults.size());
             if (down) moveSelection(1, networkPortResults.size());
-            drawNetworkPortScan();
+            networkScanScreens.drawNetworkPortScan();
             break;
 
         case Screen::Gnss:
@@ -7965,7 +5756,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (refresh) {
                 gnssService.restart();
             }
-            drawGnss();
+            gnssScreen.draw();
             break;
 
         case Screen::LoRa:
@@ -7985,7 +5776,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             } else if (refresh) {
                 loraService.restartReceive();
             }
-            drawLoRa();
+            loraScreen.draw();
             break;
 
         case Screen::WifiSniffer:
@@ -8022,7 +5813,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 recentWifiProbes.clear();
                 wifiSnifferService.begin();
             }
-            drawWifiSniffer();
+            wifiSnifferScreen.draw();
             break;
 
         case Screen::WifiGuardian:
@@ -8034,7 +5825,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 stopWifiGuardian();
                 startWifiGuardian();
             }
-            drawWifiGuardian();
+            wifiGuardianScreen.draw();
             break;
 
         case Screen::Imu:
@@ -8054,7 +5845,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 imuAvailable = M5.Imu.isEnabled() ||
                                M5.Imu.begin(nullptr, M5.getBoard());
             }
-            drawImu();
+            imuScreen.draw();
             break;
 
         case Screen::Settings:
@@ -8070,7 +5861,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            drawSettings();
+            menuScreens.drawSettings();
             break;
 
         case Screen::SettingsDisplay:
@@ -8140,7 +5931,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCyberdeckIdle();
                 return;
             }
-            drawSettingsDisplay();
+            settingsScreens.drawDisplay();
             break;
 
         case Screen::SettingsBoot:
@@ -8179,7 +5970,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && listSelection == 5) {
                 previewBootAnimation();
             }
-            drawSettingsBoot();
+            settingsScreens.drawBoot();
             break;
 
         case Screen::SettingsConnectivity:
@@ -8200,7 +5991,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (saveWifiCredentials) autoConnectWifi = !autoConnectWifi;
                 saveSettings();
             }
-            drawSettingsConnectivity();
+            settingsScreens.drawConnectivity();
             break;
 
         case Screen::SettingsReset:
@@ -8208,7 +5999,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 restoreDefaultSettings();
                 currentScreen = Screen::Settings;
                 listSelection = 0;
-                drawSettings();
+                menuScreens.drawSettings();
             }
             break;
 
@@ -8399,6 +6190,27 @@ namespace ScreenChrome {
 void drawHeader(const char* title) { ::drawHeader(title); }
 void drawFooter(const char* text) { ::drawFooter(text); }
 void recoverKeyboard() { ::recoverKeyboardAfterBlockingOperation(); }
+void beginContentUpdate(const char* title, bool fullDraw) {
+    ::beginContentUpdate(title, fullDraw);
+}
+void drawListRow(int row, const String& label, bool selected,
+                 const String& suffix) {
+    ::drawListRow(row, label, selected, suffix);
+}
+void normalizeListPosition(size_t count) { ::normalizeListPosition(count); }
+void drawHeaderPosition(size_t oneBasedIndex, size_t total) {
+    ::drawHeaderPosition(oneBasedIndex, total);
+}
+void drawNavigationCard(const char* header, const String& label,
+                        const String& description, size_t selected,
+                        size_t count, uint8_t icon, const String& badge) {
+    ::drawNavigationCard(header, label, description, selected, count, icon,
+                         badge);
+}
+void drawTextEntryRow(int y, const char* label, const String& value,
+                      bool masked) {
+    ::drawTextEntryRow(y, label, value, masked);
+}
 }  // namespace ScreenChrome
 
 void setup() {
@@ -8476,7 +6288,7 @@ void setup() {
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
-    drawMainMenu();
+    menuScreens.drawMain();
 
     if (autoConnectWifi && !wifiConnectSavedSsid.isEmpty()) {
         Serial.printf("[wifi] auto-connecting to %s\n",
@@ -8819,7 +6631,7 @@ void loop() {
     if (currentScreen == Screen::CyberFamiliar && !actionMenuOpen &&
         millis() - lastFamiliarDraw >= 180) {
         lastFamiliarDraw = millis();
-        drawCyberFamiliar(false);
+        familiarScreens.drawFamiliar(false);
     }
 
     if (currentScreen == Screen::BleDiscovery && !actionMenuOpen &&
@@ -8827,7 +6639,7 @@ void loop() {
         millis() - lastBleCaptureDraw >= 500) {
         lastBleCaptureDraw = millis();
         bleCaptureUiDirty = false;
-        drawBleDiscovery();
+        bleScreens.drawDiscovery();
     }
 
     if (currentScreen == Screen::AudioMic) {
@@ -8836,7 +6648,7 @@ void loop() {
             microphoneLevel = level;
             if (!screenSleeping && millis() - lastMicrophoneDraw >= 80) {
                 lastMicrophoneDraw = millis();
-                updateMicrophoneMeter();
+                audioScreens.updateMicrophoneMeter();
             }
         }
     }
@@ -8844,37 +6656,37 @@ void loop() {
     if (currentScreen == Screen::Gnss && !actionMenuOpen &&
         millis() - lastGnssDraw >= 500) {
         lastGnssDraw = millis();
-        drawGnss(false);
+        gnssScreen.draw(false);
     }
 
     if (currentScreen == Screen::LoRa && !actionMenuOpen &&
         millis() - lastLoRaDraw >= 500) {
         lastLoRaDraw = millis();
-        drawLoRa(false);
+        loraScreen.draw(false);
     }
 
     if (currentScreen == Screen::WifiSniffer && !actionMenuOpen &&
         millis() - lastWifiSnifferDraw >= 500) {
         lastWifiSnifferDraw = millis();
-        drawWifiSniffer(false);
+        wifiSnifferScreen.draw(false);
     }
 
     if (currentScreen == Screen::WifiGuardian && !actionMenuOpen &&
         millis() - lastGuardianDraw >= 500) {
         lastGuardianDraw = millis();
-        drawWifiGuardian(false);
+        wifiGuardianScreen.draw(false);
     }
 
     if (currentScreen == Screen::BleSpam && !actionMenuOpen &&
         millis() - lastBleSpamDraw >= 300) {
         lastBleSpamDraw = millis();
-        drawBleSpam(false);
+        bleSpamScreen.drawActive(false);
     }
 
     if (currentScreen == Screen::BleKeyboard && !actionMenuOpen &&
         millis() - lastBleKeyboardDraw >= 500) {
         lastBleKeyboardDraw = millis();
-        drawBleKeyboard(false);
+        bleScreens.drawKeyboard(false);
     }
 
     if (currentScreen == Screen::Chameleon && chameleonContinuousScan &&
@@ -8882,7 +6694,7 @@ void loop() {
         millis() - lastChameleonScanMs >= 500) {
         lastChameleonScanMs = millis();
         performChameleonScan();
-        if (!actionMenuOpen) drawChameleon(false);
+        if (!actionMenuOpen) chameleonScreen.draw(false);
     }
 
     if (currentScreen == Screen::Chameleon && !actionMenuOpen &&
@@ -8903,7 +6715,7 @@ void loop() {
         }
         if (!actionMenuOpen && millis() - lastBiscuitWardriveDraw >= 250) {
             lastBiscuitWardriveDraw = millis();
-            drawBiscuitWardrive(false);
+            biscuitScreens.drawWardrive(false);
         }
     }
 
@@ -8922,13 +6734,13 @@ void loop() {
     if (currentScreen == Screen::WarDrive && !actionMenuOpen &&
         millis() - lastWarDriveDraw >= 500) {
         lastWarDriveDraw = millis();
-        drawWarDriveDynamic();
+        networkScanScreens.drawWarDriveDynamic();
     }
 
     if (currentScreen == Screen::FamiliarPatrol && !actionMenuOpen &&
         millis() - lastFamiliarPatrolDraw >= 500) {
         lastFamiliarPatrolDraw = millis();
-        drawFamiliarPatrol(false);
+        familiarScreens.drawPatrol(false);
     }
 
     networkHostScanService.update();
@@ -8939,7 +6751,7 @@ void loop() {
     if (currentScreen == Screen::NetworkHostScan && !actionMenuOpen &&
         millis() - lastNetworkHostScanDraw >= 500) {
         lastNetworkHostScanDraw = millis();
-        drawNetworkHostScan(false);
+        networkScanScreens.drawNetworkHostScan(false);
     }
 
     networkPortScanService.update();
@@ -8950,7 +6762,7 @@ void loop() {
     if (currentScreen == Screen::NetworkPortScan && !actionMenuOpen &&
         millis() - lastNetworkPortScanDraw >= 500) {
         lastNetworkPortScanDraw = millis();
-        drawNetworkPortScan(false);
+        networkScanScreens.drawNetworkPortScan(false);
     }
 
     if (currentScreen == Screen::TelnetSession) {
@@ -8965,7 +6777,7 @@ void loop() {
         }
         if (millis() - lastTelnetDraw >= 150) {
             lastTelnetDraw = millis();
-            if (newData) drawTelnetSessionDynamic();
+            if (newData) telnetScreens.drawSessionDynamic();
             drawFooter(telnetClient.connected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }
@@ -9002,7 +6814,7 @@ void loop() {
         }
         if (millis() - lastSshDraw >= 150) {
             lastSshDraw = millis();
-            if (newData) drawSshSessionDynamic();
+            if (newData) sshScreens.drawSessionDynamic();
             drawFooter(sshService.isConnected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }
@@ -9052,19 +6864,19 @@ void loop() {
     if (currentScreen == Screen::WifiConnectStatus && !actionMenuOpen &&
         millis() - lastWifiConnectDraw >= 1000) {
         lastWifiConnectDraw = millis();
-        drawWifiConnectStatus(false);
+        wifiScreens.drawConnectStatus(false);
     }
 
     if (currentScreen == Screen::WifiHandshakeCapture && !actionMenuOpen &&
         millis() - lastHandshakeCaptureDraw >= 500) {
         lastHandshakeCaptureDraw = millis();
-        drawWifiHandshakeCapture(false);
+        wifiScreens.drawHandshakeCapture(false);
     }
 
     if (currentScreen == Screen::Imu && !actionMenuOpen &&
         millis() - lastImuDraw >= 100) {
         lastImuDraw = millis();
-        drawImu(false);
+        imuScreen.draw(false);
     }
 
     if (millis() - lastHeaderStatusDraw >= 1000) {
@@ -9075,7 +6887,7 @@ void loop() {
     if (currentScreen == Screen::TimeStatus && !actionMenuOpen &&
         millis() - lastTimeStatusDraw >= 1000) {
         lastTimeStatusDraw = millis();
-        drawTimeReadouts();
+        systemScreens.drawTimeReadouts();
     }
 
     if (!screenSleeping && screenTimeoutSeconds > 0 &&
