@@ -6,6 +6,18 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Preserve the originating parent-menu selection when backing out of Wi-Fi,
+  Network, Settings, and Utility screens instead of jumping to the first item.
+- Make headers, list rows, and footers explicitly single-line regions and
+  shorten over-width shortcut legends so M5GFX cannot wrap and hide controls.
+- Treat short first words as valid card-title wrap points, so labels such as
+  `Boot Experience` retain the same large two-line typography as
+  `Firmware Update`.
+
+- Move System and About out of Field Kit's Utility Tools and into Settings,
+  with System/Clock and About back-navigation returning to their new parent.
+  Restore Defaults is now the final Settings item.
+
 ## 0.4.8 - 2026-08-05
 
 - Move OTA download/signature buffers from the loop-task stack to checked

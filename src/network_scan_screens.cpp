@@ -171,7 +171,7 @@ void NetworkScanScreens::drawNetworkPortScan(bool fullDraw) {
                  String(portScan_.totalCount()) +
                  "  Found: " + String(portResults_.size()) + "  Q: stop";
     } else {
-        footer = "R: rescan  Tab: actions  Backspace/Q: back";
+        footer = "R: rescan  Tab: menu  Q: back";
     }
     ScreenChrome::drawFooter(footer.c_str());
 }

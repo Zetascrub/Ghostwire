@@ -42,7 +42,7 @@ void WifiScreens::drawRecon() {
     }
     ScreenChrome::drawFooter(
         wifiExportStatus_.isEmpty()
-            ? "R: scan  Enter: details  Tab: actions  Q: back"
+            ? "R:scan Enter:details Tab:menu Q:back"
             : wifiExportStatus_.c_str());
 }
 

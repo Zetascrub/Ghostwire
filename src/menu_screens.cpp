@@ -262,7 +262,7 @@ void MenuScreens::drawNetwork() {
 void MenuScreens::drawTools() {
     static const char* const items[] = {
         "Infrared",     "USB / HID", "Audio",  "Logs / Sessions",
-        "Motion / IMU", "Files",     "QR Generator", "System", "About",
+        "Motion / IMU", "Files",     "QR Generator",
     };
     constexpr size_t kToolsCount = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
@@ -270,8 +270,7 @@ void MenuScreens::drawTools() {
             "Test the infrared transmitter", "Keyboard and guarded scripts",
             "Speaker, microphone and phrases", "Browse saved log sessions",
             "Inspect motion sensor data", "Browse the microSD card",
-            "Create an offline QR code", "Inspect deck health and time",
-            "Version and project identity",
+            "Create an offline QR code",
         };
         ScreenChrome::drawNavigationCard("Utility tools", items[listSelection_],
                                          descriptions[listSelection_],
@@ -293,14 +292,15 @@ void MenuScreens::drawTools() {
 void MenuScreens::drawSettings() {
     static const char* const items[] = {
         "Display & Audio", "Boot Experience", "Connectivity",
-        "Restore Defaults", "Firmware Update",
+        "System", "Firmware Update", "About Ghostwire", "Restore Defaults",
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Theme, sound and navigation", "Animation, sound and boot speed",
-            "Saved Wi-Fi connection options", "Return preferences to defaults",
-            "Check for a signed release",
+            "Saved Wi-Fi connection options", "Inspect deck health and time",
+            "Check for a signed release", "Version and project identity",
+            "Return preferences to defaults",
         };
         ScreenChrome::drawNavigationCard("Settings", items[listSelection_],
                                          descriptions[listSelection_],
@@ -309,8 +309,11 @@ void MenuScreens::drawSettings() {
     }
     ScreenChrome::drawHeader("Settings");
     ScreenChrome::normalizeListPosition(count);
-    for (size_t row = 0; row < count; ++row) {
-        ScreenChrome::drawListRow(row, items[row], row == listSelection_);
+    ScreenChrome::drawHeaderPosition(listSelection_ + 1, count);
+    for (size_t row = 0;
+         row < ScreenChrome::kVisibleRows && row + listOffset_ < count; ++row) {
+        const size_t item = row + listOffset_;
+        ScreenChrome::drawListRow(row, items[item], item == listSelection_);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");
 }

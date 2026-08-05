@@ -727,11 +727,13 @@ void drawHeader(const char* title) {
     display.fillRect(0, 0, display.width(), 22, Branding::panel);
     display.drawFastHLine(0, 21, display.width(), Branding::accent);
     display.setTextSize(1);
+    display.setTextWrap(false);
     display.setTextColor(Branding::text, Branding::panel);
     display.setCursor(6, 7);
     // Reserve the right side for connection/time/battery status. Long titles
     // used to render underneath that strip and become visually corrupted.
     display.print(String(title).substring(0, 23));
+    display.setTextWrap(true);
     drawHeaderStatus(true);
 }
 
@@ -764,8 +766,13 @@ void drawFooter(const char* text) {
     display.drawFastHLine(0, display.height() - 15, display.width(),
                           Branding::accent);
     display.setTextColor(Branding::muted, Branding::panel);
+    display.setTextSize(1);
+    display.setTextWrap(false);
     display.setCursor(5, display.height() - 11);
-    display.print(text);
+    // A footer is intentionally one line tall. Clip defensive/dynamic text
+    // rather than letting M5GFX wrap it below the display and hide controls.
+    display.print(String(text).substring(0, 38));
+    display.setTextWrap(true);
 }
 
 // Live screens repaint only their content pane. Their header and footer are
@@ -806,6 +813,8 @@ void drawListRow(int row, const String& label, bool selected,
         selected ? Branding::background : Branding::text;
     display.fillRect(4, y, display.width() - 8, 14, background);
     display.setTextColor(foreground, background);
+    display.setTextSize(1);
+    display.setTextWrap(false);
     display.setCursor(8, y + 3);
     size_t labelCharacters = 37;
     int suffixX = display.width() - 8;
@@ -820,6 +829,7 @@ void drawListRow(int row, const String& label, bool selected,
         display.setCursor(suffixX, y + 3);
         display.print(suffix);
     }
+    display.setTextWrap(true);
 }
 
 // Returns the one-off actions available on the current screen, filtered
@@ -1054,16 +1064,23 @@ void drawNavigationCard(const char* header, const String& label,
     display.setTextColor(Branding::text, Branding::background);
     String titleFirst = label;
     String titleSecond;
+    bool compactTitle = false;
     int descriptionY = 57;
     if (titleFirst.length() > 13) {
         int split = titleFirst.substring(0, 14).lastIndexOf(' ');
-        if (split < 5) split = 13;
-        titleSecond = titleFirst.substring(split + 1);
-        titleFirst = titleFirst.substring(0, split);
-        descriptionY = 68;
+        if (split <= 0) {
+            // A long first/single word has no honest wrap point. Keep the
+            // word intact at the smaller size instead of breaking mid-word.
+            compactTitle = true;
+        } else {
+            titleSecond = titleFirst.substring(split + 1);
+            titleFirst = titleFirst.substring(0, split);
+            descriptionY = 68;
+        }
     }
+    if (compactTitle) display.setTextSize(1);
     display.setCursor(76, titleSecond.isEmpty() ? 31 : 25);
-    display.print(titleFirst.substring(0, 13));
+    display.print(titleFirst.substring(0, compactTitle ? 26 : 13));
     if (!titleSecond.isEmpty()) {
         display.setCursor(76, 43);
         display.print(titleSecond.substring(0, 13));
@@ -1640,7 +1657,7 @@ void connectSsh() {
     M5Cardputer.Display.setCursor(8, 36);
     M5Cardputer.Display.printf("Connecting to %s@%s:%u...",
                                sshUsername.c_str(), sshHost.c_str(), sshPort);
-    drawFooter("Please wait (this can take several seconds)");
+    drawFooter("Please wait - may take several seconds");
 
     sshLines.clear();
     sshPendingLine = "";
@@ -4023,7 +4040,7 @@ void goBack() {
     if (currentScreen == Screen::NetworkHostScan) {
         networkHostScanService.stop();
         currentScreen = Screen::NetworkMenu;
-        listSelection = 0;
+        listSelection = 1;
         menuScreens.drawNetwork();
         return;
     }
@@ -4045,8 +4062,11 @@ void goBack() {
         currentScreen == Screen::SettingsBoot ||
         currentScreen == Screen::SettingsConnectivity ||
         currentScreen == Screen::SettingsReset) {
+        const Screen previous = currentScreen;
         currentScreen = Screen::Settings;
-        listSelection = 0;
+        listSelection = previous == Screen::SettingsDisplay ? 0
+                        : previous == Screen::SettingsBoot ? 1
+                        : previous == Screen::SettingsConnectivity ? 2 : 6;
         listOffset = 0;
         menuScreens.drawSettings();
         return;
@@ -4124,6 +4144,21 @@ void goBack() {
         systemScreens.drawSystem(systemDiagnostics());
         return;
     }
+    if (currentScreen == Screen::System || currentScreen == Screen::About) {
+        const bool wasSystem = currentScreen == Screen::System;
+        currentScreen = Screen::Settings;
+        listSelection = wasSystem ? 3 : 5;
+        listOffset = 0;
+        menuScreens.drawSettings();
+        return;
+    }
+    if (currentScreen == Screen::OtaCheck) {
+        currentScreen = Screen::Settings;
+        listSelection = 4;
+        listOffset = 0;
+        menuScreens.drawSettings();
+        return;
+    }
     if (currentScreen == Screen::WifiDetail) {
         currentScreen = Screen::WifiRecon;
         wifiScreens.drawRecon();
@@ -4174,8 +4209,11 @@ void goBack() {
         currentScreen == Screen::WifiChannelAnalyzer ||
         currentScreen == Screen::WifiSniffer ||
         currentScreen == Screen::WifiGuardian) {
+        const Screen previous = currentScreen;
         currentScreen = Screen::WifiMenu;
-        listSelection = 0;
+        listSelection = previous == Screen::WifiRecon ? 0
+                        : previous == Screen::WifiChannelAnalyzer ? 1
+                        : previous == Screen::WifiSniffer ? 2 : 3;
         menuScreens.drawWifi();
         return;
     }
@@ -4271,12 +4309,18 @@ void goBack() {
     if (currentScreen == Screen::Infrared || currentScreen == Screen::UsbHid ||
         currentScreen == Screen::Audio ||
         currentScreen == Screen::Imu ||
-        currentScreen == Screen::System || currentScreen == Screen::About ||
         currentScreen == Screen::Files) {
         // Files only reaches here when at "/" -- the case above already
         // returns for "go up a directory" when currentPath isn't root.
+        const Screen previous = currentScreen;
         currentScreen = Screen::ToolsMenu;
-        listSelection = 0;
+        listSelection = previous == Screen::Infrared ? 0
+                        : previous == Screen::UsbHid ? 1
+                        : previous == Screen::Audio ? 2
+                        : previous == Screen::Imu ? 4 : 5;
+        listOffset = listSelection >= ScreenChrome::kVisibleRows
+                         ? listSelection - ScreenChrome::kVisibleRows + 1
+                         : 0;
         menuScreens.drawTools();
         return;
     }
@@ -4573,7 +4617,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::TelnetConnect) {
         if (keys.esc) {
             currentScreen = telnetReturnScreen;
-            listSelection = 0;
+            listSelection = telnetReturnScreen == Screen::NetworkMenu ? 2 : 0;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -4627,7 +4671,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::SshConnect) {
         if (keys.esc) {
             currentScreen = Screen::NetworkMenu;
-            listSelection = 0;
+            listSelection = 3;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -5436,8 +5480,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::ToolsMenu:
-            if (up) moveSelection(-1, 9);
-            if (down) moveSelection(1, 9);
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
             if (keys.enter) {
                 const size_t toolIndex = listSelection;
                 listSelection = 0;
@@ -5464,8 +5508,6 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         qrText = "";
                         currentScreen = Screen::QrEntry;
                         break;
-                    case 7: currentScreen = Screen::System; break;
-                    case 8: currentScreen = Screen::About; break;
                 }
                 drawCurrentScreen();
                 return;
@@ -5978,19 +6020,20 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
                 else if (listSelection == 2) currentScreen = Screen::SettingsConnectivity;
-                else if (listSelection == 3) currentScreen = Screen::SettingsReset;
-                else {
+                else if (listSelection == 3) currentScreen = Screen::System;
+                else if (listSelection == 4) {
                     listSelection = 0;
                     listOffset = 0;
                     checkForFirmwareUpdate();
                     return;
-                }
+                } else if (listSelection == 5) currentScreen = Screen::About;
+                else currentScreen = Screen::SettingsReset;
                 listSelection = 0;
                 listOffset = 0;
                 drawCurrentScreen();

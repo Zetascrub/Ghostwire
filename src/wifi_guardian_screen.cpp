@@ -37,6 +37,6 @@ void WifiGuardianScreen::draw(bool fullDraw) {
     display.setCursor(8, 97);
     display.print(lastEvent_.substring(0, 37));
     if (fullDraw) {
-        ScreenChrome::drawFooter("S: sensitivity  R: restart  Q: save/exit");
+        ScreenChrome::drawFooter("S: sensitivity R: restart Q: exit");
     }
 }
