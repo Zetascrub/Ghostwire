@@ -122,11 +122,14 @@ verified against test tags.
   field radar view; decode device battery and channel telemetry.
 - [x] Add deliberate EU_868 receive channel/key configuration before any
   transmission. Other regions remain unavailable on the 868 MHz cap.
-- Implement standards-compatible messages, acknowledgements, packet IDs, and
-  position sharing only after duty-cycle and interoperability testing.
+- [x] Add standards-compatible broadcast text with packet IDs, selectable
+  loaded channel, adjustable 1-7 hop limit, channel-activity checks, and an
+  airtime guard.
+- Add direct messages, acknowledgements, NodeInfo announcements, and position
+  sharing only after broadcast interoperability and duty-cycle testing.
 
-The present client remains receive-only; it does not claim full Meshtastic node
-or router behaviour.
+The client behaves as a quiet endpoint: it can receive and originate text but
+does not claim router behaviour or rebroadcast other nodes' traffic.
 
 ### 5. Network socket workbench
 

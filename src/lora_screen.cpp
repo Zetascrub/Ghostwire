@@ -68,7 +68,8 @@ void LoRaScreen::draw(bool fullDraw) {
 }
 
 void LoRaScreen::drawChannels(size_t selection, size_t offset,
-                              const String& configurationStatus) {
+                              const String& configurationStatus,
+                              uint8_t hopLimit) {
     const auto& channels = service_.meshChannels();
     ScreenChrome::drawHeader("Mesh Channels");
     ScreenChrome::drawHeaderPosition(channels.empty() ? 0 : selection + 1,
@@ -93,9 +94,35 @@ void LoRaScreen::drawChannels(size_t selection, size_t offset,
         auto& display = M5Cardputer.Display;
         display.setTextColor(Branding::muted, Branding::background);
         display.setCursor(8, 112);
-        display.print(configurationStatus.substring(0, 37));
+        display.print((configurationStatus + "  Hop " + String(hopLimit))
+                          .substring(0, 37));
     }
-    ScreenChrome::drawFooter("R: reload SD config   Q: mesh menu");
+    ScreenChrome::drawFooter("Left/Right: hops   R: reload   Q: back");
+}
+
+void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
+                             uint8_t hopLimit, const String& nodeName,
+                             const String& status) {
+    ScreenChrome::drawHeader("Mesh Chat Compose");
+    auto& display = M5Cardputer.Display;
+    const auto& channels = service_.meshChannels();
+    const String channel = channelIndex < channels.size()
+                               ? channels[channelIndex].name : "Unavailable";
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 29);
+    display.print((nodeName + "  #" + channel + "  hops " + String(hopLimit))
+                      .substring(0, 37));
+    display.setTextColor(Branding::text, Branding::background);
+    for (size_t line = 0; line < 3; ++line) {
+        const size_t start = line * 36;
+        display.setCursor(8, 49 + static_cast<int>(line) * 16);
+        display.print(draft.substring(start, start + 36));
+    }
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 99);
+    if (!status.isEmpty()) display.print(status.substring(0, 37));
+    else display.printf("%u / 180", static_cast<unsigned>(draft.length()));
+    ScreenChrome::drawFooter("Enter send   </> channel   Esc back");
 }
 
 void LoRaScreen::drawNodes(size_t selection, size_t offset) {
@@ -118,6 +145,16 @@ void LoRaScreen::drawNodes(size_t selection, size_t offset) {
             ScreenChrome::drawListRow(
                 static_cast<int>(i - offset), service_.nodeDisplayName(node.id),
                 i == selection, String(node.lastRssi, 0) + "dB");
+            if (node.hasPosition) {
+                auto& display = M5Cardputer.Display;
+                const int x = 181;
+                const int y = 30 + static_cast<int>(i - offset) * 15;
+                const uint16_t colour = i == selection ? Branding::background
+                                                       : Branding::accent;
+                display.drawCircle(x, y, 2, colour);
+                display.drawLine(x, y + 2, x, y + 5, colour);
+                display.drawLine(x, y + 5, x - 2, y + 3, colour);
+            }
         }
     }
     ScreenChrome::drawFooter("Enter: details   Q: dashboard");
@@ -186,13 +223,14 @@ void LoRaScreen::drawMessages(size_t selection, size_t offset) {
                                     offset + ScreenChrome::kVisibleRows);
         for (size_t i = offset; i < end; ++i) {
             const auto& message = messages[messages.size() - 1 - i];
-            const String label = service_.nodeDisplayName(message.from) + ": " +
+            const String label = (message.outgoing ? "> " : "") +
+                                 service_.nodeDisplayName(message.from) + ": " +
                                  message.text;
             ScreenChrome::drawListRow(static_cast<int>(i - offset), label,
                                       i == selection);
         }
     }
-    ScreenChrome::drawFooter("Enter: read   Q: dashboard");
+    ScreenChrome::drawFooter("Enter read   C compose   Q back");
 }
 
 void LoRaScreen::drawMessageDetail(size_t selection) {

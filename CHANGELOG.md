@@ -6,6 +6,13 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add the first Mesh chat transmitter: compose broadcast text from the message
+  inbox, select any loaded channel, and originate standards-compatible packets
+  as a non-repeating endpoint. The persistent hop limit defaults to 7 and is
+  adjustable from 1-7; channel-activity checks, bounded retries, and an airtime
+  guard protect the shared EU_868 carrier. Sent messages are retained in the SD
+  journal, and positioned nodes now carry a map-pin indicator in the directory.
+
 - Add receive-only Meshtastic Channel Profiles. Ghostwire always listens for
   public LongFast and can validate/load three private AES-128/AES-256 profiles
   from `/ghostwire/mesh/channels.json`, match frames using Meshtastic's actual

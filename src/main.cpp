@@ -415,6 +415,13 @@ uint32_t lastLoggedLoRaPacket = 0;
 uint32_t lastPersistedMeshPacket = 0;
 unsigned long meshPersistDue = 0;
 String meshChannelStatus;
+String meshDraft;
+String meshComposeStatus;
+String meshNodeName;
+String meshNodeShortName;
+uint32_t meshNodeId = 0;
+uint8_t meshHopLimit = 7;
+size_t meshTransmitChannel = 0;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
@@ -911,6 +918,8 @@ void loadMeshState() {
         message.to = value["to"] | 0U;
         message.packetId = value["id"] | 0U;
         message.text = value["text"] | "";
+        message.channel = value["channel"] | "";
+        message.outgoing = value["outgoing"] | false;
         loraService.restoreMessage(message);
     }
 }
@@ -946,6 +955,8 @@ void saveMeshState() {
         value["to"] = message.to;
         value["id"] = message.packetId;
         value["text"] = message.text;
+        value["channel"] = message.channel;
+        value["outgoing"] = message.outgoing;
     }
     SD.remove(kMeshStateTempPath);
     File file = SD.open(kMeshStateTempPath, FILE_WRITE);
@@ -1287,6 +1298,8 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'p', "Switch profile"},
                     {'n', "Open node directory"},
                     {'m', "Open message inbox"}};
+        case Screen::MeshMessages:
+            return {{'c', "Compose broadcast message"}};
         case Screen::WifiSniffer:
             return {{'l', wifiSnifferLogger.isActive() ? "Stop probe CSV"
                                                         : "Start probe CSV"},
@@ -3688,7 +3701,12 @@ void drawCurrentScreen() {
         case Screen::MeshRadar: loraScreen.drawRadar(); break;
         case Screen::MeshChannels:
             loraScreen.drawChannels(listSelection, listOffset,
-                                    meshChannelStatus);
+                                    meshChannelStatus, meshHopLimit);
+            break;
+        case Screen::MeshCompose:
+            loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                   meshHopLimit, meshNodeName,
+                                   meshComposeStatus);
             break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
@@ -4459,6 +4477,13 @@ void goBack() {
         menuScreens.drawMesh();
         return;
     }
+    if (currentScreen == Screen::MeshCompose) {
+        currentScreen = Screen::MeshMessages;
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.drawMessages(listSelection, listOffset);
+        return;
+    }
     if (currentScreen == Screen::LoRa) {
         loraLogger.stop();
     }
@@ -4899,6 +4924,43 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             ++onboardingPage;
             onboardingScreens.draw();
         }
+        return;
+    }
+    if (currentScreen == Screen::MeshCompose) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (keys.left && !loraService.meshChannels().empty()) {
+            meshTransmitChannel = meshTransmitChannel == 0
+                                      ? loraService.meshChannels().size() - 1
+                                      : meshTransmitChannel - 1;
+        }
+        if (keys.right && !loraService.meshChannels().empty()) {
+            meshTransmitChannel =
+                (meshTransmitChannel + 1) % loraService.meshChannels().size();
+        }
+        if (keys.enter && !meshDraft.isEmpty()) {
+            if (loraService.sendText(meshDraft, meshTransmitChannel, meshNodeId,
+                                     meshHopLimit)) {
+                meshDraft = "";
+                meshPersistDue = millis() + 2000;
+            }
+            meshComposeStatus = loraService.transmitStatus();
+            loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                   meshHopLimit, meshNodeName,
+                                   meshComposeStatus);
+            return;
+        }
+        if (keys.backspace && !meshDraft.isEmpty()) {
+            meshDraft.remove(meshDraft.length() - 1);
+        }
+        for (char value : keys.word) {
+            if (!keys.ctrl && meshDraft.length() < 180) meshDraft += value;
+        }
+        meshComposeStatus = "";
+        loraScreen.drawCompose(meshDraft, meshTransmitChannel, meshHopLimit,
+                               meshNodeName, meshComposeStatus);
         return;
     }
     // QR composition owns printable keys before global letter shortcuts.
@@ -5410,7 +5472,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     const bool settingsAdjustmentScreen =
         currentScreen == Screen::SettingsDisplay ||
         currentScreen == Screen::SettingsBoot ||
-        currentScreen == Screen::SettingsConnectivity;
+        currentScreen == Screen::SettingsConnectivity ||
+        currentScreen == Screen::MeshChannels;
     const bool alternateBack =
         (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
         pressedLetter(keys, 'q') ||
@@ -5437,6 +5500,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     }
 
     switch (currentScreen) {
+        case Screen::MeshCompose:
+            // Handled before the global navigation shortcuts above.
+            break;
         case Screen::MainMenu:
             if (up) {
                 menuSelection = menuSelection == 0 ? MenuScreens::kMenuCount - 1
@@ -6620,6 +6686,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMessages:
+            if (pressedLetter(keys, 'c')) {
+                meshComposeStatus = "";
+                currentScreen = Screen::MeshCompose;
+                loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                       meshHopLimit, meshNodeName,
+                                       meshComposeStatus);
+                return;
+            }
             if (up) moveSelection(-1, loraService.messages().size());
             if (down) moveSelection(1, loraService.messages().size());
             normalizeListPosition(loraService.messages().size());
@@ -6641,11 +6715,19 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::MeshChannels:
             if (refresh) loadMeshChannels();
+            if (navigationLeft && meshHopLimit > 1) {
+                --meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
+            if (navigationRight && meshHopLimit < 7) {
+                ++meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
             if (up) moveSelection(-1, loraService.meshChannels().size());
             if (down) moveSelection(1, loraService.meshChannels().size());
             normalizeListPosition(loraService.meshChannels().size());
             loraScreen.drawChannels(listSelection, listOffset,
-                                    meshChannelStatus);
+                                    meshChannelStatus, meshHopLimit);
             break;
 
         case Screen::WifiSniffer:
@@ -7118,6 +7200,16 @@ void setup() {
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
+    const uint64_t hardwareId = ESP.getEfuseMac();
+    meshNodeId = static_cast<uint32_t>(hardwareId & 0xffffffffU);
+    if (meshNodeId < 4 || meshNodeId == 0xffffffffU) meshNodeId ^= 0x47570004U;
+    char defaultMeshName[25];
+    snprintf(defaultMeshName, sizeof(defaultMeshName), "Ghostwire %04lX",
+             static_cast<unsigned long>(meshNodeId & 0xffffU));
+    meshNodeName = preferences.getString("mesh_name", defaultMeshName);
+    meshNodeShortName = preferences.getString("mesh_short", "GW");
+    meshHopLimit = preferences.getUChar("mesh_hops", 7);
+    if (meshHopLimit < 1 || meshHopLimit > 7) meshHopLimit = 7;
     verifyOtaBootOrRollback();
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
@@ -7186,6 +7278,11 @@ void setup() {
     initSd();
     loadMeshChannels();
     loadMeshState();
+    LoRaService::MeshNode localMeshNode;
+    localMeshNode.id = meshNodeId;
+    localMeshNode.longName = meshNodeName;
+    localMeshNode.shortName = meshNodeShortName;
+    loraService.restoreNode(localMeshNode);
     recordBootTelemetry();
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);

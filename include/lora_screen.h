@@ -21,7 +21,10 @@ public:
     void drawMessageDetail(size_t selection);
     void drawRadar();
     void drawChannels(size_t selection, size_t offset,
-                      const String& configurationStatus);
+                      const String& configurationStatus, uint8_t hopLimit);
+    void drawCompose(const String& draft, size_t channelIndex,
+                     uint8_t hopLimit, const String& nodeName,
+                     const String& status);
 
 private:
     LoRaService& service_;

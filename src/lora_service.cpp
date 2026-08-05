@@ -2,6 +2,7 @@
 
 #include <SPI.h>
 #include <algorithm>
+#include <esp_system.h>
 
 namespace {
 volatile bool packetReceived = false;
@@ -122,7 +123,8 @@ void LoRaService::observeDecodedPacket() {
         if (duplicate != messages_.end()) return;
         if (messages_.size() >= 32) messages_.erase(messages_.begin());
         messages_.push_back({lastDecoded_.from, lastDecoded_.to,
-                             lastDecoded_.id, millis(), lastDecoded_.summary});
+                             lastDecoded_.id, millis(), lastDecoded_.summary,
+                             lastDecoded_.channelName, false});
     }
 }
 
@@ -162,6 +164,58 @@ void LoRaService::restoreMessage(const MeshMessage& message) {
         if (messages_.size() >= 32) messages_.erase(messages_.begin());
         messages_.push_back(message);
     }
+}
+
+bool LoRaService::sendText(const String& text, size_t channelIndex,
+                           uint32_t nodeId, uint8_t hopLimit) {
+    if (!ready_ || profile_ != Profile::MeshtasticEuLongFast) {
+        transmitStatus_ = "Meshtastic radio unavailable";
+        return false;
+    }
+    if (static_cast<int32_t>(millis() - nextTransmitMs_) < 0) {
+        transmitStatus_ = "Airtime guard active";
+        return false;
+    }
+    const uint32_t packetId = esp_random();
+    std::vector<uint8_t> packet;
+    if (!decoder_.encodeText(text, channelIndex, nodeId, packetId, hopLimit,
+                             packet)) {
+        transmitStatus_ = "Invalid message or channel";
+        return false;
+    }
+    packetReceived = false;
+    radio_.standby();
+    int16_t cad = radio_.scanChannel();
+    for (uint8_t attempt = 0;
+         cad == RADIOLIB_LORA_DETECTED && attempt < 3; ++attempt) {
+        delay(40 + (esp_random() % 120));
+        cad = radio_.scanChannel();
+    }
+    if (cad == RADIOLIB_LORA_DETECTED) {
+        transmitStatus_ = "Channel busy; try again";
+        restartReceive();
+        return false;
+    }
+    if (cad != RADIOLIB_CHANNEL_FREE) {
+        transmitStatus_ = "Channel check failed: " + String(cad);
+        restartReceive();
+        return false;
+    }
+    const uint32_t airtimeUs = radio_.getTimeOnAir(packet.size());
+    const int16_t transmitResult =
+        radio_.transmit(packet.data(), packet.size());
+    restartReceive();
+    if (transmitResult != RADIOLIB_ERR_NONE) {
+        transmitStatus_ = "Transmit failed: " + String(transmitResult);
+        return false;
+    }
+    nextTransmitMs_ = millis() + std::max<uint32_t>(5000, airtimeUs / 100);
+    transmitStatus_ = "Broadcast sent";
+    const String channel = channelIndex < decoder_.channels().size()
+                               ? decoder_.channels()[channelIndex].name : "";
+    restoreMessage({nodeId, 0xffffffffU, packetId, millis(), text, channel,
+                    true});
+    return true;
 }
 
 bool LoRaService::restartReceive() {

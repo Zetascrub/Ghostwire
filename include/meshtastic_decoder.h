@@ -42,6 +42,9 @@ public:
     const std::vector<MeshtasticChannel>& channels() const { return channels_; }
     static uint8_t channelHash(const String& name,
                                const std::vector<uint8_t>& key);
+    bool encodeText(const String& text, size_t channelIndex, uint32_t from,
+                    uint32_t packetId, uint8_t hopLimit,
+                    std::vector<uint8_t>& packet) const;
     static bool readVarint(const uint8_t* data, size_t length, size_t& offset,
                            uint64_t& value);
 

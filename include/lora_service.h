@@ -35,6 +35,8 @@ public:
         uint32_t packetId = 0;
         uint32_t receivedMs = 0;
         String text;
+        String channel;
+        bool outgoing = false;
     };
 
     enum class Profile {
@@ -68,6 +70,10 @@ public:
     const std::vector<MeshtasticChannel>& meshChannels() const {
         return decoder_.channels();
     }
+    bool sendText(const String& text, size_t channelIndex, uint32_t nodeId,
+                  uint8_t hopLimit);
+    const String& transmitStatus() const { return transmitStatus_; }
+    uint32_t nextTransmitMs() const { return nextTransmitMs_; }
 
 private:
     Module module_{5, 4, 3, 6};
@@ -87,4 +93,6 @@ private:
     std::vector<MeshMessage> messages_;
 
     void observeDecodedPacket();
+    String transmitStatus_;
+    uint32_t nextTransmitMs_ = 0;
 };

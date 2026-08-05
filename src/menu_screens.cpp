@@ -226,8 +226,8 @@ void MenuScreens::drawMesh() {
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Listen and review mesh activity", "Known identities and positions",
-            "Recent public-channel messages", "GNSS-relative mesh positions",
-            "Public and private receive keys"};
+            "Receive and send channel messages", "GNSS-relative mesh positions",
+            "Channels, private keys, and hop limit"};
         ScreenChrome::drawNavigationCard("Mesh signals", items[listSelection_],
                                          descriptions[listSelection_],
                                          listSelection_, 5, 1);

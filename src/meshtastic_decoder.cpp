@@ -160,6 +160,65 @@ void MeshtasticDecoder::setChannels(
     }
 }
 
+bool MeshtasticDecoder::encodeText(const String& text, size_t channelIndex,
+                                   uint32_t from, uint32_t packetId,
+                                   uint8_t hopLimit,
+                                   std::vector<uint8_t>& packet) const {
+    if (channelIndex >= channels_.size() || from == 0 || text.isEmpty() ||
+        text.length() > 180 || hopLimit < 1 || hopLimit > 7) return false;
+    const auto& channel = channels_[channelIndex];
+    std::vector<uint8_t> plain;
+    plain.reserve(text.length() + 5);
+    plain.push_back(0x08);  // Data.portnum, varint
+    plain.push_back(0x01);  // TEXT_MESSAGE_APP
+    plain.push_back(0x12);  // Data.payload, length-delimited
+    if (text.length() < 128) {
+        plain.push_back(static_cast<uint8_t>(text.length()));
+    } else {
+        plain.push_back(static_cast<uint8_t>(text.length()) | 0x80);
+        plain.push_back(static_cast<uint8_t>(text.length() >> 7));
+    }
+    plain.insert(plain.end(), text.c_str(), text.c_str() + text.length());
+
+    packet.assign(kHeaderLength + plain.size(), 0);
+    const auto writeLe32 = [&](size_t offset, uint32_t value) {
+        packet[offset] = value & 0xff;
+        packet[offset + 1] = (value >> 8) & 0xff;
+        packet[offset + 2] = (value >> 16) & 0xff;
+        packet[offset + 3] = (value >> 24) & 0xff;
+    };
+    writeLe32(0, 0xffffffffU);
+    writeLe32(4, from);
+    writeLe32(8, packetId);
+    packet[12] = static_cast<uint8_t>(hopLimit | (hopLimit << 5));
+    packet[13] = channel.hash;
+    packet[14] = 0;
+    packet[15] = static_cast<uint8_t>(from & 0xff);
+
+    if (!channel.key.empty()) {
+        uint8_t nonce[16] = {};
+        memcpy(nonce, &packetId, sizeof(packetId));
+        memcpy(nonce + 8, &from, sizeof(from));
+        mbedtls_aes_context aes;
+        mbedtls_aes_init(&aes);
+        if (mbedtls_aes_setkey_enc(&aes, channel.key.data(),
+                                   channel.key.size() * 8) != 0) {
+            mbedtls_aes_free(&aes);
+            return false;
+        }
+        size_t nonceOffset = 0;
+        uint8_t streamBlock[16] = {};
+        const int status = mbedtls_aes_crypt_ctr(
+            &aes, plain.size(), &nonceOffset, nonce, streamBlock, plain.data(),
+            packet.data() + kHeaderLength);
+        mbedtls_aes_free(&aes);
+        if (status != 0) return false;
+    } else {
+        memcpy(packet.data() + kHeaderLength, plain.data(), plain.size());
+    }
+    return true;
+}
+
 
 void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
     size_t offset = 0;

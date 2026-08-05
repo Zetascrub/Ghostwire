@@ -158,16 +158,20 @@ The detailed capabilities behind those missions are:
 
 - GPS provides GNSS fix monitoring, live position/altitude/HDOP, and one-second
   CSV recording.
-- Mesh provides a receive-only Meshtastic field client over the SX1262. Its
+- Mesh provides a lightweight Meshtastic field client over the SX1262. Its
   dashboard feeds a bounded 24-node directory and 32-message inbox, decodes
   public-channel identities and positions, suppresses repeated messages, and
   retains raw radio metadata in event-driven CSV logs. Node and message detail
   views remain available while the radio continues listening. A GNSS-relative
   radar plots received positions and node details calculate range/bearing;
   device battery telemetry is shown when broadcast. The bounded client state
-  is restored from `/ghostwire/mesh/state.json` after reboot.
+  is restored from `/ghostwire/mesh/state.json` after reboot. The message
+  inbox can compose broadcast text on any loaded channel. Ghostwire originates
+  packets as a non-repeating `CLIENT_MUTE`-style endpoint, with a persistent
+  adjustable hop limit of 1-7 (default 7), channel-activity checks, and an
+  airtime guard; it does not route or rebroadcast other nodes' traffic.
 - Channel Profiles always retains the public `LongFast` decoder and can load
-  up to three private receive-only channels from
+  up to three private receive/transmit channels from
   `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name
   and a Base64 AES-128/AES-256 PSK; malformed entries are rejected without
   exposing their key material. The Cap LoRa-1262 remains fixed to the EU_868
@@ -390,7 +394,7 @@ authorized security field toolkit. It includes:
 - Persistent Slow, Normal, and Fast boot-speed settings scale the complete
   animation, title reveal, summary, and hold sequence.
 - Battery percentage, charge status, and low-battery indication.
-- GNSS fix monitoring and a passive SX1262 Meshtastic field client with a
+- GNSS fix monitoring and an SX1262 Meshtastic field client with a
   bounded node directory and message inbox.
 - Live accelerometer/gyroscope data, orientation, motion state, and stationary
   gyro calibration.
@@ -401,8 +405,8 @@ authorized security field toolkit. It includes:
 - Event-driven passive LoRa packet logging with radio metadata and payload
   previews.
 - GNSS-synchronized UTC system time and ISO-8601 timestamps in new logs.
-- Receive-only Meshtastic public-channel identity, position, port, and text
-  decoding with duplicate suppression and readable detail views.
+- Meshtastic identity, position, port, and text decoding with duplicate
+  suppression, plus guarded broadcast text composition on loaded channels.
 - One-shot CSV export of Wi-Fi and BLE discovery results.
 - Dedicated log-session browsing, metadata, preview, and confirmed deletion.
 - Persistent boot/recovery counters and append-only SD startup history.
