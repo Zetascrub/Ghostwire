@@ -27,7 +27,9 @@ public:
                      const String& status);
     void drawSettings(size_t selection, size_t offset, const String& longName,
                       const String& shortName, size_t channelIndex,
-                      uint8_t hopLimit, bool editing, const String& status);
+                      uint8_t hopLimit, bool backgroundEnabled,
+                      bool messageAlertsEnabled, bool editing,
+                      const String& status);
 
 private:
     LoRaService& service_;

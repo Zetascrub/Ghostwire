@@ -47,11 +47,13 @@ public:
     bool begin();
     void update();
     bool restartReceive();
+    void end();
     bool toggleProfile();
 
     bool isReady() const { return ready_; }
     int status() const { return status_; }
     uint32_t packetCount() const { return packetCount_; }
+    uint32_t receivedMessageCount() const { return receivedMessageCount_; }
     float lastRssi() const { return lastRssi_; }
     float lastSnr() const { return lastSnr_; }
     const String& lastPacket() const { return lastPacket_; }
@@ -84,6 +86,7 @@ private:
     bool ready_ = false;
     int status_ = RADIOLIB_ERR_UNKNOWN;
     uint32_t packetCount_ = 0;
+    uint32_t receivedMessageCount_ = 0;
     float lastRssi_ = 0.0F;
     float lastSnr_ = 0.0F;
     String lastPacket_;

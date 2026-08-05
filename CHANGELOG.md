@@ -6,6 +6,12 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add persistent Background client and Message alerts toggles to Mesh Settings.
+  Background mode starts Meshtastic reception at boot and keeps it active away
+  from Mesh screens; otherwise the SX1262 stops when the operator leaves Mesh.
+  Newly decoded text messages can play a short rate-limited two-note cue that
+  yields to active audio playback.
+
 - Add dedicated Mesh Settings for persistent Meshtastic long/short names,
   transmit channel, and hop limit. The page displays the fixed `CLIENT_MUTE`
   role and EU_868 region and can explicitly advertise a standard NodeInfo

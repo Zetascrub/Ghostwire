@@ -125,6 +125,7 @@ void LoRaService::observeDecodedPacket() {
         messages_.push_back({lastDecoded_.from, lastDecoded_.to,
                              lastDecoded_.id, millis(), lastDecoded_.summary,
                              lastDecoded_.channelName, false});
+        ++receivedMessageCount_;
     }
 }
 
@@ -242,6 +243,13 @@ bool LoRaService::restartReceive() {
     status_ = radio_.startReceive();
     ready_ = status_ == RADIOLIB_ERR_NONE;
     return ready_;
+}
+
+void LoRaService::end() {
+    if (ready_) radio_.standby();
+    ready_ = false;
+    packetReceived = false;
+    transmitStatus_ = "Meshtastic radio stopped";
 }
 
 bool LoRaService::toggleProfile() {

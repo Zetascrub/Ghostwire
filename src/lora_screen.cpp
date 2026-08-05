@@ -128,7 +128,9 @@ void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
 void LoRaScreen::drawSettings(size_t selection, size_t offset,
                               const String& longName, const String& shortName,
                               size_t channelIndex, uint8_t hopLimit,
-                              bool editing, const String& status) {
+                              bool backgroundEnabled,
+                              bool messageAlertsEnabled, bool editing,
+                              const String& status) {
     ScreenChrome::drawHeader(editing ? "Edit Mesh Identity" : "Mesh Settings");
     auto& display = M5Cardputer.Display;
     const auto& channels = service_.meshChannels();
@@ -148,15 +150,17 @@ void LoRaScreen::drawSettings(size_t selection, size_t offset,
         ScreenChrome::drawFooter("Enter save   Esc cancel");
         return;
     }
-    constexpr size_t count = 7;
+    constexpr size_t count = 9;
     ScreenChrome::normalizeListPosition(count);
     const char* const labels[count] = {
-        "Long name", "Short name", "TX channel", "Hop limit",
-        "Device role", "Region", "Advertise identity",
+        "Long name", "Short name", "Background client", "Message alerts",
+        "TX channel", "Hop limit", "Device role", "Region",
+        "Advertise identity",
     };
     const String values[count] = {
-        longName, shortName, channel, String(hopLimit), "Client mute",
-        "EU_868", "Enter",
+        longName, shortName, backgroundEnabled ? "On" : "Off",
+        messageAlertsEnabled ? "On" : "Off", channel, String(hopLimit),
+        "Client mute", "EU_868", "Enter",
     };
     for (size_t row = 0;
          row < ScreenChrome::kVisibleRows && row + offset < count; ++row) {

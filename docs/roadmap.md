@@ -127,6 +127,8 @@ verified against test tags.
   airtime guard.
 - [x] Add persistent long/short node identity, a dedicated Mesh Settings page,
   and deliberate NodeInfo advertisement as a `CLIENT_MUTE` endpoint.
+- [x] Add optional boot-started background receive and rate-limited audible
+  notification for newly decoded text messages.
 - Add direct messages, acknowledgements, and position sharing only after
   broadcast interoperability and duty-cycle testing.
 

@@ -173,7 +173,11 @@ The detailed capabilities behind those missions are:
   Mesh Settings provides persistent 24-character long and four-character
   short names, transmit-channel selection, hop-limit adjustment, and an
   explicit NodeInfo identity advertisement. The page also makes the fixed
-  `CLIENT_MUTE` role and EU_868 region visible.
+  `CLIENT_MUTE` role and EU_868 region visible. Optional background-client mode
+  starts the SX1262 at boot and continues receiving away from Mesh screens;
+  when disabled, the radio stops after leaving Mesh. A separate persistent
+  message-alert toggle plays a short two-note cue for each newly decoded text
+  message without interrupting active audio.
 - Channel Profiles always retains the public `LongFast` decoder and can load
   up to three private receive/transmit channels from
   `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name

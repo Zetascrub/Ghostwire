@@ -422,6 +422,9 @@ String meshNodeShortName;
 String meshIdentityEditOriginal;
 String meshSettingsStatus;
 bool meshIdentityEditing = false;
+bool meshBackgroundEnabled = false;
+bool meshMessageAlertsEnabled = true;
+uint32_t observedMeshMessageCount = 0;
 uint32_t meshNodeId = 0;
 uint8_t meshHopLimit = 7;
 size_t meshTransmitChannel = 0;
@@ -479,6 +482,8 @@ constexpr bool kDefaultCardNavigation = false;
 constexpr uint8_t kDefaultBootAnimation = 0;
 constexpr uint8_t kDefaultBootSoundPreset = 0;
 constexpr uint8_t kDefaultFamiliarCue = 0;
+constexpr bool kDefaultMeshBackground = false;
+constexpr bool kDefaultMeshMessageAlerts = true;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 // Boot/settings name tables: see include/settings_names.h.
 
@@ -509,6 +514,13 @@ void saveSettings() {
     preferences.putUChar("boot_anim", bootAnimationIndex);
     preferences.putUChar("boot_tone", bootSoundIndex);
     preferences.putUChar("fam_cue", familiarCueIndex);
+    preferences.putBool("mesh_bg", meshBackgroundEnabled);
+    preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
+    preferences.putUChar("mesh_hops", meshHopLimit);
+    preferences.putUChar("mesh_tx_ch",
+                         static_cast<uint8_t>(meshTransmitChannel));
+    preferences.putString("mesh_name", meshNodeName);
+    preferences.putString("mesh_short", meshNodeShortName);
 }
 
 String wifiProfileKey(const char* field, size_t index) {
@@ -647,6 +659,15 @@ void restoreDefaultSettings() {
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
     familiarCueIndex = kDefaultFamiliarCue;
+    meshBackgroundEnabled = kDefaultMeshBackground;
+    meshMessageAlertsEnabled = kDefaultMeshMessageAlerts;
+    meshHopLimit = 7;
+    meshTransmitChannel = 0;
+    char defaultMeshName[25];
+    snprintf(defaultMeshName, sizeof(defaultMeshName), "Ghostwire %04lX",
+             static_cast<unsigned long>(meshNodeId & 0xffffU));
+    meshNodeName = defaultMeshName;
+    meshNodeShortName = "GW";
     Branding::applyTheme(themeIndex);
     applySettings();
     saveSettings();
@@ -3413,6 +3434,18 @@ void playFamiliarCue(FamiliarCue cue) {
     if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
 }
 
+void playMeshMessageAlert() {
+    if (!meshMessageAlertsEnabled || speakerVolume == 0 ||
+        audioService.isPlaying() || millis() - lastFamiliarCueMs < 700) {
+        return;
+    }
+    lastFamiliarCueMs = millis();
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
+    M5Cardputer.Speaker.tone(988, 55);
+    M5Cardputer.Speaker.tone(1319, 75);
+}
+
 // drawFamiliarSpeechBubble(): see FamiliarScreens::drawSpeechBubble.
 
 bool familiarSensitivePort(uint16_t port) {
@@ -3714,7 +3747,9 @@ void drawCurrentScreen() {
         case Screen::MeshSettings:
             loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
                                     meshNodeShortName, meshTransmitChannel,
-                                    meshHopLimit, meshIdentityEditing,
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled,
+                                    meshIdentityEditing,
                                     meshSettingsStatus);
             break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
@@ -4500,7 +4535,9 @@ void goBack() {
             meshIdentityEditing = false;
             loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
                                     meshNodeShortName, meshTransmitChannel,
-                                    meshHopLimit, false, meshSettingsStatus);
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled, false,
+                                    meshSettingsStatus);
             return;
         }
         currentScreen = Screen::MeshMenu;
@@ -4863,6 +4900,9 @@ void goBack() {
     if (currentScreen == Screen::WifiMenu || currentScreen == Screen::BleMenu ||
         currentScreen == Screen::GpsMenu || currentScreen == Screen::MeshMenu) {
         const Screen previous = currentScreen;
+        if (previous == Screen::MeshMenu && !meshBackgroundEnabled) {
+            loraService.end();
+        }
         currentScreen = Screen::ObserveMenu;
         listSelection = previous == Screen::WifiMenu ? 0
                         : previous == Screen::BleMenu ? 1
@@ -5022,7 +5062,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
                                 meshNodeShortName, meshTransmitChannel,
-                                meshHopLimit, meshIdentityEditing,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, meshIdentityEditing,
                                 meshSettingsStatus);
         return;
     }
@@ -6796,10 +6837,27 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshSettings:
-            if (up) moveSelection(-1, 7);
-            if (down) moveSelection(1, 7);
-            normalizeListPosition(7);
-            if (listSelection == 2 && !loraService.meshChannels().empty()) {
+            if (up) moveSelection(-1, 9);
+            if (down) moveSelection(1, 9);
+            normalizeListPosition(9);
+            if (listSelection == 2 && (navigationLeft || navigationRight)) {
+                meshBackgroundEnabled = !meshBackgroundEnabled;
+                preferences.putBool("mesh_bg", meshBackgroundEnabled);
+                if (meshBackgroundEnabled && !loraService.isReady()) {
+                    loraService.begin();
+                }
+                meshSettingsStatus = meshBackgroundEnabled
+                                         ? "Background receive enabled"
+                                         : "Stops after leaving Mesh";
+            }
+            if (listSelection == 3 && (navigationLeft || navigationRight)) {
+                meshMessageAlertsEnabled = !meshMessageAlertsEnabled;
+                preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
+                meshSettingsStatus = meshMessageAlertsEnabled
+                                         ? "New-message tones enabled"
+                                         : "Message alerts muted";
+            }
+            if (listSelection == 4 && !loraService.meshChannels().empty()) {
                 if (navigationLeft) {
                     meshTransmitChannel = meshTransmitChannel == 0
                         ? loraService.meshChannels().size() - 1
@@ -6813,7 +6871,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 preferences.putUChar("mesh_tx_ch",
                                      static_cast<uint8_t>(meshTransmitChannel));
             }
-            if (listSelection == 3) {
+            if (listSelection == 5) {
                 if (navigationLeft && meshHopLimit > 1) --meshHopLimit;
                 if (navigationRight && meshHopLimit < 7) ++meshHopLimit;
                 preferences.putUChar("mesh_hops", meshHopLimit);
@@ -6824,7 +6882,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                                : meshNodeShortName;
                 meshIdentityEditing = true;
                 meshSettingsStatus = "";
-            } else if (keys.enter && listSelection == 6) {
+            } else if (keys.enter && listSelection == 8) {
                 if (loraService.sendNodeInfo(
                         meshNodeName, meshNodeShortName, meshTransmitChannel,
                         meshNodeId, meshHopLimit)) {
@@ -6838,7 +6896,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
                                     meshNodeShortName, meshTransmitChannel,
-                                    meshHopLimit, meshIdentityEditing,
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled,
+                                    meshIdentityEditing,
                                     meshSettingsStatus);
             break;
 
@@ -7328,6 +7388,10 @@ void setup() {
     }
     meshHopLimit = preferences.getUChar("mesh_hops", 7);
     if (meshHopLimit < 1 || meshHopLimit > 7) meshHopLimit = 7;
+    meshBackgroundEnabled =
+        preferences.getBool("mesh_bg", kDefaultMeshBackground);
+    meshMessageAlertsEnabled =
+        preferences.getBool("mesh_alert", kDefaultMeshMessageAlerts);
     verifyOtaBootOrRollback();
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
@@ -7405,6 +7469,9 @@ void setup() {
     localMeshNode.longName = meshNodeName;
     localMeshNode.shortName = meshNodeShortName;
     loraService.restoreNode(localMeshNode);
+    if (meshBackgroundEnabled) {
+        loraService.begin();
+    }
     recordBootTelemetry();
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
@@ -7558,6 +7625,10 @@ void loop() {
     updateBatteryEstimate();
     gnssService.update();
     loraService.update();
+    if (loraService.receivedMessageCount() != observedMeshMessageCount) {
+        observedMeshMessageCount = loraService.receivedMessageCount();
+        playMeshMessageAlert();
+    }
     if (loraService.packetCount() != lastPersistedMeshPacket &&
         meshPersistDue == 0) {
         meshPersistDue = millis() + 2000;
