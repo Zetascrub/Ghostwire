@@ -101,7 +101,7 @@ void LoRaScreen::drawChannels(size_t selection, size_t offset,
 }
 
 void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
-                             uint8_t hopLimit, const String& nodeName,
+                             uint8_t hopLimit, uint32_t recipient,
                              const String& status) {
     ScreenChrome::drawHeader("Mesh Chat Compose");
     auto& display = M5Cardputer.Display;
@@ -110,8 +110,11 @@ void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
                                ? channels[channelIndex].name : "Unavailable";
     display.setTextColor(Branding::muted, Branding::background);
     display.setCursor(8, 29);
-    display.print((nodeName + "  #" + channel + "  hops " + String(hopLimit))
-                      .substring(0, 37));
+    const String target = recipient == 0xffffffffU
+                              ? "All"
+                              : service_.nodeDisplayName(recipient);
+    display.print(("To " + target + "  #" + channel + "  h" +
+                   String(hopLimit)).substring(0, 37));
     display.setTextColor(Branding::text, Branding::background);
     for (size_t line = 0; line < 3; ++line) {
         const size_t start = line * 36;
@@ -122,7 +125,9 @@ void LoRaScreen::drawCompose(const String& draft, size_t channelIndex,
     display.setCursor(8, 99);
     if (!status.isEmpty()) display.print(status.substring(0, 37));
     else display.printf("%u / 180", static_cast<unsigned>(draft.length()));
-    ScreenChrome::drawFooter("Enter send   </> channel   Esc back");
+    ScreenChrome::drawFooter(recipient == 0xffffffffU
+                                 ? "Enter send   </> channel   Esc back"
+                                 : "Enter reply   Esc cancel");
 }
 
 void LoRaScreen::drawSettings(size_t selection, size_t offset,
@@ -274,8 +279,9 @@ void LoRaScreen::drawMessages(size_t selection, size_t offset) {
                                     offset + ScreenChrome::kVisibleRows);
         for (size_t i = offset; i < end; ++i) {
             const auto& message = messages[messages.size() - 1 - i];
+            const uint32_t peer = message.outgoing ? message.to : message.from;
             const String label = (message.outgoing ? "> " : "") +
-                                 service_.nodeDisplayName(message.from) + ": " +
+                                 service_.nodeDisplayName(peer) + ": " +
                                  message.text;
             ScreenChrome::drawListRow(static_cast<int>(i - offset), label,
                                       i == selection);
@@ -292,9 +298,15 @@ void LoRaScreen::drawMessageDetail(size_t selection) {
     auto& display = M5Cardputer.Display;
     display.setTextColor(Branding::accent, Branding::background);
     display.setCursor(8, 29);
-    display.print(service_.nodeDisplayName(message.from).substring(0, 35));
+    const uint32_t peer = message.outgoing ? message.to : message.from;
+    display.print(((message.outgoing ? "To " : "From ") +
+                   service_.nodeDisplayName(peer)).substring(0, 35));
     display.setTextColor(Branding::muted, Branding::background);
     display.setCursor(8, 46);
+    display.print(("#" + message.channel +
+                   (message.to == 0xffffffffU ? "  Broadcast" : "  Direct"))
+                      .substring(0, 37));
+    display.setCursor(8, 61);
     display.printf("ID %08lX  to %08lX",
                    static_cast<unsigned long>(message.packetId),
                    static_cast<unsigned long>(message.to));
@@ -302,10 +314,12 @@ void LoRaScreen::drawMessageDetail(size_t selection) {
     for (size_t line = 0; line < 3; ++line) {
         const size_t start = line * 36;
         if (start >= message.text.length()) break;
-        display.setCursor(8, 64 + static_cast<int>(line) * 16);
+        display.setCursor(8, 76 + static_cast<int>(line) * 15);
         display.print(message.text.substring(start, start + 36));
     }
-    ScreenChrome::drawFooter("Q: message inbox");
+    ScreenChrome::drawFooter(message.outgoing
+                                 ? "Q: message inbox"
+                                 : "R: reply   Q: message inbox");
 }
 
 void LoRaScreen::drawRadar() {

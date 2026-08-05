@@ -178,6 +178,10 @@ The detailed capabilities behind those missions are:
   when disabled, the radio stops after leaving Mesh. A separate persistent
   message-alert toggle plays a short two-note cue for each newly decoded text
   message without interrupting active audio.
+  Opening an incoming message and pressing `R` composes a direct reply to its
+  sender on the same public or private channel. Direct packets request a mesh
+  acknowledgement; broadcast composition remains available with `C`, and the
+  inbox distinguishes incoming peers from outgoing recipients.
 - Channel Profiles always retains the public `LongFast` decoder and can load
   up to three private receive/transmit channels from
   `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name

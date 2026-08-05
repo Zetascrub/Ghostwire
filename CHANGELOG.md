@@ -6,6 +6,12 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add direct Meshtastic replies from received-message detail. Replies retain
+  the original public/private channel, target the sender's node ID, request an
+  acknowledgement, and are journalled with the actual recipient. Message lists
+  and details now distinguish incoming senders, outgoing recipients, channel,
+  and direct-versus-broadcast traffic.
+
 - Add persistent Background client and Message alerts toggles to Mesh Settings.
   Background mode starts Meshtastic reception at boot and keeps it active away
   from Mesh screens; otherwise the SX1262 stops when the operator leaves Mesh.

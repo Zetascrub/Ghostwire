@@ -129,8 +129,10 @@ verified against test tags.
   and deliberate NodeInfo advertisement as a `CLIENT_MUTE` endpoint.
 - [x] Add optional boot-started background receive and rate-limited audible
   notification for newly decoded text messages.
-- Add direct messages, acknowledgements, and position sharing only after
-  broadcast interoperability and duty-cycle testing.
+- [x] Add direct reply composition on the source channel with Meshtastic's
+  acknowledgement-request flag and clear incoming/outgoing conversation labels.
+- Decode acknowledgement outcomes and add deliberate direct composition from
+  the node directory; add position sharing after duty-cycle testing.
 
 The client behaves as a quiet endpoint: it can receive and originate text but
 does not claim router behaviour or rebroadcast other nodes' traffic.

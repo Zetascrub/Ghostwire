@@ -23,7 +23,7 @@ public:
     void drawChannels(size_t selection, size_t offset,
                       const String& configurationStatus, uint8_t hopLimit);
     void drawCompose(const String& draft, size_t channelIndex,
-                     uint8_t hopLimit, const String& nodeName,
+                     uint8_t hopLimit, uint32_t recipient,
                      const String& status);
     void drawSettings(size_t selection, size_t offset, const String& longName,
                       const String& shortName, size_t channelIndex,

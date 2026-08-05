@@ -161,14 +161,15 @@ void MeshtasticDecoder::setChannels(
 }
 
 bool MeshtasticDecoder::encodeText(const String& text, size_t channelIndex,
-                                   uint32_t from, uint32_t packetId,
+                                   uint32_t from, uint32_t to,
+                                   uint32_t packetId,
                                    uint8_t hopLimit,
                                    std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || text.isEmpty() ||
         text.length() > 180 || hopLimit < 1 || hopLimit > 7) return false;
     std::vector<uint8_t> payload(text.c_str(), text.c_str() + text.length());
-    return encodeApplication(payload, 1, channelIndex, from, packetId,
-                             hopLimit, packet);
+    return encodeApplication(payload, 1, channelIndex, from, to, packetId,
+                             hopLimit, to != 0xffffffffU, packet);
 }
 
 bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
@@ -192,13 +193,14 @@ bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
     appendString(0x1a, shortName); // User.short_name
     user.push_back(0x38);          // User.role
     user.push_back(0x01);          // CLIENT_MUTE
-    return encodeApplication(user, 4, channelIndex, from, packetId, hopLimit,
-                             packet);
+    return encodeApplication(user, 4, channelIndex, from, 0xffffffffU,
+                             packetId, hopLimit, false, packet);
 }
 
 bool MeshtasticDecoder::encodeApplication(
     const std::vector<uint8_t>& payload, uint32_t port, size_t channelIndex,
-    uint32_t from, uint32_t packetId, uint8_t hopLimit,
+    uint32_t from, uint32_t to, uint32_t packetId, uint8_t hopLimit,
+    bool wantAck,
     std::vector<uint8_t>& packet) const {
     if (channelIndex >= channels_.size() || from == 0 || payload.empty() ||
         payload.size() > 220 || port > 127 || hopLimit < 1 || hopLimit > 7) {
@@ -225,10 +227,11 @@ bool MeshtasticDecoder::encodeApplication(
         packet[offset + 2] = (value >> 16) & 0xff;
         packet[offset + 3] = (value >> 24) & 0xff;
     };
-    writeLe32(0, 0xffffffffU);
+    writeLe32(0, to);
     writeLe32(4, from);
     writeLe32(8, packetId);
-    packet[12] = static_cast<uint8_t>(hopLimit | (hopLimit << 5));
+    packet[12] = static_cast<uint8_t>(hopLimit | (hopLimit << 5) |
+                                      (wantAck ? 0x08 : 0x00));
     packet[13] = channel.hash;
     packet[14] = 0;
     packet[15] = static_cast<uint8_t>(from & 0xff);

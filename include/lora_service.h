@@ -73,7 +73,7 @@ public:
         return decoder_.channels();
     }
     bool sendText(const String& text, size_t channelIndex, uint32_t nodeId,
-                  uint8_t hopLimit);
+                  uint32_t to, uint8_t hopLimit);
     bool sendNodeInfo(const String& longName, const String& shortName,
                       size_t channelIndex, uint32_t nodeId, uint8_t hopLimit);
     const String& transmitStatus() const { return transmitStatus_; }
