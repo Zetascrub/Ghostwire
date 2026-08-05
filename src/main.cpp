@@ -425,6 +425,8 @@ bool meshIdentityEditing = false;
 bool meshBackgroundEnabled = false;
 bool meshMessageAlertsEnabled = true;
 uint32_t observedMeshMessageCount = 0;
+bool meshAlertSecondNotePending = false;
+unsigned long meshAlertSecondNoteDue = 0;
 uint32_t meshNodeId = 0;
 uint8_t meshHopLimit = 7;
 size_t meshTransmitChannel = 0;
@@ -3443,6 +3445,22 @@ void playMeshMessageAlert() {
     M5Cardputer.Speaker.begin();
     M5Cardputer.Speaker.setVolume(speakerVolume);
     M5Cardputer.Speaker.tone(988, 55);
+    meshAlertSecondNotePending = true;
+    meshAlertSecondNoteDue = millis() + 70;
+}
+
+void updateMeshMessageAlert() {
+    if (!meshAlertSecondNotePending ||
+        static_cast<long>(millis() - meshAlertSecondNoteDue) < 0) {
+        return;
+    }
+    meshAlertSecondNotePending = false;
+    if (!meshMessageAlertsEnabled || speakerVolume == 0 ||
+        audioService.isPlaying()) {
+        return;
+    }
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
     M5Cardputer.Speaker.tone(1319, 75);
 }
 
@@ -7509,6 +7527,7 @@ void loop() {
     observeFamiliarToolScreen();
     familiarPatrolService.update();
     updateFamiliarVoice();
+    updateMeshMessageAlert();
     const uint32_t patrolHosts = familiarPatrolService.hostsFound();
     const uint32_t patrolOpenPorts = familiarPatrolService.openPortsFound();
     if (patrolHosts < familiarObservedPatrolHosts) {

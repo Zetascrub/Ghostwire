@@ -11,6 +11,9 @@ assessment tools built on those verified foundations.
   from Mesh screens; otherwise the SX1262 stops when the operator leaves Mesh.
   Newly decoded text messages can play a short rate-limited two-note cue that
   yields to active audio playback.
+- Schedule the message alert's second note after the first note finishes instead
+  of asking the speaker driver to play both simultaneously, which previously
+  caused one tone to replace the other.
 
 - Add dedicated Mesh Settings for persistent Meshtastic long/short names,
   transmit channel, and hop limit. The page displays the fixed `CLIENT_MUTE`
