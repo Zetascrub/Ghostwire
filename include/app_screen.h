@@ -1,6 +1,7 @@
 #pragma once
 
 enum class Screen {
+    Onboarding,
     MainMenu,
     ObserveMenu,
     FieldKitMenu,

@@ -34,6 +34,7 @@
 #include "settings_screens.h"
 #include "ota_service.h"
 #include "operation_coordinator.h"
+#include "onboarding_screens.h"
 #include "ota_screens.h"
 #include "system_screens.h"
 #include "eapol_parser.h"
@@ -359,6 +360,8 @@ bool autoConnectWifi = false;
 bool cyberdeckIdleEnabled = false;
 uint8_t cyberdeckIdleStyle = 0;
 bool cardNavigationEnabled = false;
+uint8_t onboardingPage = 0;
+bool onboardingFromSettings = false;
 MenuScreens menuScreens(listSelection, listOffset, menuSelection,
                         cardNavigationEnabled, cyberFamiliar,
                         wifiGuardianService, familiarPatrolService,
@@ -373,6 +376,9 @@ SettingsScreens settingsScreens(
     cardNavigationEnabled, cyberdeckIdleStyle, bootSoundEnabled,
     bootSoundIndex, bootAnimationIndex, bootSpeedIndex, saveWifiCredentials,
     autoConnectWifi, placeholderTitle);
+OnboardingScreens onboardingScreens(onboardingPage, sdAvailable,
+                                    cardNavigationEnabled,
+                                    saveWifiCredentials);
 bool screenSleeping = false;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
@@ -3418,6 +3424,7 @@ void updateImu() {
 
 void drawCurrentScreen() {
     switch (currentScreen) {
+        case Screen::Onboarding: onboardingScreens.draw(); break;
         case Screen::MainMenu: menuScreens.drawMain(); break;
         case Screen::ObserveMenu: menuScreens.drawObserve(); break;
         case Screen::FieldKitMenu: menuScreens.drawFieldKit(); break;
@@ -4288,7 +4295,7 @@ void goBack() {
         currentScreen = Screen::Settings;
         listSelection = previous == Screen::SettingsDisplay ? 0
                         : previous == Screen::SettingsBoot ? 1
-                        : previous == Screen::SettingsConnectivity ? 2 : 6;
+                        : previous == Screen::SettingsConnectivity ? 2 : 7;
         listOffset = 0;
         menuScreens.drawSettings();
         return;
@@ -4379,6 +4386,13 @@ void goBack() {
         listSelection = 4;
         listOffset = 0;
         menuScreens.drawSettings();
+        return;
+    }
+    if (currentScreen == Screen::Onboarding) {
+        if (onboardingPage > 0) {
+            --onboardingPage;
+            onboardingScreens.draw();
+        }
         return;
     }
     if (currentScreen == Screen::WifiDetail) {
@@ -4615,6 +4629,58 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     // It disconnects radios/sockets, flushes loggers, and returns home.
     if (keys.ctrl && keys.alt && keys.backspace) {
         stopAllActiveOperations();
+        return;
+    }
+    if (currentScreen == Screen::Onboarding) {
+        const bool skip = pressedLetter(keys, 's');
+        const bool back = keys.esc || pressedLetter(keys, 'q');
+        const bool choiceLeft = keys.left || pressedLetter(keys, ',');
+        const bool choiceRight = keys.right || pressedLetter(keys, '/');
+        if (back && onboardingPage > 0) {
+            --onboardingPage;
+            onboardingScreens.draw();
+            return;
+        }
+        if ((choiceLeft || choiceRight) && onboardingPage == 4) {
+            cardNavigationEnabled = !cardNavigationEnabled;
+            onboardingScreens.draw();
+            return;
+        }
+        if ((choiceLeft || choiceRight) && onboardingPage == 5) {
+            saveWifiCredentials = !saveWifiCredentials;
+            onboardingScreens.draw();
+            return;
+        }
+        if (skip || (back && onboardingPage == 0) ||
+            (keys.enter &&
+             onboardingPage == OnboardingScreens::kPageCount - 1)) {
+            if (!saveWifiCredentials) {
+                autoConnectWifi = false;
+                clearWifiProfiles();
+            }
+            saveSettings();
+            preferences.putBool("intro_done", true);
+            onboardingPage = 0;
+            if (onboardingFromSettings) {
+                onboardingFromSettings = false;
+                currentScreen = Screen::Settings;
+                listSelection = 6;
+                listOffset = 1;
+                menuScreens.drawSettings();
+            } else {
+                currentScreen = Screen::MainMenu;
+                menuSelection = 0;
+                listSelection = 0;
+                listOffset = 0;
+                menuScreens.drawMain();
+            }
+            return;
+        }
+        if (keys.enter &&
+            onboardingPage + 1 < OnboardingScreens::kPageCount) {
+            ++onboardingPage;
+            onboardingScreens.draw();
+        }
         return;
     }
     // QR composition owns printable keys before global letter shortcuts.
@@ -6362,8 +6428,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 7);
-            if (down) moveSelection(1, 7);
+            if (up) moveSelection(-1, 8);
+            if (down) moveSelection(1, 8);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
@@ -6375,7 +6441,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     checkForFirmwareUpdate();
                     return;
                 } else if (listSelection == 5) currentScreen = Screen::About;
-                else currentScreen = Screen::SettingsReset;
+                else if (listSelection == 6) {
+                    onboardingPage = 0;
+                    onboardingFromSettings = true;
+                    currentScreen = Screen::Onboarding;
+                } else currentScreen = Screen::SettingsReset;
                 listSelection = 0;
                 listOffset = 0;
                 drawCurrentScreen();
@@ -6545,6 +6615,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         // These text-entry/session screens return from their dedicated input
         // handlers above before this navigation switch is reached.
+        case Screen::Onboarding:
         case Screen::QrEntry:
         case Screen::QrDisplay:
         case Screen::WifiConnectPassword:
@@ -6829,8 +6900,17 @@ void setup() {
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
-    menuScreens.drawMain();
     markBootHealthy();
+
+    if (!preferences.getBool("intro_done", false)) {
+        onboardingPage = 0;
+        onboardingFromSettings = false;
+        currentScreen = Screen::Onboarding;
+        onboardingScreens.draw();
+    } else {
+        currentScreen = Screen::MainMenu;
+        menuScreens.drawMain();
+    }
 
     if (autoConnectWifi && !wifiConnectSavedSsid.isEmpty()) {
         Serial.printf("[wifi] auto-connecting to %s\n",

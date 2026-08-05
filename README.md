@@ -299,9 +299,10 @@ quiet cycle and one containing new hosts.
 Grouped Display & Audio, Boot Experience, and Connectivity submenus contain
 persistent options for volume, brightness, screen timeout, eight boot animation
 styles, five boot sound styles with on-device previews, Slow/Normal/Fast boot
-speed, Wi-Fi
-credential saving, boot auto-connect, the Cyberdeck idle mode, themes, and
-restoring defaults.
+speed, network-profile saving, boot auto-connect, the Cyberdeck idle mode,
+themes, and restoring defaults. A seven-page first-run field guide introduces
+Observe → Scout → Record, the Familiar, SD evidence, navigation style, and
+network profiles; it can be skipped and replayed later from Settings.
 
 ## Controls
 

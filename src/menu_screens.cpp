@@ -293,7 +293,8 @@ void MenuScreens::drawTools() {
 void MenuScreens::drawSettings() {
     static const char* const items[] = {
         "Display & Audio", "Boot Experience", "Connectivity",
-        "System", "Firmware Update", "About Ghostwire", "Restore Defaults",
+        "System", "Firmware Update", "About Ghostwire",
+        "Replay Introduction", "Restore Defaults",
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
@@ -301,6 +302,7 @@ void MenuScreens::drawSettings() {
             "Theme, sound and navigation", "Animation, sound and boot speed",
             "Saved Wi-Fi connection options", "Inspect deck health and time",
             "Check for a signed release", "Version and project identity",
+            "Review the Ghostwire field guide",
             "Return preferences to defaults",
         };
         ScreenChrome::drawNavigationCard("Settings", items[listSelection_],

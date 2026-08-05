@@ -10,9 +10,9 @@ collecting bounded, explainable evidence in the field.
 
 The mission-led home screen and unified Evidence browser are implemented in the
 current development build. Screen/controller extraction from `src/main.cpp` is
-complete (see `docs/screen-extraction.md`). A central operation/radio
-coordinator is now active; the remaining 0.5 product work is persistent named
-network profiles, first-run guidance, and repeated hardware reliability tests.
+complete (see `docs/screen-extraction.md`). The operation coordinator, named
+network profiles, and first-run guide are now active; repeated hardware
+reliability testing is the remaining 0.5 release gate.
 
 ## 0.5 — Field Reliability
 
@@ -23,7 +23,8 @@ network profiles, first-run guidance, and repeated hardware reliability tests.
 - [x] Active operation visibility in System Diagnostics and the header status.
 - [x] Up to five named Wi-Fi/network profiles with deliberate connect, rename,
   default selection, migration, and deletion.
-- [ ] First-run guidance for the Observe -> Scout -> Record workflow.
+- [x] Skippable, replayable first-run guidance for the Observe -> Scout ->
+  Record workflow, Familiar, SD evidence, navigation, and profile storage.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 

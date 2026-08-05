@@ -6,6 +6,11 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add a seven-page first-run field guide after the normal boot experience. It
+  introduces Ghostwire's Observe -> Scout -> Record loop, the Familiar, SD
+  evidence, navigation choice, and profile storage; every page can be skipped,
+  earlier pages can be revisited, and Settings can replay it later.
+
 - Add a five-entry Network Profiles workflow under Wi-Fi. Successful
   connections update the matching SSID without replacing unrelated profiles;
   operators can connect, rename, choose the auto-connect default, or explicitly
