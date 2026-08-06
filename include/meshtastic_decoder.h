@@ -10,6 +10,9 @@ struct MeshtasticDecoded {
     uint32_t id = 0;
     uint8_t channelHash = 0;
     uint32_t port = 0;
+    uint32_t requestId = 0;
+    uint32_t routingError = 0;
+    bool hasRoutingResult = false;
     std::vector<uint8_t> payload;
     String summary;
     String longName;
@@ -49,6 +52,13 @@ public:
                     const std::vector<uint8_t>* recipientPublicKey,
                     std::vector<uint8_t>& packet) const;
     bool encodeNodeInfo(const String& longName, const String& shortName,
+                        size_t channelIndex, uint32_t from, uint32_t packetId,
+                        uint8_t hopLimit, std::vector<uint8_t>& packet) const;
+    bool encodeRequest(uint32_t port, size_t channelIndex, uint32_t from,
+                       uint32_t to, uint32_t packetId, uint8_t hopLimit,
+                       const std::vector<uint8_t>* recipientPublicKey,
+                       std::vector<uint8_t>& packet) const;
+    bool encodePosition(double latitude, double longitude, int32_t altitude,
                         size_t channelIndex, uint32_t from, uint32_t packetId,
                         uint8_t hopLimit, std::vector<uint8_t>& packet) const;
     void setLocalKeyPair(const std::vector<uint8_t>& privateKey,

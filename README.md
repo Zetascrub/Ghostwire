@@ -161,14 +161,22 @@ The detailed capabilities behind those missions are:
 - Mesh provides a lightweight Meshtastic field client over the SX1262. Its
   app-style home presents Chats, Nodes, Map, and Settings instead of exposing
   radio utilities as the primary workflow. Chats groups the bounded 32-message
-  journal into persistent channel and direct conversations, decodes
+  working set into persistent channel and direct conversations, adds unread
+  counts, timestamps, and direct-message delivery state, and decodes
   public-channel identities and positions, suppresses repeated messages, and
   retains raw radio metadata in event-driven CSV logs. Node and message detail
   views remain available while the radio continues listening. A GNSS-relative
   radar plots received positions and node details calculate range/bearing;
-  device battery telemetry is shown when broadcast. The bounded client state
-  is restored from `/ghostwire/mesh/state.json` after reboot. Entering a chat
-  shows its recent thread and Enter composes in that channel or direct context.
+  device battery telemetry is shown when broadcast, with a small per-node trend
+  history. Node actions can request fresh identity, position, or telemetry, and
+  Mesh Settings can broadcast the Cardputer's current GNSS position. Peer keys
+  are classified as identity-bound, legacy, unknown, or changed; a changed key
+  is blocked until explicitly accepted on the node page. The bounded client
+  state is restored from `/ghostwire/mesh/state.json` after reboot. Each message
+  and later delivery update is also appended to
+  `/ghostwire/mesh/messages.jsonl`, keeping long-term history on the SD card
+  rather than in RAM. Entering a chat marks it read, shows its recent thread,
+  and Enter composes in that channel or direct context.
   Ghostwire originates
   packets as a non-repeating `CLIENT_MUTE`-style endpoint, with a persistent
   adjustable hop limit of 1-7 (default 7), channel-activity checks, and an
@@ -184,16 +192,19 @@ The detailed capabilities behind those missions are:
   message without interrupting active audio.
   Direct conversations can be opened from Chats or started from a node detail
   page. Direct messages use Meshtastic-compatible Curve25519/AES-CCM PKI and
-  request a mesh acknowledgement; they are not sent as legacy channel-encrypted
+  request a mesh acknowledgement. Pending, delivered, failed, and timed-out
+  states are shown in the chat UI; they are not sent as legacy channel-encrypted
   DMs. Both peers must first learn one another's public key: let Ghostwire hear
   the peer's NodeInfo. Mesh Settings -> Advertise identity sends Ghostwire's
   persistent signed identity and requests NodeInfo replies from listening peers,
   completing both sides of the key exchange. Node detail reports when a peer's
   key is ready; pressing Enter on a node without a key requests identity
   exchange automatically.
-- Channel Profiles always retains the public `LongFast` decoder and can load
-  up to three private receive/transmit channels from
-  `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name
+- Channel Profiles always retains the public `LongFast` decoder and supports up
+  to three private receive/transmit channels. They can be added and removed on
+  the device using a `Name|Base64PSK` token, exported as a QR code for convenient
+  transfer, and are stored in `/ghostwire/mesh/channels.json`. Profiles require
+  the exact Meshtastic name
   and a Base64 AES-128/AES-256 PSK; malformed entries are rejected without
   exposing their key material. The Cap LoRa-1262 remains fixed to the EU_868
   LongFast carrier at 869.525 MHz.

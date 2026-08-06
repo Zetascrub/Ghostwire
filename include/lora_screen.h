@@ -17,11 +17,13 @@ public:
     void draw(bool fullDraw = true);
     void drawNodes(size_t selection, size_t offset);
     void drawNodeDetail(size_t selection);
+    void drawNodeTelemetry(size_t selection);
     void drawChats(size_t selection, size_t offset);
     void drawConversation(bool direct, uint32_t peer, const String& channel);
     void drawRadar();
     void drawChannels(size_t selection, size_t offset,
                       const String& configurationStatus, uint8_t hopLimit);
+    void drawChannelEdit(const String& input, const String& status);
     void drawCompose(const String& draft, size_t channelIndex,
                      uint8_t hopLimit, uint32_t recipient,
                      const String& status);

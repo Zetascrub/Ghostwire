@@ -32,6 +32,12 @@ reliability testing is the remaining 0.5 release gate.
   and debounced microSD persistence for the bounded client state.
 - [x] Receive-only EU_868 channel profiles with public LongFast plus validated
   SD-backed private AES-128/AES-256 keys and on-device hash/status visibility.
+- [x] Conversation-grade Mesh messaging with unread state, timestamps,
+  acknowledgement tracking, SD-backed JSONL history, and message alerts.
+- [x] Active node tools for identity, position, and telemetry requests; bounded
+  telemetry trends; GNSS position sharing; and explicit peer-key change trust.
+- [x] On-device private-channel add/remove plus portable token and QR export,
+  while retaining public LongFast as a safe baseline.
 - [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 

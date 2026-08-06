@@ -116,6 +116,7 @@ Screen evidenceReturnScreen = Screen::MainMenu;
 String nowPlayingName;
 String nowPlayingSource;
 String qrText;
+Screen qrDisplayReturnScreen = Screen::QrEntry;
 String placeholderTitle;
 String wifiStatus = "Press R to scan";
 String bleStatus = "Press R to scan";
@@ -416,6 +417,8 @@ uint32_t lastLoggedLoRaPacket = 0;
 uint32_t lastPersistedMeshPacket = 0;
 unsigned long meshPersistDue = 0;
 String meshChannelStatus;
+String meshChannelEditInput;
+String meshChannelEditStatus;
 String meshDraft;
 String meshComposeStatus;
 String meshNodeName;
@@ -426,6 +429,7 @@ bool meshIdentityEditing = false;
 bool meshBackgroundEnabled = false;
 bool meshMessageAlertsEnabled = true;
 uint32_t observedMeshMessageCount = 0;
+uint32_t observedMeshMessageRevision = 0;
 bool meshAlertSecondNotePending = false;
 unsigned long meshAlertSecondNoteDue = 0;
 uint32_t meshNodeId = 0;
@@ -912,6 +916,7 @@ void initSd() {
 constexpr char kMeshStatePath[] = "/ghostwire/mesh/state.json";
 constexpr char kMeshStateTempPath[] = "/ghostwire/mesh/state.tmp";
 constexpr char kMeshStateBackupPath[] = "/ghostwire/mesh/state.bak";
+constexpr char kMeshMessageArchivePath[] = "/ghostwire/mesh/messages.jsonl";
 
 String meshKeyHex(const std::vector<uint8_t>& key) {
     String value;
@@ -973,6 +978,9 @@ void loadMeshState() {
         node.longName = value["long"] | "";
         node.shortName = value["short"] | "";
         node.publicKey = meshKeyFromHex(value["public_key"] | "");
+        node.keyState = static_cast<LoRaService::MeshNode::KeyState>(
+            value["key_state"] | static_cast<uint8_t>(
+                LoRaService::MeshNode::KeyState::Unknown));
         node.lastRssi = value["rssi"] | 0.0F;
         node.lastSnr = value["snr"] | 0.0F;
         node.packets = value["packets"] | 0U;
@@ -985,6 +993,14 @@ void loadMeshState() {
         node.voltage = value["voltage"] | 0.0F;
         node.channelUtilization = value["channel"] | 0.0F;
         node.airUtilTx = value["air"] | 0.0F;
+        for (JsonObject sampleValue : value["telemetry"].as<JsonArray>()) {
+            LoRaService::MeshNode::TelemetrySample sample;
+            sample.timestamp = sampleValue["timestamp"] | 0U;
+            sample.batteryLevel = sampleValue["battery"] | 0U;
+            sample.voltage = sampleValue["voltage"] | 0.0F;
+            sample.rssi = sampleValue["rssi"] | 0.0F;
+            node.telemetryHistory.push_back(sample);
+        }
         loraService.restoreNode(node);
     }
     for (JsonObject value : document["messages"].as<JsonArray>()) {
@@ -992,9 +1008,17 @@ void loadMeshState() {
         message.from = value["from"] | 0U;
         message.to = value["to"] | 0U;
         message.packetId = value["id"] | 0U;
+        message.timestamp = value["timestamp"] | 0U;
         message.text = value["text"] | "";
         message.channel = value["channel"] | "";
         message.outgoing = value["outgoing"] | false;
+        message.unread = value["unread"] | false;
+        message.delivery = static_cast<LoRaService::MeshMessage::Delivery>(
+            value["delivery"] | static_cast<uint8_t>(
+                message.outgoing ? LoRaService::MeshMessage::Delivery::Sent
+                                 : LoRaService::MeshMessage::Delivery::Received));
+        message.routingError = value["routing_error"] | 0U;
+        message.archived = value["archived"] | false;
         loraService.restoreMessage(message);
     }
 }
@@ -1013,6 +1037,7 @@ void saveMeshState() {
         if (node.publicKey.size() == 32) {
             value["public_key"] = meshKeyHex(node.publicKey);
         }
+        value["key_state"] = static_cast<uint8_t>(node.keyState);
         value["rssi"] = node.lastRssi;
         value["snr"] = node.lastSnr;
         value["packets"] = node.packets;
@@ -1025,6 +1050,16 @@ void saveMeshState() {
         value["voltage"] = node.voltage;
         value["channel"] = node.channelUtilization;
         value["air"] = node.airUtilTx;
+        if (!node.telemetryHistory.empty()) {
+            JsonArray telemetry = value["telemetry"].to<JsonArray>();
+            for (const auto& sample : node.telemetryHistory) {
+                JsonObject sampleValue = telemetry.add<JsonObject>();
+                sampleValue["timestamp"] = sample.timestamp;
+                sampleValue["battery"] = sample.batteryLevel;
+                sampleValue["voltage"] = sample.voltage;
+                sampleValue["rssi"] = sample.rssi;
+            }
+        }
     }
     JsonArray messages = document["messages"].to<JsonArray>();
     for (const auto& message : loraService.messages()) {
@@ -1032,9 +1067,16 @@ void saveMeshState() {
         value["from"] = message.from;
         value["to"] = message.to;
         value["id"] = message.packetId;
+        value["timestamp"] = message.timestamp;
         value["text"] = message.text;
         value["channel"] = message.channel;
         value["outgoing"] = message.outgoing;
+        value["unread"] = message.unread;
+        value["delivery"] = static_cast<uint8_t>(message.delivery);
+        if (message.routingError != 0) {
+            value["routing_error"] = message.routingError;
+        }
+        value["archived"] = message.archived;
     }
     SD.remove(kMeshStateTempPath);
     File file = SD.open(kMeshStateTempPath, FILE_WRITE);
@@ -1058,6 +1100,33 @@ void saveMeshState() {
     }
     SD.remove(kMeshStateBackupPath);
     lastPersistedMeshPacket = loraService.packetCount();
+}
+
+void archivePendingMeshMessages() {
+    if (!sdAvailable) return;
+    for (const auto& message : loraService.messages()) {
+        if (message.archived) continue;
+        SD.mkdir("/ghostwire");
+        SD.mkdir("/ghostwire/mesh");
+        File file = SD.open(kMeshMessageArchivePath, FILE_APPEND);
+        if (!file) return;
+        JsonDocument value;
+        value["timestamp"] = message.timestamp;
+        value["from"] = message.from;
+        value["to"] = message.to;
+        value["id"] = message.packetId;
+        value["channel"] = message.channel;
+        value["outgoing"] = message.outgoing;
+        value["text"] = message.text;
+        value["delivery"] = static_cast<uint8_t>(message.delivery);
+        const bool written = serializeJson(value, file) > 0 && file.println();
+        file.flush();
+        file.close();
+        if (!written) return;
+        loraService.markMessageArchived(message.packetId, message.from,
+                                        message.outgoing);
+        meshPersistDue = millis() + 2000;
+    }
 }
 
 constexpr char kMeshChannelsPath[] = "/ghostwire/mesh/channels.json";
@@ -1114,6 +1183,109 @@ void loadMeshChannels() {
     loraService.setMeshChannels(channels);
     meshChannelStatus = String(channels.size()) + " profiles loaded";
     if (rejected > 0) meshChannelStatus += "; rejected " + String(rejected);
+}
+
+bool saveMeshChannels() {
+    if (!sdAvailable) return false;
+    SD.mkdir("/ghostwire");
+    SD.mkdir("/ghostwire/mesh");
+    JsonDocument document;
+    JsonArray values = document["channels"].to<JsonArray>();
+    for (const auto& channel : loraService.meshChannels()) {
+        if (channel.isPublic) continue;
+        JsonObject value = values.add<JsonObject>();
+        value["name"] = channel.name;
+        size_t encodedLength = 0;
+        std::vector<uint8_t> encoded(((channel.key.size() + 2) / 3) * 4 + 1);
+        if (mbedtls_base64_encode(encoded.data(), encoded.size(), &encodedLength,
+                                  channel.key.data(), channel.key.size()) != 0) {
+            return false;
+        }
+        value["psk_base64"] = String(
+            reinterpret_cast<const char*>(encoded.data()), encodedLength);
+    }
+    SD.remove(kMeshChannelsPath);
+    File file = SD.open(kMeshChannelsPath, FILE_WRITE);
+    if (!file) return false;
+    const bool written = serializeJsonPretty(document, file) > 0;
+    file.flush();
+    file.close();
+    return written;
+}
+
+bool addMeshChannel(const String& input, String& status) {
+    const int separator = input.indexOf('|');
+    if (separator <= 0 || separator >= static_cast<int>(input.length()) - 1) {
+        status = "Use Name|Base64PSK";
+        return false;
+    }
+    String name = input.substring(0, separator);
+    String encoded = input.substring(separator + 1);
+    name.trim();
+    encoded.trim();
+    if (name.isEmpty() || name.length() > 12) {
+        status = "Name must be 1-12 characters";
+        return false;
+    }
+    if (loraService.meshChannels().size() >= 4) {
+        status = "Maximum four channels";
+        return false;
+    }
+    uint8_t decoded[32] = {};
+    size_t decodedLength = 0;
+    if (mbedtls_base64_decode(
+            decoded, sizeof(decoded), &decodedLength,
+            reinterpret_cast<const unsigned char*>(encoded.c_str()),
+            encoded.length()) != 0 ||
+        (decodedLength != 16 && decodedLength != 32)) {
+        status = "PSK must decode to 16 or 32 bytes";
+        return false;
+    }
+    auto channels = loraService.meshChannels();
+    for (const auto& channel : channels) {
+        if (channel.name == name) {
+            status = "Channel name already exists";
+            return false;
+        }
+    }
+    channels.push_back({name, std::vector<uint8_t>(decoded,
+                                                   decoded + decodedLength),
+                        0, false});
+    loraService.setMeshChannels(channels);
+    if (!saveMeshChannels()) {
+        status = "Could not save channels.json";
+        return false;
+    }
+    status = "Channel added";
+    return true;
+}
+
+bool deleteMeshChannel(size_t index) {
+    const auto& current = loraService.meshChannels();
+    if (index >= current.size() || current[index].isPublic) return false;
+    std::vector<MeshtasticChannel> channels;
+    for (size_t channel = 0; channel < current.size(); ++channel) {
+        if (channel != index) channels.push_back(current[channel]);
+    }
+    loraService.setMeshChannels(channels);
+    if (meshTransmitChannel >= channels.size()) meshTransmitChannel = 0;
+    preferences.putUChar("mesh_tx_ch",
+                         static_cast<uint8_t>(meshTransmitChannel));
+    return saveMeshChannels();
+}
+
+String meshChannelToken(size_t index) {
+    const auto& channels = loraService.meshChannels();
+    if (index >= channels.size()) return "";
+    const auto& channel = channels[index];
+    size_t encodedLength = 0;
+    std::vector<uint8_t> encoded(((channel.key.size() + 2) / 3) * 4 + 1);
+    if (mbedtls_base64_encode(encoded.data(), encoded.size(), &encodedLength,
+                              channel.key.data(), channel.key.size()) != 0) {
+        return "";
+    }
+    return channel.name + "|" + String(
+        reinterpret_cast<const char*>(encoded.data()), encodedLength);
 }
 
 void drawHeaderStatus(bool force = false) {
@@ -1381,7 +1553,19 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
         case Screen::MeshMessageDetail:
             return {{'c', "Write message"}};
         case Screen::MeshNodeDetail:
-            return {{'m', "Send direct message"}};
+            return {{'m', "Send direct message"},
+                    {'c', "Open direct conversation"},
+                    {'h', "View telemetry history"},
+                    {'p', "Request position"},
+                    {'t', "Request telemetry"},
+                    {'i', "Request identity"},
+                    {'v', "Accept changed identity key"}};
+        case Screen::MeshNodeTelemetry:
+            return {{'t', "Request telemetry"}};
+        case Screen::MeshChannels:
+            return {{'a', "Add channel"}, {'d', "Delete selected channel"},
+                    {'x', "Show channel QR"},
+                    {'r', "Reload channels.json"}};
         case Screen::WifiSniffer:
             return {{'l', wifiSnifferLogger.isActive() ? "Stop probe CSV"
                                                         : "Start probe CSV"},
@@ -3802,6 +3986,9 @@ void drawCurrentScreen() {
         case Screen::MeshNodeDetail:
             loraScreen.drawNodeDetail(listSelection);
             break;
+        case Screen::MeshNodeTelemetry:
+            loraScreen.drawNodeTelemetry(listSelection);
+            break;
         case Screen::MeshMessages:
             loraScreen.drawChats(listSelection, listOffset);
             break;
@@ -3814,6 +4001,10 @@ void drawCurrentScreen() {
         case Screen::MeshChannels:
             loraScreen.drawChannels(listSelection, listOffset,
                                     meshChannelStatus, meshHopLimit);
+            break;
+        case Screen::MeshChannelEdit:
+            loraScreen.drawChannelEdit(meshChannelEditInput,
+                                       meshChannelEditStatus);
             break;
         case Screen::MeshCompose:
             loraScreen.drawCompose(meshDraft, meshTransmitChannel,
@@ -4579,6 +4770,11 @@ void goBack() {
         loraScreen.drawNodes(listSelection, listOffset);
         return;
     }
+    if (currentScreen == Screen::MeshNodeTelemetry) {
+        currentScreen = Screen::MeshNodeDetail;
+        loraScreen.drawNodeDetail(listSelection);
+        return;
+    }
     if (currentScreen == Screen::MeshMessageDetail) {
         currentScreen = Screen::MeshMessages;
         listSelection = 0;
@@ -4602,6 +4798,14 @@ void goBack() {
                                 meshHopLimit, meshBackgroundEnabled,
                                 meshMessageAlertsEnabled, false,
                                 meshSettingsStatus);
+        return;
+    }
+    if (currentScreen == Screen::MeshChannelEdit) {
+        currentScreen = Screen::MeshChannels;
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.drawChannels(listSelection, listOffset,
+                                meshChannelStatus, meshHopLimit);
         return;
     }
     if (currentScreen == Screen::MeshCompose) {
@@ -4719,8 +4923,8 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::QrDisplay) {
-        currentScreen = Screen::QrEntry;
-        qrScreens.drawEntry();
+        currentScreen = qrDisplayReturnScreen;
+        drawCurrentScreen();
         return;
     }
     if (currentScreen == Screen::TtsLab) {
@@ -5085,6 +5289,37 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         return;
     }
+    if (currentScreen == Screen::MeshChannelEdit) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (keys.enter) {
+            if (addMeshChannel(meshChannelEditInput, meshChannelEditStatus)) {
+                meshChannelStatus = meshChannelEditStatus;
+                meshChannelEditInput = "";
+                currentScreen = Screen::MeshChannels;
+                listSelection = loraService.meshChannels().size() - 1;
+                listOffset = 0;
+                loraScreen.drawChannels(listSelection, listOffset,
+                                        meshChannelStatus, meshHopLimit);
+                return;
+            }
+        } else {
+            if (keys.backspace && !meshChannelEditInput.isEmpty()) {
+                meshChannelEditInput.remove(meshChannelEditInput.length() - 1);
+            }
+            for (char character : keys.word) {
+                if (!keys.ctrl && character >= 32 && character <= 126 &&
+                    meshChannelEditInput.length() < 100) {
+                    meshChannelEditInput += character;
+                }
+            }
+            meshChannelEditStatus = "";
+        }
+        loraScreen.drawChannelEdit(meshChannelEditInput, meshChannelEditStatus);
+        return;
+    }
     if (currentScreen == Screen::MeshCompose) {
         if (keys.esc) {
             goBack();
@@ -5183,6 +5418,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             return;
         }
         if (keys.enter && !qrText.isEmpty()) {
+            qrDisplayReturnScreen = Screen::QrEntry;
             currentScreen = Screen::QrDisplay;
             qrScreens.drawDisplay();
             return;
@@ -5716,6 +5952,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     switch (currentScreen) {
         case Screen::MeshCompose:
             // Handled before the global navigation shortcuts above.
+            break;
+        case Screen::MeshChannelEdit:
+            // Handled before global shortcuts so Base64 input is literal.
             break;
         case Screen::MainMenu:
             if (up) {
@@ -6895,11 +7134,50 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshNodeDetail:
+            if (pressedLetter(keys, 'v') &&
+                listSelection < loraService.nodes().size()) {
+                if (loraService.acceptChangedKey(
+                        loraService.nodes()[listSelection].id)) {
+                    meshPersistDue = millis() + 100;
+                }
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            if (pressedLetter(keys, 'h')) {
+                currentScreen = Screen::MeshNodeTelemetry;
+                loraScreen.drawNodeTelemetry(listSelection);
+                return;
+            }
+            if (listSelection < loraService.nodes().size() &&
+                (pressedLetter(keys, 'p') || pressedLetter(keys, 't') ||
+                 pressedLetter(keys, 'i'))) {
+                const auto& node = loraService.nodes()[listSelection];
+                const uint32_t port = pressedLetter(keys, 'p') ? 3
+                                      : pressedLetter(keys, 't') ? 67 : 4;
+                loraService.sendRequest(port, meshTransmitChannel, meshNodeId,
+                                        node.id, meshHopLimit);
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            if (pressedLetter(keys, 'c') &&
+                listSelection < loraService.nodes().size()) {
+                const auto& node = loraService.nodes()[listSelection];
+                if (node.id != meshNodeId) {
+                    meshConversationDirect = true;
+                    meshConversationPeer = node.id;
+                    meshConversationChannel = "PKI";
+                    loraService.markConversationRead(true, node.id, "PKI");
+                    currentScreen = Screen::MeshMessageDetail;
+                    loraScreen.drawConversation(true, node.id, "PKI");
+                    return;
+                }
+            }
             if ((keys.enter || pressedLetter(keys, 'm')) &&
                 listSelection < loraService.nodes().size()) {
                 const auto& node = loraService.nodes()[listSelection];
                 if (node.id != meshNodeId) {
-                    if (node.publicKey.size() != 32) {
+                    if (node.publicKey.size() != 32 ||
+                        node.keyState == LoRaService::MeshNode::KeyState::Changed) {
                         loraService.sendNodeInfo(
                             meshNodeName, meshNodeShortName,
                             meshTransmitChannel, meshNodeId, meshHopLimit);
@@ -6922,6 +7200,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
             }
             loraScreen.drawNodeDetail(listSelection);
+            break;
+
+        case Screen::MeshNodeTelemetry:
+            if (pressedLetter(keys, 't') &&
+                listSelection < loraService.nodes().size()) {
+                loraService.sendRequest(67, meshTransmitChannel, meshNodeId,
+                                        loraService.nodes()[listSelection].id,
+                                        meshHopLimit);
+            }
+            loraScreen.drawNodeTelemetry(listSelection);
             break;
 
         case Screen::MeshMessages: {
@@ -6951,6 +7239,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                            meshHopLimit, meshComposeRecipient,
                                            meshComposeStatus);
                 } else {
+                    loraService.markConversationRead(
+                        meshConversationDirect, meshConversationPeer,
+                        meshConversationChannel);
+                    meshPersistDue = millis() + 2000;
                     currentScreen = Screen::MeshMessageDetail;
                     loraScreen.drawConversation(meshConversationDirect,
                                                 meshConversationPeer,
@@ -6986,6 +7278,34 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshChannels:
+            if (pressedLetter(keys, 'x')) {
+                qrText = meshChannelToken(listSelection);
+                if (!qrText.isEmpty()) {
+                    qrDisplayReturnScreen = Screen::MeshChannels;
+                    currentScreen = Screen::QrDisplay;
+                    qrScreens.drawDisplay();
+                    return;
+                }
+            }
+            if (pressedLetter(keys, 'a')) {
+                meshChannelEditInput = "";
+                meshChannelEditStatus = "";
+                currentScreen = Screen::MeshChannelEdit;
+                loraScreen.drawChannelEdit(meshChannelEditInput,
+                                           meshChannelEditStatus);
+                return;
+            }
+            if (pressedLetter(keys, 'd')) {
+                if (deleteMeshChannel(listSelection)) {
+                    meshChannelStatus = "Channel deleted";
+                    if (listSelection >= loraService.meshChannels().size() &&
+                        listSelection > 0) --listSelection;
+                } else {
+                    meshChannelStatus = listSelection == 0
+                                            ? "Public channel cannot be deleted"
+                                            : "Delete failed";
+                }
+            }
             if (refresh) loadMeshChannels();
             if (navigationLeft && meshHopLimit > 1) {
                 --meshHopLimit;
@@ -7003,9 +7323,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshSettings:
-            if (up) moveSelection(-1, 11);
-            if (down) moveSelection(1, 11);
-            normalizeListPosition(11);
+            if (up) moveSelection(-1, 12);
+            if (down) moveSelection(1, 12);
+            normalizeListPosition(12);
             if (listSelection == 4 && (navigationLeft || navigationRight)) {
                 meshBackgroundEnabled = !meshBackgroundEnabled;
                 preferences.putBool("mesh_bg", meshBackgroundEnabled);
@@ -7073,6 +7393,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     loraService.restoreNode(localMeshNode);
                 }
                 meshSettingsStatus = loraService.transmitStatus();
+            } else if (keys.enter && listSelection == 11) {
+                if (!gnssService.hasFix()) {
+                    meshSettingsStatus = "GNSS fix required";
+                } else {
+                    loraService.sendPosition(
+                        gnssService.latitude(), gnssService.longitude(),
+                        static_cast<int32_t>(gnssService.altitudeMetres()),
+                        meshTransmitChannel, meshNodeId, meshHopLimit);
+                    meshSettingsStatus = loraService.transmitStatus();
+                }
             }
             loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
                                     meshNodeShortName, meshTransmitChannel,
@@ -7823,12 +8153,20 @@ void loop() {
     updateBatteryEstimate();
     gnssService.update();
     loraService.update();
+    archivePendingMeshMessages();
     if (loraService.receivedMessageCount() != observedMeshMessageCount) {
         observedMeshMessageCount = loraService.receivedMessageCount();
         playMeshMessageAlert();
-        if (!actionMenuOpen &&
-            (currentScreen == Screen::MeshMessages ||
-             currentScreen == Screen::MeshMessageDetail)) {
+    }
+    if (loraService.messageRevision() != observedMeshMessageRevision) {
+        observedMeshMessageRevision = loraService.messageRevision();
+        if (!actionMenuOpen && currentScreen == Screen::MeshMessageDetail) {
+            loraService.markConversationRead(
+                meshConversationDirect, meshConversationPeer,
+                meshConversationChannel);
+            meshPersistDue = millis() + 2000;
+            drawCurrentScreen();
+        } else if (!actionMenuOpen && currentScreen == Screen::MeshMessages) {
             drawCurrentScreen();
         }
     }

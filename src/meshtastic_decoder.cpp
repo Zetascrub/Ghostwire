@@ -282,6 +282,45 @@ bool MeshtasticDecoder::encodeNodeInfo(const String& longName,
                              packetId, hopLimit, false, true, nullptr, packet);
 }
 
+bool MeshtasticDecoder::encodeRequest(
+    uint32_t port, size_t channelIndex, uint32_t from, uint32_t to,
+    uint32_t packetId, uint8_t hopLimit,
+    const std::vector<uint8_t>* recipientPublicKey,
+    std::vector<uint8_t>& packet) const {
+    if (port != 3 && port != 4 && port != 67) return false;
+    return encodeApplication({}, port, channelIndex, from, to, packetId,
+                             hopLimit, true, true, recipientPublicKey, packet);
+}
+
+bool MeshtasticDecoder::encodePosition(
+    double latitude, double longitude, int32_t altitude, size_t channelIndex,
+    uint32_t from, uint32_t packetId, uint8_t hopLimit,
+    std::vector<uint8_t>& packet) const {
+    const int32_t latitudeI = static_cast<int32_t>(latitude * 1e7);
+    const int32_t longitudeI = static_cast<int32_t>(longitude * 1e7);
+    std::vector<uint8_t> payload;
+    payload.reserve(16);
+    payload.push_back(0x0d);  // Position.latitude_i, fixed32
+    for (uint8_t shift = 0; shift < 32; shift += 8) {
+        payload.push_back(static_cast<uint32_t>(latitudeI) >> shift);
+    }
+    payload.push_back(0x15);  // Position.longitude_i, fixed32
+    for (uint8_t shift = 0; shift < 32; shift += 8) {
+        payload.push_back(static_cast<uint32_t>(longitudeI) >> shift);
+    }
+    payload.push_back(0x18);  // Position.altitude, int32
+    uint64_t encodedAltitude = static_cast<uint64_t>(
+        static_cast<int64_t>(altitude));
+    do {
+        uint8_t byte = encodedAltitude & 0x7f;
+        encodedAltitude >>= 7;
+        if (encodedAltitude != 0) byte |= 0x80;
+        payload.push_back(byte);
+    } while (encodedAltitude != 0);
+    return encodeApplication(payload, 3, channelIndex, from, 0xffffffffU,
+                             packetId, hopLimit, false, false, nullptr, packet);
+}
+
 bool MeshtasticDecoder::encodeApplication(
     const std::vector<uint8_t>& payload, uint32_t port, size_t channelIndex,
     uint32_t from, uint32_t to, uint32_t packetId, uint8_t hopLimit,
@@ -289,7 +328,8 @@ bool MeshtasticDecoder::encodeApplication(
     bool wantResponse,
     const std::vector<uint8_t>* recipientPublicKey,
     std::vector<uint8_t>& packet) const {
-    if (channelIndex >= channels_.size() || from == 0 || payload.empty() ||
+    if (channelIndex >= channels_.size() || from == 0 ||
+        (payload.empty() && !wantResponse) ||
         payload.size() > 220 || port > 127 || hopLimit < 1 || hopLimit > 7) {
         return false;
     }
@@ -349,9 +389,11 @@ bool MeshtasticDecoder::encodeApplication(
     writeLe32(8, packetId);
     packet[12] = static_cast<uint8_t>(hopLimit | (hopLimit << 5) |
                                       (wantAck ? 0x08 : 0x00));
-    const bool pki = to != 0xffffffffU && recipientPublicKey != nullptr &&
+    const bool pkiEligible = port != 3 && port != 4 && port != 5 && port != 70;
+    const bool pki = pkiEligible && to != 0xffffffffU &&
+                     recipientPublicKey != nullptr &&
                      recipientPublicKey->size() == 32 && privateKey_.size() == 32;
-    if (to != 0xffffffffU && !pki) return false;
+    if (pkiEligible && to != 0xffffffffU && !pki) return false;
     packet[13] = pki ? 0 : channel.hash;
     packet[14] = 0;
     packet[15] = static_cast<uint8_t>(from & 0xff);
@@ -408,6 +450,10 @@ bool MeshtasticDecoder::encodeApplication(
 
 
 void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
+    if (result.port == 5 && result.requestId != 0) {
+        result.hasRoutingResult = true;
+        result.routingError = 0;
+    }
     size_t offset = 0;
     while (offset < result.payload.size()) {
         uint64_t key = 0;
@@ -458,6 +504,10 @@ void MeshtasticDecoder::decodeApplicationPayload(MeshtasticDecoded& result) {
                             offset, value)) return;
             if (result.port == 3 && field == 3) {
                 result.altitude = static_cast<int32_t>(value);
+            }
+            if (result.port == 5 && field == 3) {
+                result.hasRoutingResult = true;
+                result.routingError = static_cast<uint32_t>(value);
             }
         } else if (wire == 1) {
             if (result.payload.size() - offset < 8) return;
@@ -511,6 +561,7 @@ bool MeshtasticDecoder::decodeData(const uint8_t* data, size_t length,
             offset += 8;
         } else if (wire == 5) {
             if (length - offset < 4) return false;
+            if (field == 6) result.requestId = readLe32(data + offset);
             offset += 4;
         } else {
             return false;

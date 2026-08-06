@@ -3,9 +3,21 @@
 #include <SPI.h>
 #include <algorithm>
 #include <esp_system.h>
+#include <time.h>
 
 namespace {
 volatile bool packetReceived = false;
+
+uint32_t meshKeyCrc32(const std::vector<uint8_t>& value) {
+    uint32_t crc = 0xffffffffU;
+    for (uint8_t byte : value) {
+        crc ^= byte;
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1U) ? 0xedb88320U : 0U);
+        }
+    }
+    return ~crc;
+}
 
 void IRAM_ATTR onPacketReceived() {
     packetReceived = true;
@@ -47,6 +59,14 @@ bool LoRaService::begin() {
 }
 
 void LoRaService::update() {
+    for (auto& message : messages_) {
+        if (message.delivery == MeshMessage::Delivery::Pending &&
+            static_cast<uint32_t>(millis() - message.receivedMs) > 180000U) {
+            message.delivery = MeshMessage::Delivery::NoAck;
+            message.archived = false;
+            ++messageRevision_;
+        }
+    }
     if (!ready_ || !packetReceived) return;
     packetReceived = false;
 
@@ -115,7 +135,15 @@ void LoRaService::observeDecodedPacket() {
     if (!lastDecoded_.longName.isEmpty()) node->longName = lastDecoded_.longName;
     if (!lastDecoded_.shortName.isEmpty()) node->shortName = lastDecoded_.shortName;
     if (lastDecoded_.publicKey.size() == 32) {
-        node->publicKey = lastDecoded_.publicKey;
+        if (!node->publicKey.empty() && node->publicKey != lastDecoded_.publicKey) {
+            node->pendingPublicKey = lastDecoded_.publicKey;
+            node->keyState = MeshNode::KeyState::Changed;
+        } else {
+            node->publicKey = lastDecoded_.publicKey;
+            node->keyState = meshKeyCrc32(node->publicKey) == node->id
+                                 ? MeshNode::KeyState::Bound
+                                 : MeshNode::KeyState::Legacy;
+        }
     }
     if (lastDecoded_.hasPosition) {
         node->hasPosition = true;
@@ -129,6 +157,32 @@ void LoRaService::observeDecodedPacket() {
         node->voltage = lastDecoded_.voltage;
         node->channelUtilization = lastDecoded_.channelUtilization;
         node->airUtilTx = lastDecoded_.airUtilTx;
+        MeshNode::TelemetrySample sample;
+        const time_t now = time(nullptr);
+        sample.timestamp = now > 1700000000 ? static_cast<uint32_t>(now) : 0;
+        sample.batteryLevel = lastDecoded_.batteryLevel;
+        sample.voltage = lastDecoded_.voltage;
+        sample.rssi = lastRssi_;
+        if (node->telemetryHistory.size() >= 6) {
+            node->telemetryHistory.erase(node->telemetryHistory.begin());
+        }
+        node->telemetryHistory.push_back(sample);
+    }
+    if (lastDecoded_.hasRoutingResult && lastDecoded_.requestId != 0) {
+        const auto sent = std::find_if(
+            messages_.begin(), messages_.end(), [&](const MeshMessage& message) {
+                return message.outgoing &&
+                       message.packetId == lastDecoded_.requestId;
+            });
+        if (sent != messages_.end()) {
+            sent->routingError = lastDecoded_.routingError;
+            sent->delivery = lastDecoded_.routingError == 0
+                                 ? MeshMessage::Delivery::Delivered
+                                 : MeshMessage::Delivery::Failed;
+            sent->archived = false;
+            ++messageRevision_;
+        }
+        return;
     }
     if ((lastDecoded_.port == 1 || lastDecoded_.port == 7 ||
          lastDecoded_.port == 32) && !lastDecoded_.summary.isEmpty()) {
@@ -139,11 +193,35 @@ void LoRaService::observeDecodedPacket() {
             });
         if (duplicate != messages_.end()) return;
         if (messages_.size() >= 32) messages_.erase(messages_.begin());
-        messages_.push_back({lastDecoded_.from, lastDecoded_.to,
-                             lastDecoded_.id, millis(), lastDecoded_.summary,
-                             lastDecoded_.channelName, false});
+        MeshMessage message;
+        message.from = lastDecoded_.from;
+        message.to = lastDecoded_.to;
+        message.packetId = lastDecoded_.id;
+        message.receivedMs = millis();
+        const time_t now = time(nullptr);
+        message.timestamp = now > 1700000000 ? static_cast<uint32_t>(now) : 0;
+        message.text = lastDecoded_.summary;
+        message.channel = lastDecoded_.channelName;
+        message.unread = true;
+        message.delivery = MeshMessage::Delivery::Received;
+        messages_.push_back(message);
         ++receivedMessageCount_;
+        ++messageRevision_;
     }
+}
+
+bool LoRaService::acceptChangedKey(uint32_t nodeId) {
+    const auto node = std::find_if(nodes_.begin(), nodes_.end(),
+                                   [nodeId](const MeshNode& value) {
+        return value.id == nodeId;
+    });
+    if (node == nodes_.end() || node->pendingPublicKey.size() != 32) return false;
+    node->publicKey = node->pendingPublicKey;
+    node->pendingPublicKey.clear();
+    node->keyState = meshKeyCrc32(node->publicKey) == node->id
+                         ? MeshNode::KeyState::Bound
+                         : MeshNode::KeyState::Legacy;
+    return true;
 }
 
 String LoRaService::nodeDisplayName(uint32_t id) const {
@@ -162,7 +240,10 @@ std::vector<LoRaService::MeshConversation> LoRaService::conversations() const {
     std::vector<MeshConversation> result;
     result.reserve(decoder_.channels().size() + messages_.size());
     for (const auto& channel : decoder_.channels()) {
-        result.push_back({false, 0, channel.name, 0, "No messages yet", false});
+        MeshConversation conversation;
+        conversation.channel = channel.name;
+        conversation.preview = "No messages yet";
+        result.push_back(conversation);
     }
     for (const auto& message : messages_) {
         const bool direct = message.to != 0xffffffffU;
@@ -175,13 +256,19 @@ std::vector<LoRaService::MeshConversation> LoRaService::conversations() const {
                        (direct || value.channel == message.channel);
             });
         if (conversation == result.end()) {
-            result.push_back({direct, peer, message.channel, 0, "", false});
+            MeshConversation value;
+            value.direct = direct;
+            value.peer = peer;
+            value.channel = message.channel;
+            result.push_back(value);
             conversation = result.end() - 1;
         }
+        if (message.unread && conversation->unread < 99) ++conversation->unread;
         if (message.receivedMs >= conversation->lastMessageMs) {
             conversation->lastMessageMs = message.receivedMs;
             conversation->preview = message.text;
             conversation->lastOutgoing = message.outgoing;
+            conversation->delivery = message.delivery;
             if (!message.channel.isEmpty()) conversation->channel = message.channel;
         }
     }
@@ -193,16 +280,48 @@ std::vector<LoRaService::MeshConversation> LoRaService::conversations() const {
     return result;
 }
 
+void LoRaService::markConversationRead(bool direct, uint32_t peer,
+                                       const String& channel) {
+    for (auto& message : messages_) {
+        const bool messageDirect = message.to != 0xffffffffU;
+        const uint32_t messagePeer = message.outgoing ? message.to : message.from;
+        if (messageDirect == direct &&
+            (direct ? messagePeer == peer : message.channel == channel)) {
+            if (message.unread) {
+                message.unread = false;
+                ++messageRevision_;
+            }
+        }
+    }
+}
+
+void LoRaService::markMessageArchived(uint32_t packetId, uint32_t from,
+                                      bool outgoing) {
+    const auto message = std::find_if(messages_.begin(), messages_.end(),
+                                      [packetId, from, outgoing](const MeshMessage& value) {
+        return value.packetId == packetId && value.from == from &&
+               value.outgoing == outgoing;
+    });
+    if (message != messages_.end()) message->archived = true;
+}
+
 void LoRaService::restoreNode(const MeshNode& node) {
     if (node.id == 0) return;
     const auto existing = std::find_if(nodes_.begin(), nodes_.end(),
                                        [&](const MeshNode& value) {
                                            return value.id == node.id;
                                        });
+    MeshNode restored = node;
+    if (restored.publicKey.size() == 32 &&
+        restored.keyState == MeshNode::KeyState::Unknown) {
+        restored.keyState = meshKeyCrc32(restored.publicKey) == restored.id
+                                ? MeshNode::KeyState::Bound
+                                : MeshNode::KeyState::Legacy;
+    }
     if (existing != nodes_.end()) {
-        *existing = node;
+        *existing = restored;
     } else if (nodes_.size() < 24) {
-        nodes_.push_back(node);
+        nodes_.push_back(restored);
     }
 }
 
@@ -216,6 +335,7 @@ void LoRaService::restoreMessage(const MeshMessage& message) {
     if (duplicate == messages_.end()) {
         if (messages_.size() >= 32) messages_.erase(messages_.begin());
         messages_.push_back(message);
+        ++messageRevision_;
     }
 }
 
@@ -232,6 +352,10 @@ bool LoRaService::sendText(const String& text, size_t channelIndex,
             transmitStatus_ = "No public key; await NodeInfo";
             return false;
         }
+        if (recipient->keyState == MeshNode::KeyState::Changed) {
+            transmitStatus_ = "Key changed; identity not trusted";
+            return false;
+        }
         recipientKey = &recipient->publicKey;
     }
     if (!decoder_.encodeText(text, channelIndex, nodeId, to, packetId, hopLimit,
@@ -245,9 +369,59 @@ bool LoRaService::sendText(const String& text, size_t channelIndex,
     }
     const String channel = channelIndex < decoder_.channels().size()
                                ? decoder_.channels()[channelIndex].name : "";
-    restoreMessage({nodeId, to, packetId, millis(), text, channel,
-                    true});
+    MeshMessage message;
+    message.from = nodeId;
+    message.to = to;
+    message.packetId = packetId;
+    message.receivedMs = millis();
+    const time_t now = time(nullptr);
+    message.timestamp = now > 1700000000 ? static_cast<uint32_t>(now) : 0;
+    message.text = text;
+    message.channel = channel;
+    message.outgoing = true;
+    message.delivery = to == 0xffffffffU ? MeshMessage::Delivery::Sent
+                                         : MeshMessage::Delivery::Pending;
+    restoreMessage(message);
     return true;
+}
+
+bool LoRaService::sendRequest(uint32_t port, size_t channelIndex,
+                              uint32_t nodeId, uint32_t to,
+                              uint8_t hopLimit) {
+    std::vector<uint8_t> packet;
+    const std::vector<uint8_t>* recipientKey = nullptr;
+    if (port == 67) {
+        const auto recipient = std::find_if(
+            nodes_.begin(), nodes_.end(),
+            [to](const MeshNode& node) { return node.id == to; });
+        if (recipient == nodes_.end() || recipient->publicKey.size() != 32 ||
+            recipient->keyState == MeshNode::KeyState::Changed) {
+            transmitStatus_ = "Telemetry needs a trusted peer key";
+            return false;
+        }
+        recipientKey = &recipient->publicKey;
+    }
+    if (!decoder_.encodeRequest(port, channelIndex, nodeId, to, esp_random(),
+                                hopLimit, recipientKey, packet)) {
+        transmitStatus_ = "Unable to create request";
+        return false;
+    }
+    const char* label = port == 3 ? "Position requested"
+                        : port == 67 ? "Telemetry requested"
+                                     : "Identity requested";
+    return transmitPacket(packet, label);
+}
+
+bool LoRaService::sendPosition(double latitude, double longitude,
+                               int32_t altitude, size_t channelIndex,
+                               uint32_t nodeId, uint8_t hopLimit) {
+    std::vector<uint8_t> packet;
+    if (!decoder_.encodePosition(latitude, longitude, altitude, channelIndex,
+                                 nodeId, esp_random(), hopLimit, packet)) {
+        transmitStatus_ = "Unable to encode position";
+        return false;
+    }
+    return transmitPacket(packet, "Position shared");
 }
 
 bool LoRaService::sendNodeInfo(const String& longName, const String& shortName,
