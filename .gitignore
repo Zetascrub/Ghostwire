@@ -1,4 +1,5 @@
 .pio/
+diagnostic-collections/
 .pio-core/
 .venv/
 .claude/

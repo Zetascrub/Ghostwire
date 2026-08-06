@@ -2,6 +2,7 @@
 #include <M5Cardputer.h>
 #include <ArduinoJson.h>
 #include <Curve25519.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
@@ -85,6 +86,8 @@ constexpr int kSdMiso = 39;
 constexpr int kSdCompatibilityPin = 5;
 constexpr uint32_t kSdFrequency = 4000000;
 constexpr size_t kVisibleRows = 6;
+constexpr char kDevDiagnosticCollectorUrl[] =
+    "http://192.168.8.10:8765/diagnostics";
 
 // FileEntry / LogEntry: see include/file_screens.h.
 
@@ -3056,42 +3059,86 @@ std::vector<SystemDiagnostic> systemDiagnostics() {
 }
 
 bool exportSystemDiagnostics() {
-    if (!sdAvailable) {
-        diagnosticExportStatus = "Export failed: no SD card";
-        return false;
-    }
-    SD.mkdir("/ghostwire");
-    SD.mkdir("/ghostwire/logs");
+    const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
     String path;
-    for (uint16_t index = 1; index < 10000; ++index) {
-        char candidate[64];
-        snprintf(candidate, sizeof(candidate),
-                 "/ghostwire/logs/diagnostics_%04u.txt", index);
-        if (!SD.exists(candidate)) {
-            path = candidate;
-            break;
+    bool saved = false;
+    if (sdAvailable) {
+        SD.mkdir("/ghostwire");
+        SD.mkdir("/ghostwire/logs");
+        for (uint16_t index = 1; index < 10000; ++index) {
+            char candidate[64];
+            snprintf(candidate, sizeof(candidate),
+                     "/ghostwire/logs/diagnostics_%04u.txt", index);
+            if (!SD.exists(candidate)) {
+                path = candidate;
+                break;
+            }
+        }
+        if (!path.isEmpty()) {
+            File report = SD.open(path, FILE_WRITE);
+            if (report) {
+                report.printf("%s system diagnostics\n", Branding::productName);
+                report.printf("Creator: %s\n", Branding::creatorName);
+                report.printf("Generated UTC: %s\n\n",
+                              clockSynced ? utcTimestamp().c_str()
+                                          : "unavailable");
+                for (const auto& diagnostic : diagnostics) {
+                    report.printf("%-13s%s\n", diagnostic.label.c_str(),
+                                  diagnostic.value.c_str());
+                }
+                report.close();
+                saved = true;
+            }
         }
     }
-    if (path.isEmpty()) {
-        diagnosticExportStatus = "Export failed: filenames full";
-        return false;
+
+    bool uploaded = false;
+    int uploadStatus = 0;
+    const bool developmentBuild =
+        String(Branding::version).indexOf("-dev") >= 0;
+    if (developmentBuild && WiFi.status() == WL_CONNECTED) {
+        JsonDocument document;
+        document["schema"] = 1;
+        document["product"] = Branding::productName;
+        document["firmware"] = Branding::version;
+        document["generated_utc"] =
+            clockSynced ? utcTimestamp() : String("unavailable");
+        document["uptime_ms"] = millis();
+        document["collector"] = "manual-export";
+        JsonObject values = document["diagnostics"].to<JsonObject>();
+        for (const auto& diagnostic : diagnostics) {
+            values[diagnostic.label] = diagnostic.value;
+        }
+        String body;
+        serializeJson(document, body);
+        HTTPClient http;
+        http.setConnectTimeout(1500);
+        http.setTimeout(2500);
+        if (http.begin(kDevDiagnosticCollectorUrl)) {
+            http.addHeader("Content-Type", "application/json");
+            uploadStatus = http.POST(body);
+            uploaded = uploadStatus >= 200 && uploadStatus < 300;
+            http.end();
+        }
     }
-    File report = SD.open(path, FILE_WRITE);
-    if (!report) {
-        diagnosticExportStatus = "Export failed: SD write";
-        return false;
+
+    if (saved) {
+        diagnosticExportStatus =
+            "Saved " + path.substring(path.lastIndexOf('/') + 1);
+    } else if (!sdAvailable) {
+        diagnosticExportStatus = "SD unavailable";
+    } else if (path.isEmpty()) {
+        diagnosticExportStatus = "SD filenames full";
+    } else {
+        diagnosticExportStatus = "SD write failed";
     }
-    report.printf("%s system diagnostics\n", Branding::productName);
-    report.printf("Creator: %s\n", Branding::creatorName);
-    report.printf("Generated UTC: %s\n\n",
-                  clockSynced ? utcTimestamp().c_str() : "unavailable");
-    for (const auto& diagnostic : systemDiagnostics()) {
-        report.printf("%-13s%s\n", diagnostic.label.c_str(),
-                      diagnostic.value.c_str());
+    if (developmentBuild && WiFi.status() == WL_CONNECTED) {
+        const String sdResult = saved ? " + SD saved" : " + " + diagnosticExportStatus;
+        diagnosticExportStatus = uploaded
+                                     ? "HTTP sent" + sdResult
+                                     : "HTTP " + String(uploadStatus) + sdResult;
     }
-    report.close();
-    diagnosticExportStatus = "Saved " + path.substring(path.lastIndexOf('/') + 1);
-    return true;
+    return saved || uploaded;
 }
 
 // System Diagnostics screen: see include/system_screens.h/src/system_screens.cpp.

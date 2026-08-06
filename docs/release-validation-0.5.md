@@ -16,25 +16,72 @@ freezes, loses its saved result, or leaves another radio mode unusable fails.
 | Application flash | 2,094,753 / 3,342,336 bytes (62.7%) |
 | Static RAM | 107,132 / 327,680 bytes (32.7%) |
 | USB flash and reboot | PASS on `/dev/ttyACM2` |
-| Hardware test date | Pending |
-| Tester | Pending |
+| Hardware test date | 2026-08-06 |
+| Tester | Zetascrub |
 
 Before and after each block, open **Settings > System > System Diagnostics**.
 Record uptime, free heap, minimum heap, last reset, stability events, SD state,
 and active operation. Press `E` to export a diagnostic report when an SD card is
-present. A falling minimum heap is expected; steadily falling current free heap
-after returning idle is not.
+present. Development builds also POST the redacted report to
+`http://192.168.8.10:8765/diagnostics` when Wi-Fi is connected. Start the local
+collector with `python tools/diagnostic_receiver.py`; reports are written under
+the ignored `diagnostic-collections/` directory. HTTP failure never prevents the
+SD export. A falling minimum heap is expected; steadily falling current free
+heap after returning idle is not.
+
+### Initial hardware reading
+
+| Diagnostic | Baseline |
+| --- | --- |
+| Heap free | 126 KB |
+| Heap minimum | 100 KB |
+| Last reset | Power on |
+| Stability events | 26 (historical baseline; must not increase) |
+| microSD | READY / 14,910 MB |
+| Operations | Idle |
+
+The existing stability count includes crashes accumulated during development.
+This candidate is judged on the delta from 26, not the historical total.
+
+The development HTTP collector was hardware-validated from `192.168.8.198` to
+`192.168.8.10`: schema 1 was accepted and stored with 127 KB free heap, 119 KB
+minimum heap, Operations idle, stability 26, boot count 251, SD ready, and a
+GNSS-synchronised timestamp. The same manual export also wrote its SD report.
+
+### Idle soak reading — 15 minutes
+
+| Diagnostic | Result |
+| --- | --- |
+| Heap free | 126 KB — unchanged |
+| Heap minimum | 105 KB reported (initial reading was 100 KB) |
+| Last reset | Power on — unchanged |
+| Stability events | 26 — unchanged |
+| microSD | READY / 14,910 MB |
+| Operations | Idle |
+
+The free-heap and reset baselines remained stable. Because an ESP32 boot's
+minimum-free-heap watermark cannot increase without a reset, the two rounded
+minimum readings are retained as reported and are not used to infer a leak.
 
 ## A. Boot, idle, and recovery
 
 - [ ] Cold boot with the GPS/LoRa cap and SD card fitted.
 - [ ] Confirm display, keyboard, battery, SD, GNSS UART, LoRa, IMU, and USB HID
       diagnostics are sensible.
-- [ ] Leave the Familiar/background services idle for 15 minutes; verify input
-      remains responsive and the idle animation wakes cleanly.
-- [ ] Reboot normally three times and confirm no new stability event.
-- [ ] While a harmless logging operation is active, use the global emergency
-      stop and confirm the deck returns home with `Operations: Idle`.
+- [x] Leave the Familiar/background services idle for 15 minutes; free heap,
+      reset state, stability count, SD state, and idle operation state remained
+      stable. Idle-animation wake quality confirmation remains below.
+- [x] Idle animation woke cleanly and navigation remained responsive, with no
+      visible freeze, flicker, or reboot.
+- [x] Reboot normally three times and confirm no new stability event. An initial
+      ending-count transcription was inconsistent; a controlled follow-up boot
+      advanced the counter exactly once from 247 to 248. Final diagnostics were
+      127 KB free heap, 120 KB minimum heap, Power on reset, 26 stability events,
+      SD ready, and Operations idle.
+- [x] While GNSS logging is active, use the global emergency stop and confirm
+      the deck returns home with `Operations: Idle`. Recovery diagnostics pass:
+      Operations idle, 163 KB free heap, 124 KB minimum heap, and stability
+      events unchanged at 26. The GNSS CSV was present and valid in Evidence.
 - [ ] Remove and restore power once; confirm settings and bounded Mesh state
       reload without corrupting the SD card.
 
@@ -45,7 +92,7 @@ start the second. Repeat once using Back/Escape and once using emergency stop.
 
 | From | To | Normal stop | Back/escape | Emergency stop | Heap recovered | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Wi-Fi scan/connect | BLE scan | Pending | Pending | Pending | Pending | |
+| Wi-Fi scan/connect | BLE scan | Pass | Pending | Pending | Investigate | Wi-Fi connected/disconnected/reconnected; BLE detected devices; first return idle 147/107 KB, second 103/87 KB; stability 26. Back was processed only after scan completed, so active cancellation remains untested. Check delayed cleanup and repeated-cycle heap trend. |
 | BLE continuous capture | Wi-Fi scan | Pending | Pending | Pending | Pending | |
 | Wi-Fi PCAP capture | saved Wi-Fi connect | Pending | Pending | Pending | Pending | |
 | Guardian | Host Discovery | Pending | Pending | Pending | Pending | |
@@ -128,4 +175,3 @@ artifact, and do not run it without a known-good USB recovery build available.
       commit.
 
 Final decision: **Pending**
-
