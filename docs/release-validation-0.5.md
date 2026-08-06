@@ -92,8 +92,8 @@ start the second. Repeat once using Back/Escape and once using emergency stop.
 
 | From | To | Normal stop | Back/escape | Emergency stop | Heap recovered | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Wi-Fi scan/connect | BLE scan | Pass | Pending | Pending | Investigate | Wi-Fi connected/disconnected/reconnected; BLE detected devices; first return idle 147/107 KB, second 103/87 KB; stability 26. Back was processed only after scan completed, so active cancellation remains untested. Check delayed cleanup and repeated-cycle heap trend. |
-| BLE continuous capture | Wi-Fi scan | Pending | Pending | Pending | Pending | |
+| Wi-Fi scan/connect | BLE scan | Pass | N/A | N/A | Pass | Wi-Fi connected/disconnected/reconnected and BLE detected devices. Fresh post-flash baseline was 127/124 KB; two repeated post-scan reports were identical at 118/104 KB with stability 26. The bounded five-second discovery scan is synchronous, so Back is processed after completion; cancellation is tested with continuous capture below. |
+| BLE continuous capture | Wi-Fi scan | Pass | Pass | Fail; fix pending retest | Pass before failure | Normal `C` stop returned idle at 115/100 KB. Back/Escape returned idle at 119/100 KB. Emergency stop returned home but left `bleScanner` active; Wi-Fi warned “Stop BLE scan,” then the retry panicked. Post-reset report: Panic/crash, stability 27, 127/123 KB. Root cause: global stop closed the logger but omitted `bleScanner.stop()`; corrected in the next candidate and requires retest. |
 | Wi-Fi PCAP capture | saved Wi-Fi connect | Pending | Pending | Pending | Pending | |
 | Guardian | Host Discovery | Pending | Pending | Pending | Pending | |
 | War Drive | Wi-Fi connect | Pending | Pending | Pending | Pending | |

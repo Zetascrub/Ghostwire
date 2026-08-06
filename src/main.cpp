@@ -4671,6 +4671,7 @@ bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
 void stopAllActiveOperations() {
     wifiGuardianService.stop();
     wifiSnifferService.end();
+    bleScanner.stop();
     bleSpamService.end();
     bleKeyboardService.end();
     stopBiscuitWardrive();
