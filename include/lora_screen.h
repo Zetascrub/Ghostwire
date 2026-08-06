@@ -17,8 +17,8 @@ public:
     void draw(bool fullDraw = true);
     void drawNodes(size_t selection, size_t offset);
     void drawNodeDetail(size_t selection);
-    void drawMessages(size_t selection, size_t offset);
-    void drawMessageDetail(size_t selection);
+    void drawChats(size_t selection, size_t offset);
+    void drawConversation(bool direct, uint32_t peer, const String& channel);
     void drawRadar();
     void drawChannels(size_t selection, size_t offset,
                       const String& configurationStatus, uint8_t hopLimit);

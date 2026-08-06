@@ -434,6 +434,10 @@ std::vector<uint8_t> meshPublicKey;
 uint8_t meshHopLimit = 7;
 size_t meshTransmitChannel = 0;
 uint32_t meshComposeRecipient = 0xffffffffU;
+bool meshConversationDirect = false;
+uint32_t meshConversationPeer = 0;
+String meshConversationChannel = "LongFast";
+Screen meshComposeReturnScreen = Screen::MeshMessages;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
@@ -1373,15 +1377,11 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'n', "Open node directory"},
                     {'m', "Open message inbox"}};
         case Screen::MeshMessages:
-            return {{'c', "Compose broadcast message"}};
+            return {{'c', "Write in selected chat"}};
         case Screen::MeshMessageDetail:
-            if (!loraService.messages().empty() &&
-                listSelection < loraService.messages().size() &&
-                !loraService.messages()[loraService.messages().size() - 1 -
-                                        listSelection].outgoing) {
-                return {{'r', "Reply to sender"}};
-            }
-            return {};
+            return {{'c', "Write message"}};
+        case Screen::MeshNodeDetail:
+            return {{'m', "Send direct message"}};
         case Screen::WifiSniffer:
             return {{'l', wifiSnifferLogger.isActive() ? "Stop probe CSV"
                                                         : "Start probe CSV"},
@@ -3803,10 +3803,12 @@ void drawCurrentScreen() {
             loraScreen.drawNodeDetail(listSelection);
             break;
         case Screen::MeshMessages:
-            loraScreen.drawMessages(listSelection, listOffset);
+            loraScreen.drawChats(listSelection, listOffset);
             break;
         case Screen::MeshMessageDetail:
-            loraScreen.drawMessageDetail(listSelection);
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
             break;
         case Screen::MeshRadar: loraScreen.drawRadar(); break;
         case Screen::MeshChannels:
@@ -4565,10 +4567,11 @@ void goBack() {
     }
     if (currentScreen == Screen::MeshNodes ||
         currentScreen == Screen::MeshMessages) {
-        currentScreen = Screen::LoRa;
-        listSelection = 0;
+        const bool wasNodes = currentScreen == Screen::MeshNodes;
+        currentScreen = Screen::MeshMenu;
+        listSelection = wasNodes ? 1 : 0;
         listOffset = 0;
-        loraScreen.draw();
+        menuScreens.drawMesh();
         return;
     }
     if (currentScreen == Screen::MeshNodeDetail) {
@@ -4578,28 +4581,40 @@ void goBack() {
     }
     if (currentScreen == Screen::MeshMessageDetail) {
         currentScreen = Screen::MeshMessages;
-        loraScreen.drawMessages(listSelection, listOffset);
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.drawChats(listSelection, listOffset);
         return;
     }
     if (currentScreen == Screen::MeshRadar) {
         currentScreen = Screen::MeshMenu;
-        listSelection = 3;
+        listSelection = 2;
         listOffset = 0;
         menuScreens.drawMesh();
         return;
     }
     if (currentScreen == Screen::MeshChannels) {
-        currentScreen = Screen::MeshMenu;
-        listSelection = 4;
-        listOffset = 0;
-        menuScreens.drawMesh();
+        currentScreen = Screen::MeshSettings;
+        listSelection = 6;
+        listOffset = 2;
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, false,
+                                meshSettingsStatus);
         return;
     }
     if (currentScreen == Screen::MeshCompose) {
-        currentScreen = Screen::MeshMessages;
+        currentScreen = meshComposeReturnScreen;
         listSelection = 0;
         listOffset = 0;
-        loraScreen.drawMessages(listSelection, listOffset);
+        if (currentScreen == Screen::MeshMessageDetail) {
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
+        } else {
+            loraScreen.drawChats(listSelection, listOffset);
+        }
         return;
     }
     if (currentScreen == Screen::MeshSettings) {
@@ -4615,7 +4630,7 @@ void goBack() {
             return;
         }
         currentScreen = Screen::MeshMenu;
-        listSelection = 5;
+        listSelection = 3;
         listOffset = 0;
         menuScreens.drawMesh();
         return;
@@ -4640,9 +4655,14 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::LoRa) {
-        currentScreen = Screen::MeshMenu;
-        listSelection = 0;
-        menuScreens.drawMesh();
+        currentScreen = Screen::MeshSettings;
+        listSelection = 7;
+        listOffset = 3;
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, false,
+                                meshSettingsStatus);
         return;
     }
     if (currentScreen == Screen::NetworkHostScan) {
@@ -5086,6 +5106,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                      meshComposeRecipient, meshHopLimit)) {
                 meshDraft = "";
                 meshPersistDue = millis() + 2000;
+                meshComposeStatus = loraService.transmitStatus();
+                currentScreen = meshComposeReturnScreen;
+                listSelection = 0;
+                listOffset = 0;
+                if (currentScreen == Screen::MeshMessageDetail) {
+                    loraScreen.drawConversation(meshConversationDirect,
+                                                meshConversationPeer,
+                                                meshConversationChannel);
+                } else {
+                    loraScreen.drawChats(listSelection, listOffset);
+                }
+                return;
             }
             meshComposeStatus = loraService.transmitStatus();
             loraScreen.drawCompose(meshDraft, meshTransmitChannel,
@@ -6631,15 +6663,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
-            if (up) moveSelection(-1, 6);
-            if (down) moveSelection(1, 6);
+            if (up) moveSelection(-1, 4);
+            if (down) moveSelection(1, 4);
             if (keys.enter) {
                 const size_t destination = listSelection;
-                currentScreen = destination == 0 ? Screen::LoRa
+                currentScreen = destination == 0 ? Screen::MeshMessages
                               : destination == 1 ? Screen::MeshNodes
-                              : destination == 2 ? Screen::MeshMessages
-                              : destination == 3 ? Screen::MeshRadar
-                              : destination == 4 ? Screen::MeshChannels
+                              : destination == 2 ? Screen::MeshRadar
                                                  : Screen::MeshSettings;
                 listSelection = 0;
                 listOffset = 0;
@@ -6844,7 +6874,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 currentScreen = Screen::MeshMessages;
                 listSelection = 0;
                 listOffset = 0;
-                loraScreen.drawMessages(listSelection, listOffset);
+                loraScreen.drawChats(listSelection, listOffset);
                 return;
             } else if (refresh) {
                 loraService.restartReceive();
@@ -6865,48 +6895,25 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshNodeDetail:
-            loraScreen.drawNodeDetail(listSelection);
-            break;
-
-        case Screen::MeshMessages:
-            if (pressedLetter(keys, 'c')) {
-                meshComposeStatus = "";
-                meshComposeRecipient = 0xffffffffU;
-                currentScreen = Screen::MeshCompose;
-                loraScreen.drawCompose(meshDraft, meshTransmitChannel,
-                                       meshHopLimit, meshComposeRecipient,
-                                       meshComposeStatus);
-                return;
-            }
-            if (up) moveSelection(-1, loraService.messages().size());
-            if (down) moveSelection(1, loraService.messages().size());
-            normalizeListPosition(loraService.messages().size());
-            if (keys.enter && !loraService.messages().empty()) {
-                currentScreen = Screen::MeshMessageDetail;
-                loraScreen.drawMessageDetail(listSelection);
-                return;
-            }
-            loraScreen.drawMessages(listSelection, listOffset);
-            break;
-
-        case Screen::MeshMessageDetail:
-            if (pressedLetter(keys, 'r') &&
-                listSelection < loraService.messages().size()) {
-                const auto& message = loraService.messages()[
-                    loraService.messages().size() - 1 - listSelection];
-                if (!message.outgoing) {
-                    meshComposeRecipient = message.from;
-                    for (size_t channel = 0;
-                         channel < loraService.meshChannels().size();
-                         ++channel) {
-                        if (loraService.meshChannels()[channel].name ==
-                            message.channel) {
-                            meshTransmitChannel = channel;
-                            break;
-                        }
+            if ((keys.enter || pressedLetter(keys, 'm')) &&
+                listSelection < loraService.nodes().size()) {
+                const auto& node = loraService.nodes()[listSelection];
+                if (node.id != meshNodeId) {
+                    if (node.publicKey.size() != 32) {
+                        loraService.sendNodeInfo(
+                            meshNodeName, meshNodeShortName,
+                            meshTransmitChannel, meshNodeId, meshHopLimit);
+                        meshSettingsStatus = loraService.transmitStatus();
+                        loraScreen.drawNodeDetail(listSelection);
+                        return;
                     }
+                    meshConversationDirect = true;
+                    meshConversationPeer = node.id;
+                    meshConversationChannel = "PKI";
+                    meshComposeRecipient = node.id;
+                    meshComposeReturnScreen = Screen::MeshMessageDetail;
                     meshDraft = "";
-                    meshComposeStatus = "Replying on #" + message.channel;
+                    meshComposeStatus = "";
                     currentScreen = Screen::MeshCompose;
                     loraScreen.drawCompose(meshDraft, meshTransmitChannel,
                                            meshHopLimit, meshComposeRecipient,
@@ -6914,7 +6921,64 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     return;
                 }
             }
-            loraScreen.drawMessageDetail(listSelection);
+            loraScreen.drawNodeDetail(listSelection);
+            break;
+
+        case Screen::MeshMessages: {
+            const auto chats = loraService.conversations();
+            if (up) moveSelection(-1, chats.size());
+            if (down) moveSelection(1, chats.size());
+            normalizeListPosition(chats.size());
+            if ((keys.enter || pressedLetter(keys, 'c')) && !chats.empty()) {
+                const auto& chat = chats[listSelection];
+                meshConversationDirect = chat.direct;
+                meshConversationPeer = chat.peer;
+                meshConversationChannel = chat.channel;
+                for (size_t channel = 0;
+                     channel < loraService.meshChannels().size(); ++channel) {
+                    if (loraService.meshChannels()[channel].name == chat.channel) {
+                        meshTransmitChannel = channel;
+                        break;
+                    }
+                }
+                if (pressedLetter(keys, 'c')) {
+                    meshComposeRecipient = chat.direct ? chat.peer : 0xffffffffU;
+                    meshComposeReturnScreen = Screen::MeshMessages;
+                    meshDraft = "";
+                    meshComposeStatus = "";
+                    currentScreen = Screen::MeshCompose;
+                    loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                           meshHopLimit, meshComposeRecipient,
+                                           meshComposeStatus);
+                } else {
+                    currentScreen = Screen::MeshMessageDetail;
+                    loraScreen.drawConversation(meshConversationDirect,
+                                                meshConversationPeer,
+                                                meshConversationChannel);
+                }
+                return;
+            }
+            loraScreen.drawChats(listSelection, listOffset);
+            break;
+        }
+
+        case Screen::MeshMessageDetail:
+            if (keys.enter || pressedLetter(keys, 'c')) {
+                meshComposeRecipient = meshConversationDirect
+                                           ? meshConversationPeer
+                                           : 0xffffffffU;
+                meshComposeReturnScreen = Screen::MeshMessageDetail;
+                meshDraft = "";
+                meshComposeStatus = "";
+                currentScreen = Screen::MeshCompose;
+                loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                       meshHopLimit, meshComposeRecipient,
+                                       meshComposeStatus);
+                return;
+            }
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
             break;
 
         case Screen::MeshRadar:
@@ -6939,10 +7003,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshSettings:
-            if (up) moveSelection(-1, 9);
-            if (down) moveSelection(1, 9);
-            normalizeListPosition(9);
-            if (listSelection == 2 && (navigationLeft || navigationRight)) {
+            if (up) moveSelection(-1, 11);
+            if (down) moveSelection(1, 11);
+            normalizeListPosition(11);
+            if (listSelection == 4 && (navigationLeft || navigationRight)) {
                 meshBackgroundEnabled = !meshBackgroundEnabled;
                 preferences.putBool("mesh_bg", meshBackgroundEnabled);
                 if (meshBackgroundEnabled && !loraService.isReady()) {
@@ -6952,14 +7016,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                          ? "Background receive enabled"
                                          : "Stops after leaving Mesh";
             }
-            if (listSelection == 3 && (navigationLeft || navigationRight)) {
+            if (listSelection == 5 && (navigationLeft || navigationRight)) {
                 meshMessageAlertsEnabled = !meshMessageAlertsEnabled;
                 preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
                 meshSettingsStatus = meshMessageAlertsEnabled
                                          ? "New-message tones enabled"
                                          : "Message alerts muted";
             }
-            if (listSelection == 4 && !loraService.meshChannels().empty()) {
+            if (listSelection == 2 && !loraService.meshChannels().empty()) {
                 if (navigationLeft) {
                     meshTransmitChannel = meshTransmitChannel == 0
                         ? loraService.meshChannels().size() - 1
@@ -6973,7 +7037,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 preferences.putUChar("mesh_tx_ch",
                                      static_cast<uint8_t>(meshTransmitChannel));
             }
-            if (listSelection == 5) {
+            if (listSelection == 3) {
                 if (navigationLeft && meshHopLimit > 1) --meshHopLimit;
                 if (navigationRight && meshHopLimit < 7) ++meshHopLimit;
                 preferences.putUChar("mesh_hops", meshHopLimit);
@@ -6984,7 +7048,20 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                                : meshNodeShortName;
                 meshIdentityEditing = true;
                 meshSettingsStatus = "";
-            } else if (keys.enter && listSelection == 8) {
+            } else if (keys.enter && listSelection == 6) {
+                currentScreen = Screen::MeshChannels;
+                listSelection = meshTransmitChannel;
+                listOffset = 0;
+                loraScreen.drawChannels(listSelection, listOffset,
+                                        meshChannelStatus, meshHopLimit);
+                return;
+            } else if (keys.enter && listSelection == 7) {
+                currentScreen = Screen::LoRa;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.draw();
+                return;
+            } else if (keys.enter && listSelection == 10) {
                 if (loraService.sendNodeInfo(
                         meshNodeName, meshNodeShortName, meshTransmitChannel,
                         meshNodeId, meshHopLimit)) {
@@ -7749,6 +7826,11 @@ void loop() {
     if (loraService.receivedMessageCount() != observedMeshMessageCount) {
         observedMeshMessageCount = loraService.receivedMessageCount();
         playMeshMessageAlert();
+        if (!actionMenuOpen &&
+            (currentScreen == Screen::MeshMessages ||
+             currentScreen == Screen::MeshMessageDetail)) {
+            drawCurrentScreen();
+        }
     }
     if (loraService.packetCount() != lastPersistedMeshPacket &&
         meshPersistDue == 0) {

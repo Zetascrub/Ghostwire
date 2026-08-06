@@ -132,8 +132,10 @@ verified against test tags.
 - [x] Add PKI-encrypted direct reply composition with Meshtastic's
   acknowledgement-request flag, signed key-bearing identity advertisement,
   peer-key readiness feedback, and clear incoming/outgoing conversation labels.
-- Decode acknowledgement outcomes and add deliberate direct composition from
-  the node directory; add position sharing after duty-cycle testing.
+- [x] Rework navigation around Chats, Nodes, Map, and Settings; group channel
+  and direct traffic into conversation threads and allow DMs from node detail.
+- Decode acknowledgement outcomes and add position sharing after duty-cycle
+  testing.
 
 The client behaves as a quiet endpoint: it can receive and originate text but
 does not claim router behaviour or rebroadcast other nodes' traffic.

@@ -155,17 +155,18 @@ void LoRaScreen::drawSettings(size_t selection, size_t offset,
         ScreenChrome::drawFooter("Enter save   Esc cancel");
         return;
     }
-    constexpr size_t count = 9;
+    constexpr size_t count = 11;
     ScreenChrome::normalizeListPosition(count);
     const char* const labels[count] = {
-        "Long name", "Short name", "Background client", "Message alerts",
-        "TX channel", "Hop limit", "Device role", "Region",
-        "Advertise identity",
+        "Long name", "Short name", "Default channel", "Hop limit",
+        "Background client", "Message alerts", "Channel profiles",
+        "Radio status", "Device role", "Region", "Exchange identity keys",
     };
     const String values[count] = {
-        longName, shortName, backgroundEnabled ? "On" : "Off",
-        messageAlertsEnabled ? "On" : "Off", channel, String(hopLimit),
-        "Client mute", "EU_868", "Enter",
+        longName, shortName, channel, String(hopLimit),
+        backgroundEnabled ? "On" : "Off",
+        messageAlertsEnabled ? "On" : "Off", "Open", "Open",
+        "Client mute", "EU_868", "Send",
     };
     for (size_t row = 0;
          row < ScreenChrome::kVisibleRows && row + offset < count; ++row) {
@@ -178,7 +179,7 @@ void LoRaScreen::drawSettings(size_t selection, size_t offset,
         display.setCursor(8, 112);
         display.print(status.substring(0, 37));
     }
-    ScreenChrome::drawFooter("Enter edit/send   Left/Right adjust");
+    ScreenChrome::drawFooter("Enter: open/edit   Left/Right: change");
 }
 
 void LoRaScreen::drawNodes(size_t selection, size_t offset) {
@@ -265,67 +266,87 @@ void LoRaScreen::drawNodeDetail(size_t selection) {
     display.setTextColor(node.publicKey.size() == 32 ? Branding::accent
                                                      : Branding::muted,
                          Branding::background);
-    display.print(node.publicKey.size() == 32 ? "Direct messaging ready"
-                                              : "Awaiting identity key");
-    ScreenChrome::drawFooter("Q: node list");
+    const String keyStatus = node.publicKey.size() == 32
+                                 ? "Direct messaging ready"
+                                 : service_.transmitStatus().startsWith("Identity")
+                                       ? "Identity request sent"
+                                       : "Awaiting identity key";
+    display.print(keyStatus);
+    ScreenChrome::drawFooter(node.publicKey.size() == 32
+                                 ? "Enter: message   Q: nodes"
+                                 : "Enter: request key   Q: nodes");
 }
 
-void LoRaScreen::drawMessages(size_t selection, size_t offset) {
-    const auto& messages = service_.messages();
-    ScreenChrome::drawHeader("Mesh Messages");
-    ScreenChrome::drawHeaderPosition(messages.empty() ? 0 : selection + 1,
-                                     messages.size());
-    if (messages.empty()) {
+void LoRaScreen::drawChats(size_t selection, size_t offset) {
+    const auto chats = service_.conversations();
+    ScreenChrome::drawHeader("Mesh Chats");
+    ScreenChrome::drawHeaderPosition(chats.empty() ? 0 : selection + 1,
+                                     chats.size());
+    if (chats.empty()) {
         auto& display = M5Cardputer.Display;
         display.setTextColor(Branding::muted, Branding::background);
         display.setCursor(8, 42);
-        display.print("No public-channel messages yet");
+        display.print("No channels configured");
     } else {
-        const size_t end = std::min(messages.size(),
+        const size_t end = std::min(chats.size(),
                                     offset + ScreenChrome::kVisibleRows);
-        for (size_t i = offset; i < end; ++i) {
-            const auto& message = messages[messages.size() - 1 - i];
-            const uint32_t peer = message.outgoing ? message.to : message.from;
-            const String label = (message.outgoing ? "> " : "") +
-                                 service_.nodeDisplayName(peer) + ": " +
-                                 message.text;
-            ScreenChrome::drawListRow(static_cast<int>(i - offset), label,
-                                      i == selection);
+        for (size_t index = offset; index < end; ++index) {
+            const auto& chat = chats[index];
+            const String name = chat.direct
+                                    ? service_.nodeDisplayName(chat.peer)
+                                    : "# " + chat.channel;
+            String preview = chat.preview;
+            if (chat.lastOutgoing && chat.lastMessageMs != 0) preview = "You: " + preview;
+            ScreenChrome::drawListRow(static_cast<int>(index - offset), name,
+                                      index == selection,
+                                      preview.substring(0, 18));
         }
     }
-    ScreenChrome::drawFooter("Enter read   C compose   Q back");
+    ScreenChrome::drawFooter("Enter: open chat   Q: back");
 }
 
-void LoRaScreen::drawMessageDetail(size_t selection) {
-    const auto& messages = service_.messages();
-    ScreenChrome::drawHeader("Mesh Message");
-    if (selection >= messages.size()) return;
-    const auto& message = messages[messages.size() - 1 - selection];
+void LoRaScreen::drawConversation(bool direct, uint32_t peer,
+                                  const String& channel) {
+    const String title = direct ? service_.nodeDisplayName(peer)
+                                : "# " + channel;
+    const String header = title.substring(0, 24);
+    ScreenChrome::drawHeader(header.c_str());
     auto& display = M5Cardputer.Display;
-    display.setTextColor(Branding::accent, Branding::background);
-    display.setCursor(8, 29);
-    const uint32_t peer = message.outgoing ? message.to : message.from;
-    display.print(((message.outgoing ? "To " : "From ") +
-                   service_.nodeDisplayName(peer)).substring(0, 35));
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 46);
-    display.print(("#" + message.channel +
-                   (message.to == 0xffffffffU ? "  Broadcast" : "  Direct"))
-                      .substring(0, 37));
-    display.setCursor(8, 61);
-    display.printf("ID %08lX  to %08lX",
-                   static_cast<unsigned long>(message.packetId),
-                   static_cast<unsigned long>(message.to));
-    display.setTextColor(Branding::text, Branding::background);
-    for (size_t line = 0; line < 3; ++line) {
-        const size_t start = line * 36;
-        if (start >= message.text.length()) break;
-        display.setCursor(8, 76 + static_cast<int>(line) * 15);
-        display.print(message.text.substring(start, start + 36));
+    std::vector<const LoRaService::MeshMessage*> thread;
+    for (const auto& message : service_.messages()) {
+        const bool messageDirect = message.to != 0xffffffffU;
+        const uint32_t messagePeer = message.outgoing ? message.to : message.from;
+        if (messageDirect == direct &&
+            (direct ? messagePeer == peer : message.channel == channel)) {
+            thread.push_back(&message);
+        }
     }
-    ScreenChrome::drawFooter(message.outgoing
-                                 ? "Q: message inbox"
-                                 : "R: reply   Q: message inbox");
+    if (thread.empty()) {
+        display.setTextColor(Branding::muted, Branding::background);
+        display.setCursor(8, 45);
+        display.print(direct ? "No direct messages yet" : "No channel messages yet");
+        display.setCursor(8, 63);
+        display.print("Press Enter to write the first one");
+    } else {
+        const size_t start = thread.size() > 5 ? thread.size() - 5 : 0;
+        int y = 29;
+        for (size_t index = start; index < thread.size(); ++index) {
+            const auto& message = *thread[index];
+            display.setTextColor(message.outgoing ? Branding::accent
+                                                  : Branding::muted,
+                                 Branding::background);
+            const String author = message.outgoing
+                                      ? "You"
+                                      : service_.nodeDisplayName(message.from);
+            display.setCursor(8, y);
+            display.print((author + ":").substring(0, 12));
+            display.setTextColor(Branding::text, Branding::background);
+            display.setCursor(66, y);
+            display.print(message.text.substring(0, 27));
+            y += 18;
+        }
+    }
+    ScreenChrome::drawFooter("Enter: message   Q: chats");
 }
 
 void LoRaScreen::drawRadar() {

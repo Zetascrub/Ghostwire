@@ -158,6 +158,41 @@ String LoRaService::nodeDisplayName(uint32_t id) const {
     return String(fallback);
 }
 
+std::vector<LoRaService::MeshConversation> LoRaService::conversations() const {
+    std::vector<MeshConversation> result;
+    result.reserve(decoder_.channels().size() + messages_.size());
+    for (const auto& channel : decoder_.channels()) {
+        result.push_back({false, 0, channel.name, 0, "No messages yet", false});
+    }
+    for (const auto& message : messages_) {
+        const bool direct = message.to != 0xffffffffU;
+        const uint32_t peer = direct
+                                  ? (message.outgoing ? message.to : message.from)
+                                  : 0;
+        auto conversation = std::find_if(
+            result.begin(), result.end(), [&](const MeshConversation& value) {
+                return value.direct == direct && value.peer == peer &&
+                       (direct || value.channel == message.channel);
+            });
+        if (conversation == result.end()) {
+            result.push_back({direct, peer, message.channel, 0, "", false});
+            conversation = result.end() - 1;
+        }
+        if (message.receivedMs >= conversation->lastMessageMs) {
+            conversation->lastMessageMs = message.receivedMs;
+            conversation->preview = message.text;
+            conversation->lastOutgoing = message.outgoing;
+            if (!message.channel.isEmpty()) conversation->channel = message.channel;
+        }
+    }
+    std::stable_sort(result.begin(), result.end(),
+                     [](const MeshConversation& left,
+                        const MeshConversation& right) {
+        return left.lastMessageMs > right.lastMessageMs;
+    });
+    return result;
+}
+
 void LoRaService::restoreNode(const MeshNode& node) {
     if (node.id == 0) return;
     const auto existing = std::find_if(nodes_.begin(), nodes_.end(),

@@ -40,6 +40,15 @@ public:
         bool outgoing = false;
     };
 
+    struct MeshConversation {
+        bool direct = false;
+        uint32_t peer = 0;
+        String channel;
+        uint32_t lastMessageMs = 0;
+        String preview;
+        bool lastOutgoing = false;
+    };
+
     enum class Profile {
         MeshtasticEuLongFast,
         M5StackGeneric,
@@ -64,6 +73,7 @@ public:
     float frequencyMhz() const;
     const std::vector<MeshNode>& nodes() const { return nodes_; }
     const std::vector<MeshMessage>& messages() const { return messages_; }
+    std::vector<MeshConversation> conversations() const;
     String nodeDisplayName(uint32_t id) const;
     void restoreNode(const MeshNode& node);
     void restoreMessage(const MeshMessage& message);

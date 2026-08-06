@@ -6,6 +6,13 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Rework Mesh into a conversation-first Meshtastic client. Its home now follows
+  a familiar Chats, Nodes, Map, and Settings layout. Channel and direct messages
+  are grouped into conversations with compact live-updating threads and
+  contextual composition. Node details can start a DM or request a missing
+  identity key. Channel profiles and raw radio diagnostics now live under Mesh
+  Settings instead of competing with everyday messaging at the top level.
+
 - Add interoperable direct Meshtastic replies from received-message detail.
   Replies target the sender's node ID, use Curve25519-derived AES-CCM PKI,
   request an acknowledgement, and are journalled with the actual recipient.

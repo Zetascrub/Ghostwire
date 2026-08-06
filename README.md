@@ -159,34 +159,38 @@ The detailed capabilities behind those missions are:
 - GPS provides GNSS fix monitoring, live position/altitude/HDOP, and one-second
   CSV recording.
 - Mesh provides a lightweight Meshtastic field client over the SX1262. Its
-  dashboard feeds a bounded 24-node directory and 32-message inbox, decodes
+  app-style home presents Chats, Nodes, Map, and Settings instead of exposing
+  radio utilities as the primary workflow. Chats groups the bounded 32-message
+  journal into persistent channel and direct conversations, decodes
   public-channel identities and positions, suppresses repeated messages, and
   retains raw radio metadata in event-driven CSV logs. Node and message detail
   views remain available while the radio continues listening. A GNSS-relative
   radar plots received positions and node details calculate range/bearing;
   device battery telemetry is shown when broadcast. The bounded client state
-  is restored from `/ghostwire/mesh/state.json` after reboot. The message
-  inbox can compose broadcast text on any loaded channel. Ghostwire originates
+  is restored from `/ghostwire/mesh/state.json` after reboot. Entering a chat
+  shows its recent thread and Enter composes in that channel or direct context.
+  Ghostwire originates
   packets as a non-repeating `CLIENT_MUTE`-style endpoint, with a persistent
   adjustable hop limit of 1-7 (default 7), channel-activity checks, and an
   airtime guard; it does not route or rebroadcast other nodes' traffic.
   Mesh Settings provides persistent 24-character long and four-character
-  short names, transmit-channel selection, hop-limit adjustment, and an
-  explicit NodeInfo identity advertisement. The page also makes the fixed
+  short names, default-channel selection, hop-limit adjustment, key exchange,
+  and access to channel profiles and the lower-level radio status screen. The
+  page also makes the fixed
   `CLIENT_MUTE` role and EU_868 region visible. Optional background-client mode
   starts the SX1262 at boot and continues receiving away from Mesh screens;
   when disabled, the radio stops after leaving Mesh. A separate persistent
   message-alert toggle plays a short two-note cue for each newly decoded text
   message without interrupting active audio.
-  Opening an incoming message and pressing `R` composes a direct reply to its
-  sender. Direct messages use Meshtastic-compatible Curve25519/AES-CCM PKI and
+  Direct conversations can be opened from Chats or started from a node detail
+  page. Direct messages use Meshtastic-compatible Curve25519/AES-CCM PKI and
   request a mesh acknowledgement; they are not sent as legacy channel-encrypted
   DMs. Both peers must first learn one another's public key: let Ghostwire hear
   the peer's NodeInfo. Mesh Settings -> Advertise identity sends Ghostwire's
   persistent signed identity and requests NodeInfo replies from listening peers,
   completing both sides of the key exchange. Node detail reports when a peer's
-  key is ready. Broadcast composition remains available with `C`, and
-  the inbox distinguishes incoming peers from outgoing recipients.
+  key is ready; pressing Enter on a node without a key requests identity
+  exchange automatically.
 - Channel Profiles always retains the public `LongFast` decoder and can load
   up to three private receive/transmit channels from
   `/ghostwire/mesh/channels.json`. Profiles require the exact Meshtastic name
