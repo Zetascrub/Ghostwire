@@ -390,12 +390,19 @@ The first workflow batch is now implemented and hardware-validated:
 3. Cyber Familiar encounter integrity, persistence, import, and export;
 4. Chameleon Ultra save/load and identity-emulation workflow.
 
-The next candidate group is:
+The next stretch is release-sized rather than a single feature pile:
 
-1. TCP/UDP socket workbench, time management, BLE scripts, QR utilities, and
-   microphone spectrum diagnostics;
-2. ESP-NOW exchange, a security-gated Web UI, WiGLE-compatible export,
-   WireGuard evaluation, and optional accessory support.
+1. finish 0.5 with radio/SD endurance, Meshtastic interoperability, and OTA
+   rollback validation;
+2. build the 0.6 Field Console around a TCP-first socket workbench, clear clock
+   provenance and offline time controls, QR handoff presets, and bounded Mesh
+   history access through Evidence;
+3. follow with BLE script transport, confirmed SD-template sync, and microphone
+   spectrum diagnostics only after the core 0.6 workflows are stable.
+
+ESP-NOW exchange and a security-gated Web UI are later design candidates.
+WiGLE-compatible export is already implemented. WireGuard and optional
+accessories remain evaluation work rather than scheduled features.
 
 Jammers, broad floods, novelty spam, combined evil-portal/deauth workflows,
 Responder/ARP poisoning, and unsupported-hardware features are not active

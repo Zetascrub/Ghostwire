@@ -66,6 +66,58 @@ services, works offline, and benefits both security and administration. It falls
 when a feature is mainly theatrical, duplicates another tool, depends on
 unowned hardware, or creates disproportionate legal, RF, or reliability risk.
 
+## Next release sequence
+
+The next stretch is deliberately divided into release-sized outcomes. New
+features do not displace the remaining 0.5 reliability gates.
+
+### 0.5.0 — release and soak
+
+1. Run a repeated hardware soak across Wi-Fi scan/capture, BLE scan/capture,
+   Mesh background receive, GNSS logging, audio, SD writes, and emergency stop.
+2. Exercise transitions between every pair of radio-owning operations and
+   record heap floor, recovery behaviour, and any reset reason.
+3. Complete a small Meshtastic interoperability matrix: public channel, private
+   channel, broadcast, PKI direct message, ACK/failure state, node requests,
+   position sharing, reboot persistence, and background alerts.
+4. Exercise the OTA forced-bad-boot rollback path on hardware, then publish the
+   signed 0.5.0 release only when the result is recoverable and documented.
+
+No new subsystem is required for this milestone. Fixes, diagnostics, and small
+usability corrections discovered during the soak are in scope.
+
+### 0.6.0 — Field Console
+
+1. Build the Network Socket Workbench: bounded TCP client/listener first, then
+   UDP only after TCP passes interruption and resource tests. Host Discovery and
+   Port Scan should hand a selected host/port into it.
+2. Finish clock provenance: show UTC, local display time, active source, sync
+   age, and uncertainty; add deliberate offline time and timezone controls while
+   keeping evidence timestamps in UTC.
+3. Complete QR handoff presets for Wi-Fi credentials, selected host details,
+   short diagnostic summaries, and supported Ghostwire configuration tokens.
+   Secrets always require an explicit reveal/confirm step.
+4. Bring append-only Mesh history into Evidence with a bounded on-demand reader
+   and useful export, without loading the complete JSONL archive into RAM.
+
+**Release gate:** each utility must produce a saved or transferable result,
+restore its resources on exit, and remain responsive with Wi-Fi connected and a
+near-full SD card. The target remains below 75% application flash and 45% static
+RAM, preserving OTA and runtime headroom.
+
+### 0.6.x — bounded automation and sensors
+
+1. Add BLE DuckyScript transport by reusing the existing reviewed parser,
+   confirmation screen, and explicit connected-host state.
+2. Add operator-confirmed SD template comparison/sync after Wi-Fi connects. It
+   reports differences first and never silently overwrites local files.
+3. Add the microphone spectrum diagnostic only after measuring its heap and CPU
+   cost alongside display buffering and audio playback.
+
+These are follow-up releases rather than blockers for 0.6.0. ESP-NOW exchange
+and a local Web UI remain 0.7 design candidates because both introduce new
+trust, authentication, and long-running service boundaries.
+
 ## Now — complete existing workflows
 
 ### Completed quick wins
@@ -140,8 +192,8 @@ verified against test tags.
   peer-key readiness feedback, and clear incoming/outgoing conversation labels.
 - [x] Rework navigation around Chats, Nodes, Map, and Settings; group channel
   and direct traffic into conversation threads and allow DMs from node detail.
-- Decode acknowledgement outcomes and add position sharing after duty-cycle
-  testing.
+- [x] Decode acknowledgement outcomes, show delivery state, and add deliberate
+  GNSS position sharing plus node identity/position/telemetry requests.
 
 The client behaves as a quiet endpoint: it can receive and originate text but
 does not claim router behaviour or rebroadcast other nodes' traffic.
@@ -184,9 +236,9 @@ emulator.
   level history, and optional CSV summary.
 - Treat it as a diagnostic visualiser, not calibrated test equipment.
 
-### 10. Wi-Fi auto-connect and template sync
+### 10. Wi-Fi auto-connect and template sync — auto-connect complete
 
-- On boot, if a saved Wi-Fi profile exists, connect automatically (still an
+- [x] On boot, if a saved Wi-Fi profile exists, connect automatically (still an
   explicit opt-in setting via `autoConnectWifi`/`saveWifiCredentials`, default
   unchanged otherwise -- this uses the existing, already-implemented saved-
   credential mechanism, not anything new).
@@ -262,9 +314,9 @@ automatic rollback without operator intervention.
   an on-device enable indicator.
 - Bind only while explicitly enabled and stop the service on exit or timeout.
 
-### 14. WiGLE-compatible export
+### 14. WiGLE-compatible export — implemented
 
-- Export wardrive data in a WiGLE-compatible format after validating coordinates,
+- [x] Export wardrive data in a WiGLE-compatible format after validating coordinates,
   timestamps, privacy implications, and schema details.
 - Upload is a separate later decision; local export provides most of the value
   without storing credentials or automating disclosure of location data.
