@@ -16,6 +16,10 @@ Cardputer ADV off, hold `G0`, connect USB, then release `G0`.
 
 ## Release checklist
 
+For the 0.5 hardware soak and its recorded acceptance results, use
+[`release-validation-0.5.md`](release-validation-0.5.md). The summary below is
+the reusable checklist for later releases.
+
 1. Start from a clean tagged commit.
 2. Run the native tests and firmware build.
 3. Test boot, keyboard, display, SD, audio, Wi-Fi connect/disconnect, BLE
