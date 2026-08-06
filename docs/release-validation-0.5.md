@@ -48,6 +48,14 @@ The development HTTP collector was hardware-validated from `192.168.8.198` to
 minimum heap, Operations idle, stability 26, boot count 251, SD ready, and a
 GNSS-synchronised timestamp. The same manual export also wrote its SD report.
 
+Development builds also listen on UDP 8766 for bounded LED/message tests from
+`192.168.8.10` only. Run
+`python tools/send_led_message.py CARDPUTER_IP "Test message" --color magenta`.
+The command accepts named colours or `RRGGBB`, a 250-10000 ms duration, and
+1-10 pulses. Release builds do not open the listener. The on-screen delivery
+and StampS3A RGB output were hardware-validated; the LED uses GPIO21 with the
+ADV-specific GPIO38 power enable.
+
 ### Idle soak reading — 15 minutes
 
 | Diagnostic | Result |

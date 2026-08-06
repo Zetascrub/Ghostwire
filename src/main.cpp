@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 #include <Curve25519.h>
 #include <HTTPClient.h>
@@ -7,6 +8,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -88,6 +90,8 @@ constexpr uint32_t kSdFrequency = 4000000;
 constexpr size_t kVisibleRows = 6;
 constexpr char kDevDiagnosticCollectorUrl[] =
     "http://192.168.8.10:8765/diagnostics";
+constexpr uint16_t kDevLedControlPort = 8766;
+const IPAddress kDevControlHost(192, 168, 8, 10);
 
 // FileEntry / LogEntry: see include/file_screens.h.
 
@@ -387,6 +391,21 @@ OnboardingScreens onboardingScreens(onboardingPage, sdAvailable,
                                     cardNavigationEnabled,
                                     saveWifiCredentials);
 bool screenSleeping = false;
+WiFiUDP devLedUdp;
+Adafruit_NeoPixel devStatusLed(1, 21, NEO_GRB + NEO_KHZ800);
+bool devStatusLedReady = false;
+bool devLedUdpListening = false;
+String devRemoteMessage;
+uint32_t devRemoteMessageUntil = 0;
+bool devRemoteMessageVisible = false;
+uint8_t devLedRed = 0;
+uint8_t devLedGreen = 0;
+uint8_t devLedBlue = 0;
+uint8_t devLedPulses = 0;
+uint32_t devLedStarted = 0;
+uint32_t devLedDuration = 0;
+bool devLedOn = false;
+bool devLedPowerBoosted = false;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
 int16_t cyberdeckRainHead[kCyberdeckColumns]{};
@@ -3655,6 +3674,141 @@ void updateFamiliarVoice() {
 void showFamiliarSpeech(const String& message, uint32_t durationMs = 2600) {
     familiarSpeechBubble = message;
     familiarSpeechBubbleUntil = millis() + durationMs;
+}
+
+bool isDevelopmentBuild() {
+    return String(Branding::version).indexOf("-dev") >= 0;
+}
+
+void setDevLed(bool enabled) {
+    if (devLedOn == enabled) return;
+    devLedOn = enabled;
+    if (!devStatusLedReady) return;
+    devStatusLed.setPixelColor(
+        0, enabled ? devStatusLed.Color(devLedRed, devLedGreen, devLedBlue) : 0);
+    devStatusLed.show();
+}
+
+void startDevLedFlash(uint8_t red, uint8_t green, uint8_t blue,
+                      uint32_t durationMs, uint8_t pulses) {
+    // Cardputer ADV powers the RGB LED and LCD backlight from GPIO38. Keep
+    // that shared rail continuously on while sending WS2812 data; backlight
+    // PWM otherwise power-cycles the LED before it can retain the colour.
+    M5Cardputer.Display.setBrightness(255);
+    pinMode(38, OUTPUT);
+    digitalWrite(38, HIGH);
+    delay(5);
+    devLedPowerBoosted = true;
+    if (!devStatusLedReady) {
+        devStatusLed.begin();
+        devStatusLed.setBrightness(96);
+        devStatusLedReady = true;
+    }
+    devLedRed = red;
+    devLedGreen = green;
+    devLedBlue = blue;
+    devLedDuration = std::max<uint32_t>(250, std::min<uint32_t>(durationMs, 10000));
+    devLedPulses = std::max<uint8_t>(1, std::min<uint8_t>(pulses, 10));
+    devLedStarted = millis();
+    devLedOn = false;
+    setDevLed(true);
+}
+
+void pollDevLedControl() {
+    if (!isDevelopmentBuild()) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        if (devLedUdpListening) {
+            devLedUdp.stop();
+            devLedUdpListening = false;
+        }
+        return;
+    }
+    if (!devLedUdpListening) {
+        devLedUdpListening = devLedUdp.begin(kDevLedControlPort) == 1;
+        if (!devLedUdpListening) return;
+    }
+    const int packetSize = devLedUdp.parsePacket();
+    if (packetSize <= 0) return;
+    if (devLedUdp.remoteIP() != kDevControlHost || packetSize > 512) {
+        while (devLedUdp.available()) devLedUdp.read();
+        return;
+    }
+    char payload[513]{};
+    const int received = devLedUdp.read(
+        reinterpret_cast<uint8_t*>(payload), sizeof(payload) - 1);
+    if (received <= 0) return;
+    payload[received] = '\0';
+    JsonDocument document;
+    if (deserializeJson(document, payload) != DeserializationError::Ok) return;
+    const int red = document["red"] | -1;
+    const int green = document["green"] | -1;
+    const int blue = document["blue"] | -1;
+    if (red < 0 || red > 255 || green < 0 || green > 255 ||
+        blue < 0 || blue > 255) return;
+    String message = document["message"] | "LED test";
+    message.replace("\r", " ");
+    message.replace("\n", " ");
+    if (message.length() > 80) message.remove(80);
+    const uint32_t duration = document["duration_ms"] | 1800U;
+    const uint8_t pulses = document["pulses"] | 2U;
+    devRemoteMessage = message;
+    devRemoteMessageUntil = millis() +
+        std::max<uint32_t>(1500, std::min<uint32_t>(duration, 10000));
+    devRemoteMessageVisible = false;
+    showFamiliarSpeech(message, duration);
+    if (screenSleeping) {
+        screenSleeping = false;
+        if (cyberdeckIdleCanvasReady) {
+            cyberdeckIdleCanvas.deleteSprite();
+            cyberdeckIdleCanvasReady = false;
+        }
+        cyberdeckIdleActive = false;
+        familiarIdleActive = false;
+        familiarIdleDrawn = false;
+        M5Cardputer.Display.setBrightness(screenBrightness);
+        drawCurrentScreen();
+    }
+    lastUserActivity = millis();
+    startDevLedFlash(red, green, blue, duration, pulses);
+    devLedUdp.beginPacket(devLedUdp.remoteIP(), devLedUdp.remotePort());
+    devLedUdp.print("{\"ok\":true}");
+    devLedUdp.endPacket();
+}
+
+void updateDevLedAndMessage() {
+    if (devLedDuration > 0) {
+        const uint32_t elapsed = millis() - devLedStarted;
+        if (elapsed >= devLedDuration) {
+            devLedDuration = 0;
+            setDevLed(false);
+            if (devLedPowerBoosted) {
+                M5Cardputer.Display.setBrightness(
+                    screenSleeping ? 0 : screenBrightness);
+                devLedPowerBoosted = false;
+            }
+        } else {
+            const uint32_t phaseLength =
+                std::max<uint32_t>(50, devLedDuration / (devLedPulses * 2));
+            setDevLed(((elapsed / phaseLength) & 1U) == 0);
+        }
+    }
+    const bool messageActive = devRemoteMessageUntil != 0 &&
+        static_cast<int32_t>(devRemoteMessageUntil - millis()) > 0;
+    if (messageActive && !screenSleeping) {
+        auto& display = M5Cardputer.Display;
+        display.fillRoundRect(4, 22, display.width() - 8, 19, 4,
+                              Branding::panel);
+        display.drawRoundRect(4, 22, display.width() - 8, 19, 4,
+                              Branding::accent);
+        display.setTextColor(Branding::text, Branding::panel);
+        display.setCursor(10, 28);
+        display.print(devRemoteMessage.substring(0, 36));
+        devRemoteMessageVisible = true;
+    } else if (devRemoteMessageVisible) {
+        devRemoteMessageVisible = false;
+        devRemoteMessageUntil = 0;
+        drawCurrentScreen();
+    }
 }
 
 String familiarHostLabel(const IPAddress& ip) {
@@ -8081,6 +8235,7 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+    pollDevLedControl();
     observeFamiliarToolScreen();
     familiarPatrolService.update();
     updateFamiliarVoice();
@@ -8692,6 +8847,8 @@ void loop() {
         lastTimeStatusDraw = millis();
         systemScreens.drawTimeReadouts();
     }
+
+    updateDevLedAndMessage();
 
     if (!screenSleeping && screenTimeoutSeconds > 0 &&
         millis() - lastUserActivity >= screenTimeoutSeconds * 1000UL) {
