@@ -94,7 +94,7 @@ start the second. Repeat once using Back/Escape and once using emergency stop.
 | --- | --- | --- | --- | --- | --- | --- |
 | Wi-Fi scan/connect | BLE scan | Pass | N/A | N/A | Pass | Wi-Fi connected/disconnected/reconnected and BLE detected devices. Fresh post-flash baseline was 127/124 KB; two repeated post-scan reports were identical at 118/104 KB with stability 26. The bounded five-second discovery scan is synchronous, so Back is processed after completion; cancellation is tested with continuous capture below. |
 | BLE continuous capture | Wi-Fi scan | Pass | Pass | Pass after fix | Pass | Normal `C` stop returned idle at 115/100 KB. Back/Escape returned idle at 119/100 KB. Initial emergency-stop test exposed an omitted `bleScanner.stop()` and panicked when Wi-Fi started, raising stability to 27. Commit `0b10cc2` fixed the teardown; exact hardware retest connected Wi-Fi without warning or reboot and reported Power on, Idle, 117/104 KB, stability unchanged at 27. |
-| Wi-Fi PCAP capture | saved Wi-Fi connect | Pending | Pending | Pending | Pending | |
+| Wi-Fi PCAP capture | saved Wi-Fi connect | Pass | Pending | Pending | Pass | Management/full PCAP captured and appeared in Evidence; saved Wi-Fi reconnected and HTTP export reported Power on, Idle, 111/97 KB, stability 27. |
 | Guardian | Host Discovery | Pending | Pending | Pending | Pending | |
 | War Drive | Wi-Fi connect | Pending | Pending | Pending | Pending | |
 | Familiar Patrol | BLE scan | Pending | Pending | Pending | Pending | |
@@ -110,6 +110,7 @@ After a legitimate stop, the next operation must start without rebooting.
 
 - [ ] Start and stop Wi-Fi PCAP, BLE capture, GNSS log, IMU log, LoRa log, and
       War Drive; verify every file is non-empty and visible in Evidence.
+      BLE capture and GNSS emergency-stop output are confirmed usable.
 - [ ] Preview representative TXT, CSV, LOG, PCAP metadata, and Mesh JSONL data.
       Mesh JSONL currently remains an SD archive rather than an on-device
       preview; verify it externally for this release.
@@ -163,6 +164,13 @@ peer's channel, region, key, role, and request support.
 
 The forced-bad-boot test is the last step. Do not publish its deliberately bad
 artifact, and do not run it without a known-good USB recovery build available.
+
+## Usability findings from the soak
+
+- [ ] Add an Evidence category layer for Recent, Wi-Fi, BLE, Network, Mesh &
+      GPS, Patrol, and System & Other. Preserve the current newest-first unified
+      list as Recent; category views filter the same files rather than changing
+      the SD layout.
 
 ## Release decision
 
