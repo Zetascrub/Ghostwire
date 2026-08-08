@@ -14,12 +14,16 @@ assessment tools built on those verified foundations.
   it was never gated by the operation coordinator (it never conflicts with
   Wi-Fi/BLE), so a background Meshtastic receive session previously kept
   running through what's documented as an all-radios-off safety control.
-- Add a development-build-only heap soak logger: with an SD card present, one
-  row a minute is appended to `/ghostwire/logs/heap_soak_NNNN.csv`
-  (uptime, free heap, minimum heap, active operation, stability events) for
-  the whole boot session, so the 0.5 hardware soak gets a continuous trend
-  line without the operator manually transcribing System Diagnostics before
-  and after every test block.
+- Add development-build-only soak instrumentation: with an SD card present,
+  `/ghostwire/logs/heap_soak_NNNN.csv` gets one row a minute (free/minimum
+  heap, longest `loop()` gap that minute, battery, SD free space, active
+  operation, stability events) and `/ghostwire/logs/operation_events_NNNN.csv`
+  gets one row per actual start/stop transition of any tracked operation,
+  Wi-Fi association, or Mesh receive, each carrying the heap reading at that
+  moment. Together they turn the 0.5 hardware soak's heap tracking and
+  per-transition "did it recover" checks into continuous background logging
+  instead of the operator manually transcribing System Diagnostics before and
+  after every test block.
 - Add Familiar LED alerts: a new `Settings > Familiar LED` page turns the
   onboard RGB LED into a per-event notifier, off by default. Started, Host
   found, Service found, Warning, Complete, and Error each get their own

@@ -30,13 +30,27 @@ SD export. A falling minimum heap is expected; steadily falling current free
 heap after returning idle is not.
 
 Manual snapshots are optional now: development builds with an SD card present
-also record one row a minute to `/ghostwire/logs/heap_soak_NNNN.csv`
-(`timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,operation,
-stability_events`) for the whole boot session, with no operator action
-required. Pull that file at the end of a soak session (Files browser, or a
-card reader) instead of transcribing Diagnostics before/after every block --
-it's a continuous trend line rather than two point-in-time samples, so it
-also catches a slow leak that only shows up between the blocks below.
+also write two CSVs for the whole boot session, no operator action required.
+Pull both at the end of a soak session (Files browser, or a card reader)
+instead of transcribing Diagnostics before/after every block:
+
+- `/ghostwire/logs/heap_soak_NNNN.csv` -- one row a minute:
+  `timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,max_loop_gap_ms,
+  battery_pct,battery_v,sd_free_mb,operation,stability_events`. It's a
+  continuous trend line rather than two point-in-time samples, so it also
+  catches a slow leak that only shows up between the blocks below.
+  `max_loop_gap_ms` is the longest gap between two `loop()` iterations in
+  that minute -- a spike there is a stall/near-freeze even if nothing
+  visibly crashed. `sd_free_mb` only refreshes roughly every 10 minutes
+  (an FatFs free-space query can itself stall on a large/fragmented card,
+  so it isn't cheap enough to poll every sample).
+- `/ghostwire/logs/operation_events_NNNN.csv` -- one row per actual
+  start/stop transition, not per interval:
+  `timestamp_utc,uptime_ms,operation,transition,heap_free_kb,heap_min_kb`.
+  Covers every `OperationCoordinator`-tracked operation plus Wi-Fi
+  association and Mesh receive (neither is coordinator-gated). This is
+  section B's "heap recovered" column produced automatically for every
+  transition during the whole soak, not just the rows exercised by hand.
 
 ### Initial hardware reading
 
@@ -83,6 +97,18 @@ ADV-specific shared GPIO38 LED/backlight power at the configured brightness.
 The free-heap and reset baselines remained stable. Because an ESP32 boot's
 minimum-free-heap watermark cannot increase without a reset, the two rounded
 minimum readings are retained as reported and are not used to infer a leak.
+
+### Operator spot-check — 2026-08-08
+
+Zetascrub exercised every feature area on hardware: scan results matched
+expectations, each operation stopped when expected, rescans behaved correctly,
+and navigation (including Cards/Compact and the physical `; , . /` cluster)
+worked as expected throughout. No heap/diagnostic numbers were captured
+alongside this pass, so it is recorded here as a qualitative note rather than
+folded into the Pass/Fail columns below -- per this worksheet's own rule, a
+row only moves to Pass once its logged result is in hand. The `heap_soak` and
+`operation_events` CSVs added below exist specifically to make that logging
+automatic for future passes instead of a separate manual step.
 
 ## A. Boot, idle, and recovery
 

@@ -347,7 +347,24 @@ PcapLogger handshakeCaptureLogger;
 // operator needing to open System Diagnostics and transcribe numbers.
 SdLogger heapSoakLogger;
 uint32_t nextHeapSoakSampleMs = 0;
+uint32_t lastHeapSoakLoopMs = 0;
+uint32_t heapSoakMaxLoopGapMs = 0;
+uint8_t heapSoakSampleCounter = 0;
+uint64_t heapSoakSdFreeMb = 0;
 constexpr uint32_t kHeapSoakIntervalMs = 60000;
+// SD.usedBytes() walks the FAT free-cluster count on a FatFs volume that
+// doesn't have it cached, which can stall for a while on a large/fragmented
+// card -- too risky to call every sample. Refreshed roughly every 10 minutes
+// instead; the value between refreshes is simply held over.
+constexpr uint8_t kHeapSoakSdFreeEveryNSamples = 10;
+// Same soak instrumentation, but for state transitions rather than a fixed
+// interval: one row per actual start/stop edge (OperationCoordinator's
+// tracked operations, plus Wi-Fi association and Mesh receive since neither
+// is coordinator-gated), each carrying the heap reading at that moment. This
+// is what turns docs/release-validation-0.5.md's section B "heap recovered"
+// column from a hand-timed spot check into something produced automatically
+// for every transition during the soak, not just the ones tested manually.
+SdLogger operationEventLogger;
 OperationCoordinator operationCoordinator;
 Preferences preferences;
 std::vector<String> audioFiles;
@@ -800,6 +817,45 @@ void syncOperationCoordinator() {
     operationCoordinator.setActive(OperationKind::Audio,
                                    audioService.isPlaying() ||
                                        audioService.isMicrophoneActive());
+
+    if (operationEventLogger.isActive()) {
+        static bool previousActive[static_cast<size_t>(OperationKind::Count)] =
+            {};
+        static bool previousWifiConnected = false;
+        static bool previousMeshReady = false;
+        const uint32_t freeKb = ESP.getFreeHeap() / 1024;
+        const uint32_t minKb = ESP.getMinFreeHeap() / 1024;
+        for (uint8_t value = 0;
+             value < static_cast<uint8_t>(OperationKind::Count); ++value) {
+            const auto kind = static_cast<OperationKind>(value);
+            const bool nowActive = operationCoordinator.isActive(kind);
+            if (nowActive == previousActive[value]) continue;
+            previousActive[value] = nowActive;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + "," + OperationCoordinator::label(kind) +
+                "," + (nowActive ? "start" : "stop") + "," + String(freeKb) +
+                "," + String(minKb));
+        }
+        const bool wifiConnected = WiFi.status() == WL_CONNECTED;
+        if (wifiConnected != previousWifiConnected) {
+            previousWifiConnected = wifiConnected;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + ",Wi-Fi Connect," +
+                (wifiConnected ? "start" : "stop") + "," + String(freeKb) +
+                "," + String(minKb));
+        }
+        const bool meshReady = loraService.isReady();
+        if (meshReady != previousMeshReady) {
+            previousMeshReady = meshReady;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + ",Mesh Receive," +
+                (meshReady ? "start" : "stop") + "," + String(freeKb) + "," +
+                String(minKb));
+        }
+    }
 }
 
 bool prepareOperationStart(OperationKind requested, String& reason) {
@@ -8384,9 +8440,15 @@ void setup() {
     if (isDevelopmentBuild() && sdAvailable) {
         heapSoakLogger.begin(
             "heap_soak",
-            "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,operation,"
+            "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,"
+            "max_loop_gap_ms,battery_pct,battery_v,sd_free_mb,operation,"
             "stability_events");
         nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+        lastHeapSoakLoopMs = millis();
+        operationEventLogger.begin(
+            "operation_events",
+            "timestamp_utc,uptime_ms,operation,transition,heap_free_kb,"
+            "heap_min_kb");
     }
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
@@ -8420,6 +8482,12 @@ void setup() {
 }
 
 void loop() {
+    if (heapSoakLogger.isActive()) {
+        const uint32_t now = millis();
+        const uint32_t gap = now - lastHeapSoakLoopMs;
+        if (gap > heapSoakMaxLoopGapMs) heapSoakMaxLoopGapMs = gap;
+        lastHeapSoakLoopMs = now;
+    }
     M5Cardputer.update();
     pollDevLedControl();
     updateStatusLedAndDevMessage();
@@ -8593,15 +8661,31 @@ void loop() {
     if (heapSoakLogger.isActive() &&
         static_cast<long>(millis() - nextHeapSoakSampleMs) >= 0) {
         nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+        ++heapSoakSampleCounter;
+        if (sdAvailable &&
+            (heapSoakSdFreeMb == 0 ||
+             heapSoakSampleCounter % kHeapSoakSdFreeEveryNSamples == 0)) {
+            const uint64_t used = SD.usedBytes();
+            const uint64_t total = SD.totalBytes();
+            heapSoakSdFreeMb = total > used
+                                   ? (total - used) / (1024ULL * 1024ULL)
+                                   : 0;
+        }
         String row = (clockSynced ? utcTimestamp() : String("")) + "," +
                      String(millis()) + "," +
                      String(ESP.getFreeHeap() / 1024) + "," +
                      String(ESP.getMinFreeHeap() / 1024) + "," +
-                     operationCoordinator.primaryLabel() + "," +
+                     String(heapSoakMaxLoopGapMs) + "," +
+                     String(batteryPercentage()) + "," +
+                     String(readBatteryVoltage(), 2) + "," +
+                     String(static_cast<unsigned long>(heapSoakSdFreeMb)) +
+                     "," + operationCoordinator.primaryLabel() + "," +
                      String(abnormalResetCount);
         heapSoakLogger.append(row);
+        heapSoakMaxLoopGapMs = 0;
     }
     heapSoakLogger.update();
+    operationEventLogger.update();
     if (loraLogger.isActive() &&
         loraService.packetCount() != lastLoggedLoRaPacket) {
         lastLoggedLoRaPacket = loraService.packetCount();
