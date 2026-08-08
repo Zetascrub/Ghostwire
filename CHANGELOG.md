@@ -6,6 +6,23 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add the Familiar Handshake Mission (`My Familiar` -> `Tab` -> **Handshake
+  mission**): pick target APs from a Wi-Fi scan on a multi-select checklist,
+  confirm the exact list about to receive deauth frames, then the Familiar
+  works through it unattended -- deauth, wait up to 25s for the 4-way
+  handshake or a PMKID, capture to a numbered PCAP, move to the next target
+  -- and writes a Markdown summary to `/ghostwire/assessments/`. Reuses the
+  exact machinery the existing single-target manual flow already uses
+  (`transmitWifiDeauth()`, `wifiSnifferService`'s handshake watch,
+  `handshakeCaptureLogger`) rather than duplicating it; a mission is that
+  same flow driven across a pre-approved list instead of once per manual
+  confirm. Deliberately does not pick targets itself -- every network it
+  transmits against was explicitly checked by the operator first, which is
+  where authorization for that network is established (see
+  `docs/authorized-use.md`, updated with mission-specific guidance since Wi-Fi
+  range doesn't respect authorization scope). Like Familiar Patrol, a running
+  mission survives navigating away; only the Tab menu's **Stop mission** (or
+  the global emergency stop) ends it early.
 - Fix SSH sending both `\r` and `\n` for a single Enter keypress. Over the
   PTY-backed interactive shell `ssh_service.cpp` requests, that's two
   line-terminators: `\r` executed the typed command, then the standalone

@@ -75,6 +75,7 @@
 #include "wifi_sniffer_service.h"
 #include "wifi_sniffer_screen.h"
 #include "wifi_screens.h"
+#include "familiar_mission_screens.h"
 #include "wifi_guardian_service.h"
 #include "wifi_guardian_screen.h"
 #include "wifi_profile.h"
@@ -579,6 +580,29 @@ WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
                         wifiConnectPasswordInput, wifiConnectStatusText,
                         wifiProfiles, activeWifiProfile, wifiProfileStatus,
                         wifiProfileNameInput);
+// Familiar Handshake Mission: the operator pre-selects target APs on
+// Screen::FamiliarMissionSelect (checked against accessPoints_ from a normal
+// Wi-Fi scan), then the mission runs unattended across exactly that list --
+// no further per-target confirmation, since each one was already explicitly
+// chosen. Reuses the same transmitWifiDeauth()/wifiSnifferService handshake
+// watch/handshakeCaptureLogger machinery the single-target manual flow
+// above already does; a mission just drives that machinery across several
+// pre-approved targets in sequence instead of once per manual confirm.
+std::vector<bool> familiarMissionSelected;
+std::vector<FamiliarMissionTarget> familiarMissionTargets;
+size_t familiarMissionCurrentIndex = 0;
+unsigned long familiarMissionTargetStartMs = 0;
+unsigned long familiarMissionLastDeauthMs = 0;
+String familiarMissionStatus;
+unsigned long lastFamiliarMissionDraw = 0;
+bool familiarMissionRunning = false;
+constexpr uint32_t kFamiliarMissionTargetTimeoutMs = 25000;
+constexpr uint32_t kFamiliarMissionDeauthIntervalMs = 3000;
+FamiliarMissionScreens familiarMissionScreens(
+    accessPoints, listSelection, listOffset, familiarMissionSelected,
+    familiarMissionTargets, familiarMissionCurrentIndex,
+    familiarMissionTargetStartMs, handshakeEapolFrameCount,
+    handshakeMessageSeen, handshakePmkidFound, familiarMissionStatus);
 unsigned long lastImuDraw = 0;
 unsigned long lastImuLog = 0;
 m5::imu_data_t imuData{};
@@ -1710,6 +1734,9 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
             return {{'a', familiarPatrolService.isActive()
                               ? "Open active patrol"
                               : "Start Familiar Patrol"},
+                    {'m', familiarMissionRunning
+                              ? "Open active mission"
+                              : "Handshake mission"},
                     {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
@@ -1718,6 +1745,20 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'x', "Export familiar record"},
                     {'g', "Import capture logs"},
                     {'z', "Reset familiar progress"}};
+        case Screen::FamiliarMissionSelect: {
+            size_t chosen = 0;
+            for (bool value : familiarMissionSelected) {
+                if (value) ++chosen;
+            }
+            return chosen == 0
+                       ? std::vector<ActionMenuItem>{}
+                       : std::vector<ActionMenuItem>{
+                             {'g', "Start mission (" + String(chosen) + ")"}};
+        }
+        case Screen::FamiliarMission:
+            return familiarMissionRunning
+                       ? std::vector<ActionMenuItem>{{'x', "Stop mission"}}
+                       : std::vector<ActionMenuItem>{};
         case Screen::FamiliarPatrol:
             if (familiarPatrolService.isActive()) {
                 return {{'x', "Stop patrol"}};
@@ -4338,6 +4379,186 @@ void playFamiliarCue(FamiliarCue cue) {
     if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
 }
 
+// Familiar Handshake Mission: see
+// include/familiar_mission_screens.h/src/familiar_mission_screens.cpp for
+// the screens. Drives the exact same machinery the manual single-target
+// flow (near transmitWifiDeauth()) uses -- wifiSnifferService's handshake
+// watch, handshakeMessageSeen/handshakePmkidFound, handshakeCaptureLogger --
+// across a pre-approved target list instead of once per manual confirm.
+
+bool familiarMissionCaptured() {
+    return (handshakeMessageSeen[1] && handshakeMessageSeen[2] &&
+           handshakeMessageSeen[3] && handshakeMessageSeen[4]) ||
+           handshakePmkidFound;
+}
+
+void writeFamiliarMissionReport() {
+    if (!sdAvailable) return;
+    SD.mkdir("/ghostwire");
+    SD.mkdir("/ghostwire/assessments");
+    String path;
+    for (uint16_t index = 1; index < 10000; ++index) {
+        char candidate[64];
+        snprintf(candidate, sizeof(candidate),
+                 "/ghostwire/assessments/mission_%04u.md", index);
+        if (!SD.exists(candidate)) {
+            path = candidate;
+            break;
+        }
+    }
+    if (path.isEmpty()) return;
+    File report = SD.open(path, FILE_WRITE);
+    if (!report) return;
+    report.printf("# Familiar Handshake Mission\n\n");
+    report.printf("Generated: %s\n\n",
+                  clockSynced ? utcTimestamp().c_str() : "unavailable");
+    report.printf("| SSID | BSSID | Channel | Result |\n");
+    report.printf("| --- | --- | --- | --- |\n");
+    for (const auto& target : familiarMissionTargets) {
+        const char* result =
+            target.status == FamiliarMissionTarget::Status::Captured
+                ? "Captured"
+            : target.status == FamiliarMissionTarget::Status::TimedOut
+                ? "Timed out"
+                : "Not attempted";
+        report.printf("| %s | %02X:%02X:%02X:%02X:%02X:%02X | %u | %s |\n",
+                      target.ssid.c_str(), target.bssid[0], target.bssid[1],
+                      target.bssid[2], target.bssid[3], target.bssid[4],
+                      target.bssid[5], target.channel, result);
+    }
+    report.println(
+        "\nCaptured handshakes/PMKIDs are in the numbered "
+        "`handshake_NNNN.pcap` files alongside this report; match by "
+        "timestamp order against the table above.");
+    report.close();
+}
+
+void startFamiliarMissionTarget(size_t index) {
+    familiarMissionCurrentIndex = index;
+    FamiliarMissionTarget& target = familiarMissionTargets[index];
+    target.status = FamiliarMissionTarget::Status::Active;
+    handshakeEapolFrameCount = 0;
+    for (bool& seen : handshakeMessageSeen) seen = false;
+    handshakePmkidFound = false;
+    wifiSnifferService.setHandshakeTarget(target.bssid);
+    handshakeCaptureLogger.begin("handshake");
+    familiarMissionTargetStartMs = millis();
+    familiarMissionLastDeauthMs = 0;  // Forces an immediate first burst.
+    familiarMissionStatus = "Target " + String(index + 1) + "/" +
+                            String(familiarMissionTargets.size()) + ": " +
+                            target.ssid;
+    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+    showFamiliarSpeech("Chasing a handshake from " + target.ssid + "...");
+}
+
+void finishFamiliarMission() {
+    familiarMissionRunning = false;
+    handshakeCaptureLogger.stop();
+    size_t captured = 0;
+    for (const auto& target : familiarMissionTargets) {
+        if (target.status == FamiliarMissionTarget::Status::Captured) {
+            ++captured;
+        }
+    }
+    writeFamiliarMissionReport();
+    familiarMissionStatus =
+        String(captured) + "/" + String(familiarMissionTargets.size()) +
+        " captured. Esc: back";
+    cyberFamiliar.notePatrol(
+        captured == 0 ? "Mission complete. No handshakes this time."
+                     : "Mission complete. " + String(captured) +
+                           " handshake" + (captured == 1 ? "" : "s") +
+                           " captured.",
+        captured == 0 ? 5 : 20,
+        captured == 0 ? FamiliarMood::Content : FamiliarMood::Proud);
+    triggerFamiliarReaction(FamiliarReaction::Complete, 4000);
+    playFamiliarCue(FamiliarCue::Complete);
+}
+
+void advanceFamiliarMission() {
+    const size_t next = familiarMissionCurrentIndex + 1;
+    if (next >= familiarMissionTargets.size()) {
+        finishFamiliarMission();
+        return;
+    }
+    startFamiliarMissionTarget(next);
+}
+
+// Aborts a mission in progress (Esc, or the global emergency stop) --
+// remaining Pending targets are simply never attempted; already-captured
+// results and the report are unaffected by stopping early.
+void stopFamiliarMission() {
+    if (!familiarMissionRunning) return;
+    familiarMissionRunning = false;
+    handshakeCaptureLogger.stop();
+    writeFamiliarMissionReport();
+}
+
+void updateFamiliarMission() {
+    if (!familiarMissionRunning ||
+        familiarMissionCurrentIndex >= familiarMissionTargets.size()) {
+        return;
+    }
+    FamiliarMissionTarget& target =
+        familiarMissionTargets[familiarMissionCurrentIndex];
+    if (familiarMissionCaptured()) {
+        target.status = FamiliarMissionTarget::Status::Captured;
+        triggerFamiliarReaction(FamiliarReaction::ServiceFound, 1900);
+        showFamiliarSpeech("Got it! Handshake from " + target.ssid + "!");
+        playFamiliarCue(FamiliarCue::Service);
+        advanceFamiliarMission();
+        return;
+    }
+    if (millis() - familiarMissionTargetStartMs >=
+        kFamiliarMissionTargetTimeoutMs) {
+        target.status = FamiliarMissionTarget::Status::TimedOut;
+        showFamiliarSpeech("No luck with " + target.ssid + ". Moving on.");
+        advanceFamiliarMission();
+        return;
+    }
+    if (millis() - familiarMissionLastDeauthMs >=
+        kFamiliarMissionDeauthIntervalMs) {
+        familiarMissionLastDeauthMs = millis();
+        wifi_ap_record_t deauthTarget{};
+        memcpy(deauthTarget.bssid, target.bssid, 6);
+        deauthTarget.primary = target.channel;
+        transmitWifiDeauth(deauthTarget);
+    }
+}
+
+// Builds familiarMissionTargets from the operator's checked rows on
+// Screen::FamiliarMissionSelect. Called once when moving to the confirm
+// step, so the confirm screen and the actual run both work from the exact
+// same list -- nothing added or dropped in between.
+void buildFamiliarMissionTargets() {
+    familiarMissionTargets.clear();
+    for (size_t index = 0; index < accessPoints.size(); ++index) {
+        if (index < familiarMissionSelected.size() &&
+            familiarMissionSelected[index]) {
+            FamiliarMissionTarget target;
+            String ssid = reinterpret_cast<const char*>(
+                accessPoints[index].ssid);
+            target.ssid = ssid.isEmpty() ? "<hidden>" : ssid;
+            memcpy(target.bssid, accessPoints[index].bssid, 6);
+            target.channel = accessPoints[index].primary;
+            familiarMissionTargets.push_back(target);
+        }
+    }
+}
+
+void startFamiliarMission() {
+    if (familiarMissionTargets.empty()) return;
+    if (!requireOperationStart(OperationKind::HandshakeCapture)) return;
+    if (!wifiSnifferService.begin()) {
+        familiarMissionTargets.clear();
+        return;
+    }
+    familiarMissionRunning = true;
+    startFamiliarMissionTarget(0);
+    currentScreen = Screen::FamiliarMission;
+    drawCurrentScreen();
+}
+
 void playMeshMessageAlert() {
     if (!meshMessageAlertsEnabled || speakerVolume == 0 ||
         audioService.isPlaying() || millis() - lastFamiliarCueMs < 700) {
@@ -4589,6 +4810,13 @@ void drawCurrentScreen() {
         case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
         case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
         case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
+        case Screen::FamiliarMissionSelect:
+            familiarMissionScreens.drawSelect();
+            break;
+        case Screen::FamiliarMissionConfirm:
+            familiarMissionScreens.drawConfirm();
+            break;
+        case Screen::FamiliarMission: familiarMissionScreens.drawMission(); break;
         case Screen::CyberFamiliarResetConfirm:
             familiarScreens.drawResetConfirm();
             break;
@@ -5305,6 +5533,7 @@ void stopAllActiveOperations() {
     networkHostScanService.stop();
     networkPortScanService.stop();
     familiarPatrolService.stop();
+    stopFamiliarMission();
     chameleonContinuousScan = false;
     chameleonClient.disconnect();
     telnetClient.stop();
@@ -5767,6 +5996,24 @@ void goBack() {
     if (currentScreen == Screen::WifiProfileQrConfirm) {
         currentScreen = Screen::WifiProfiles;
         wifiScreens.drawProfiles();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarMissionSelect) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarScreens.drawFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarMissionConfirm) {
+        currentScreen = Screen::FamiliarMissionSelect;
+        familiarMissionScreens.drawSelect();
+        return;
+    }
+    // Deliberately does not stop the mission -- like Familiar Patrol, it
+    // keeps running unattended in the background. "Stop mission" (Tab menu,
+    // or 'x' on this screen) is the only way to actually end it early.
+    if (currentScreen == Screen::FamiliarMission) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarScreens.drawFamiliar();
         return;
     }
     if (currentScreen == Screen::WifiProfileRename) {
@@ -7398,7 +7645,56 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
+            if (pressedLetter(keys, 'm')) {
+                if (familiarMissionRunning) {
+                    currentScreen = Screen::FamiliarMission;
+                } else {
+                    familiarMissionSelected.assign(accessPoints.size(), false);
+                    listSelection = 0;
+                    listOffset = 0;
+                    currentScreen = Screen::FamiliarMissionSelect;
+                }
+                drawCurrentScreen();
+                return;
+            }
             familiarScreens.drawFamiliar();
+            break;
+
+        case Screen::FamiliarMissionSelect:
+            if (up) moveSelection(-1, accessPoints.size());
+            if (down) moveSelection(1, accessPoints.size());
+            if (keys.enter && !accessPoints.empty()) {
+                if (listSelection >= familiarMissionSelected.size()) {
+                    familiarMissionSelected.resize(accessPoints.size(), false);
+                }
+                familiarMissionSelected[listSelection] =
+                    !familiarMissionSelected[listSelection];
+            }
+            if (pressedLetter(keys, 'g')) {
+                buildFamiliarMissionTargets();
+                if (!familiarMissionTargets.empty()) {
+                    currentScreen = Screen::FamiliarMissionConfirm;
+                    drawCurrentScreen();
+                    return;
+                }
+            }
+            familiarMissionScreens.drawSelect();
+            break;
+
+        case Screen::FamiliarMissionConfirm:
+            if (keys.enter) {
+                startFamiliarMission();
+                return;
+            }
+            break;
+
+        case Screen::FamiliarMission:
+            if (pressedLetter(keys, 'x')) {
+                stopFamiliarMission();
+                currentScreen = Screen::CyberFamiliar;
+                drawCurrentScreen();
+                return;
+            }
             break;
 
         case Screen::FamiliarPatrolConfirm:
@@ -8606,7 +8902,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::TelnetSession:
         case Screen::SshConnect:
         case Screen::SshPassword:
-        case Screen::SshSession: break;
+        case Screen::SshSession:
+        case Screen::SocketWorkbenchSetup:
+        case Screen::SocketWorkbenchSession: break;
     }
 }
 
@@ -8759,6 +9057,9 @@ void observeFamiliarToolScreen() {
         case Screen::SshSession: cyberFamiliar.observeTool(7, "SSH"); break;
         case Screen::SocketWorkbenchSession:
             cyberFamiliar.observeTool(18, "socket workbench");
+            break;
+        case Screen::FamiliarMission:
+            cyberFamiliar.observeTool(19, "handshake mission");
             break;
         case Screen::BleDiscovery: cyberFamiliar.observeTool(8, "BLE survey"); break;
         case Screen::Chameleon: cyberFamiliar.observeTool(9, "Chameleon"); break;
@@ -9025,6 +9326,7 @@ void loop() {
     updateStatusLedAndDevMessage();
     observeFamiliarToolScreen();
     familiarPatrolService.update();
+    updateFamiliarMission();
     updateFamiliarVoice();
     updateMeshMessageAlert();
     const uint32_t patrolHosts = familiarPatrolService.hostsFound();
@@ -9584,6 +9886,12 @@ void loop() {
         millis() - lastFamiliarPatrolDraw >= 500) {
         lastFamiliarPatrolDraw = millis();
         familiarScreens.drawPatrol(false);
+    }
+
+    if (currentScreen == Screen::FamiliarMission && !actionMenuOpen &&
+        millis() - lastFamiliarMissionDraw >= 500) {
+        lastFamiliarMissionDraw = millis();
+        familiarMissionScreens.drawMission();
     }
 
     if (currentScreen == Screen::NetworkHostScan && !actionMenuOpen &&

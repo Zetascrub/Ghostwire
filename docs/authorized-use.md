@@ -27,3 +27,14 @@ where it is deployed. Exhaustive scanning is not part of the unattended
 patrol. A response does not itself establish authorization. Retrieve or
 securely erase its assessment directory when the engagement's retention period
 ends.
+
+A Familiar Handshake Mission runs unattended too, but unlike Patrol it
+actively transmits deauthentication frames -- every target it works through
+was explicitly picked by the operator on-device before the mission starts, and
+that selection step is the authorization checkpoint. Wi-Fi does not respect
+property lines: confirm every checked network is actually in scope, not just
+in radio range, before starting. Do not leave a mission running unattended
+somewhere a bystander's or neighboring network's connectivity could be
+disrupted without their knowledge. Captured PCAPs and the mission's Markdown
+report are the same category of sensitive assessment data as any other
+handshake capture.
