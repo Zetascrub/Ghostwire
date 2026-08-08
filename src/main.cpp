@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
-#include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 #include <Curve25519.h>
 #include <HTTPClient.h>
@@ -9,6 +8,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <driver/rmt.h>
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -381,31 +381,49 @@ size_t themeIndex = 0;
 uint8_t bootAnimationIndex = 0;
 uint8_t bootSoundIndex = 0;
 uint8_t familiarCueIndex = 0;
+// Familiar LED alert colours: palette index into settings_names.h's
+// kLedColorNames/kLedColorValues, 0 ("Off") disables that event's flash.
+// Defaults are picked so each event reads distinctly at a glance: Blue for
+// an activity starting, Cyan for a new host, Green for a routine service,
+// Amber for a sensitive one, Purple for a completed pass, Red for an error.
+bool familiarLedEnabled = false;
+uint8_t familiarLedStartedColor = 3;   // Blue
+uint8_t familiarLedHostColor = 4;      // Cyan
+uint8_t familiarLedServiceColor = 2;   // Green
+uint8_t familiarLedWarningColor = 5;   // Amber
+uint8_t familiarLedCompleteColor = 8;  // Purple
+uint8_t familiarLedErrorColor = 1;     // Red
 SettingsScreens settingsScreens(
     listSelection, listOffset, speakerVolume, screenBrightness,
     screenTimeoutSeconds, cyberdeckIdleEnabled, themeIndex, familiarCueIndex,
     cardNavigationEnabled, cyberdeckIdleStyle, bootSoundEnabled,
     bootSoundIndex, bootAnimationIndex, bootSpeedIndex, saveWifiCredentials,
-    autoConnectWifi, placeholderTitle);
+    autoConnectWifi, familiarLedEnabled, familiarLedStartedColor,
+    familiarLedHostColor, familiarLedServiceColor, familiarLedWarningColor,
+    familiarLedCompleteColor, familiarLedErrorColor, placeholderTitle);
 OnboardingScreens onboardingScreens(onboardingPage, sdAvailable,
                                     cardNavigationEnabled,
                                     saveWifiCredentials);
 bool screenSleeping = false;
 WiFiUDP devLedUdp;
-Adafruit_NeoPixel devStatusLed(1, 21, NEO_GRB + NEO_KHZ800);
-bool devStatusLedReady = false;
+bool statusLedReady = false;
 bool devLedUdpListening = false;
 String devRemoteMessage;
 uint32_t devRemoteMessageUntil = 0;
 bool devRemoteMessageVisible = false;
-uint8_t devLedRed = 0;
-uint8_t devLedGreen = 0;
-uint8_t devLedBlue = 0;
-uint8_t devLedPulses = 0;
-uint32_t devLedStarted = 0;
-uint32_t devLedDuration = 0;
-bool devLedOn = false;
-bool devLedPowerBoosted = false;
+// Shared WS2812 flash state -- driven both by the dev-only UDP test command
+// (pollDevLedControl()) and by production Familiar LED alerts
+// (flashFamiliarLed()); only one physical LED exists, so both write through
+// the same timeline.
+uint8_t ledFlashRed = 0;
+uint8_t ledFlashGreen = 0;
+uint8_t ledFlashBlue = 0;
+uint8_t ledFlashPulses = 0;
+uint32_t ledFlashStarted = 0;
+uint32_t ledFlashDuration = 0;
+bool ledOn = false;
+bool ledPowerBoosted = false;
+uint8_t ledRestoreBrightness = 0;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
 int16_t cyberdeckRainHead[kCyberdeckColumns]{};
@@ -520,6 +538,13 @@ constexpr uint8_t kDefaultBootSoundPreset = 0;
 constexpr uint8_t kDefaultFamiliarCue = 0;
 constexpr bool kDefaultMeshBackground = false;
 constexpr bool kDefaultMeshMessageAlerts = true;
+constexpr bool kDefaultFamiliarLedEnabled = false;
+constexpr uint8_t kDefaultLedColorStarted = 3;   // Blue
+constexpr uint8_t kDefaultLedColorHost = 4;      // Cyan
+constexpr uint8_t kDefaultLedColorService = 2;   // Green
+constexpr uint8_t kDefaultLedColorWarning = 5;   // Amber
+constexpr uint8_t kDefaultLedColorComplete = 8;  // Purple
+constexpr uint8_t kDefaultLedColorError = 1;     // Red
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 // Boot/settings name tables: see include/settings_names.h.
 
@@ -550,6 +575,13 @@ void saveSettings() {
     preferences.putUChar("boot_anim", bootAnimationIndex);
     preferences.putUChar("boot_tone", bootSoundIndex);
     preferences.putUChar("fam_cue", familiarCueIndex);
+    preferences.putBool("led_on", familiarLedEnabled);
+    preferences.putUChar("led_start", familiarLedStartedColor);
+    preferences.putUChar("led_host", familiarLedHostColor);
+    preferences.putUChar("led_svc", familiarLedServiceColor);
+    preferences.putUChar("led_warn", familiarLedWarningColor);
+    preferences.putUChar("led_done", familiarLedCompleteColor);
+    preferences.putUChar("led_err", familiarLedErrorColor);
     preferences.putBool("mesh_bg", meshBackgroundEnabled);
     preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
     preferences.putUChar("mesh_hops", meshHopLimit);
@@ -695,6 +727,13 @@ void restoreDefaultSettings() {
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
     familiarCueIndex = kDefaultFamiliarCue;
+    familiarLedEnabled = kDefaultFamiliarLedEnabled;
+    familiarLedStartedColor = kDefaultLedColorStarted;
+    familiarLedHostColor = kDefaultLedColorHost;
+    familiarLedServiceColor = kDefaultLedColorService;
+    familiarLedWarningColor = kDefaultLedColorWarning;
+    familiarLedCompleteColor = kDefaultLedColorComplete;
+    familiarLedErrorColor = kDefaultLedColorError;
     meshBackgroundEnabled = kDefaultMeshBackground;
     meshMessageAlertsEnabled = kDefaultMeshMessageAlerts;
     meshHopLimit = 7;
@@ -3680,38 +3719,97 @@ bool isDevelopmentBuild() {
     return String(Branding::version).indexOf("-dev") >= 0;
 }
 
-void setDevLed(bool enabled) {
-    if (devLedOn == enabled) return;
-    devLedOn = enabled;
-    if (!devStatusLedReady) return;
-    devStatusLed.setPixelColor(
-        0, enabled ? devStatusLed.Color(devLedRed, devLedGreen, devLedBlue) : 0);
-    devStatusLed.show();
+bool beginStatusLed() {
+    if (statusLedReady) return true;
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(GPIO_NUM_21, RMT_CHANNEL_3);
+    config.clk_div = 2;  // 40 MHz: one RMT tick is 25 ns.
+    config.mem_block_num = 1;
+    config.tx_config.loop_en = false;
+    config.tx_config.carrier_en = false;
+    config.tx_config.idle_output_en = true;
+    config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
+    if (rmt_config(&config) != ESP_OK) return false;
+    if (rmt_driver_install(config.channel, 0, 0) != ESP_OK) return false;
+    statusLedReady = true;
+    return true;
 }
 
-void startDevLedFlash(uint8_t red, uint8_t green, uint8_t blue,
-                      uint32_t durationMs, uint8_t pulses) {
-    // Cardputer ADV powers the RGB LED and LCD backlight from GPIO38. Keep
-    // that shared rail continuously on while sending WS2812 data; backlight
-    // PWM otherwise power-cycles the LED before it can retain the colour.
-    M5Cardputer.Display.setBrightness(255);
-    pinMode(38, OUTPUT);
-    digitalWrite(38, HIGH);
-    delay(5);
-    devLedPowerBoosted = true;
-    if (!devStatusLedReady) {
-        devStatusLed.begin();
-        devStatusLed.setBrightness(96);
-        devStatusLedReady = true;
+void writeStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
+    if (!beginStatusLed()) return;
+    const uint8_t bytes[] = {green, red, blue};
+    rmt_item32_t items[24]{};
+    size_t item = 0;
+    for (uint8_t value : bytes) {
+        for (uint8_t mask = 0x80; mask != 0; mask >>= 1) {
+            const bool one = (value & mask) != 0;
+            items[item].level0 = 1;
+            items[item].duration0 = one ? 28 : 14;
+            items[item].level1 = 0;
+            items[item].duration1 = one ? 24 : 32;
+            ++item;
+        }
     }
-    devLedRed = red;
-    devLedGreen = green;
-    devLedBlue = blue;
-    devLedDuration = std::max<uint32_t>(250, std::min<uint32_t>(durationMs, 10000));
-    devLedPulses = std::max<uint8_t>(1, std::min<uint8_t>(pulses, 10));
-    devLedStarted = millis();
-    devLedOn = false;
-    setDevLed(true);
+    rmt_write_items(RMT_CHANNEL_3, items, item, true);
+    delayMicroseconds(80);
+}
+
+void setStatusLed(bool enabled) {
+    if (ledOn == enabled) return;
+    ledOn = enabled;
+    writeStatusLed(enabled ? ledFlashRed : 0,
+                   enabled ? ledFlashGreen : 0,
+                   enabled ? ledFlashBlue : 0);
+}
+
+void startLedFlash(uint8_t red, uint8_t green, uint8_t blue,
+                   uint32_t durationMs, uint8_t pulses) {
+    // Cardputer ADV powers the RGB LED and LCD backlight from GPIO38. A solid
+    // LED therefore requires the shared rail (and backlight) at full power.
+    ledRestoreBrightness = screenSleeping ? 0 : screenBrightness;
+    M5Cardputer.Display.setBrightness(255);
+    delay(5);
+    ledPowerBoosted = true;
+    beginStatusLed();
+    ledFlashRed = red;
+    ledFlashGreen = green;
+    ledFlashBlue = blue;
+    ledFlashDuration = std::max<uint32_t>(250, std::min<uint32_t>(durationMs, 10000));
+    ledFlashPulses = std::max<uint8_t>(1, std::min<uint8_t>(pulses, 10));
+    ledFlashStarted = millis();
+    ledOn = false;
+    setStatusLed(true);
+}
+
+// Flashes the LED for a Familiar event using the operator's configured
+// per-event colour. Independent of the "Familiar cues" audio setting -- LED
+// alerts have their own enable toggle. Warning/Error always interrupt
+// whatever is currently flashing; routine events (Started/Host/Service/
+// Complete) are dropped rather than restarted if a flash is already running,
+// so a fast patrol pass finding many hosts in a row can't turn into a
+// continuous full-brightness strobe of the shared LED/backlight rail.
+void flashFamiliarLed(FamiliarCue cue) {
+    if (!familiarLedEnabled) return;
+    uint8_t colorIndex = 0;
+    switch (cue) {
+        case FamiliarCue::Started: colorIndex = familiarLedStartedColor; break;
+        case FamiliarCue::Host: colorIndex = familiarLedHostColor; break;
+        case FamiliarCue::Service: colorIndex = familiarLedServiceColor; break;
+        case FamiliarCue::Warning: colorIndex = familiarLedWarningColor; break;
+        case FamiliarCue::Complete: colorIndex = familiarLedCompleteColor; break;
+        case FamiliarCue::Error: colorIndex = familiarLedErrorColor; break;
+    }
+    if (colorIndex == 0 || colorIndex >= kLedColorCount) return;  // "Off"
+    const bool urgent =
+        cue == FamiliarCue::Warning || cue == FamiliarCue::Error;
+    if (ledFlashDuration > 0 && !urgent) return;
+    const LedColor& color = kLedColorValues[colorIndex];
+    if (urgent) {
+        startLedFlash(color.red, color.green, color.blue, 1200, 3);
+    } else if (cue == FamiliarCue::Complete) {
+        startLedFlash(color.red, color.green, color.blue, 900, 2);
+    } else {
+        startLedFlash(color.red, color.green, color.blue, 300, 1);
+    }
 }
 
 void pollDevLedControl() {
@@ -3745,51 +3843,48 @@ void pollDevLedControl() {
     const int blue = document["blue"] | -1;
     if (red < 0 || red > 255 || green < 0 || green > 255 ||
         blue < 0 || blue > 255) return;
-    String message = document["message"] | "LED test";
+    String message = document["message"] | "";
     message.replace("\r", " ");
     message.replace("\n", " ");
     if (message.length() > 80) message.remove(80);
     const uint32_t duration = document["duration_ms"] | 1800U;
-    const uint8_t pulses = document["pulses"] | 2U;
-    devRemoteMessage = message;
-    devRemoteMessageUntil = millis() +
-        std::max<uint32_t>(1500, std::min<uint32_t>(duration, 10000));
-    devRemoteMessageVisible = false;
-    showFamiliarSpeech(message, duration);
-    if (screenSleeping) {
-        screenSleeping = false;
-        if (cyberdeckIdleCanvasReady) {
-            cyberdeckIdleCanvas.deleteSprite();
-            cyberdeckIdleCanvasReady = false;
-        }
-        cyberdeckIdleActive = false;
-        familiarIdleActive = false;
-        familiarIdleDrawn = false;
-        M5Cardputer.Display.setBrightness(screenBrightness);
-        drawCurrentScreen();
+    const uint8_t pulses = document["pulses"] | 1U;
+    if (message.length() > 0) {
+        devRemoteMessage = message;
+        devRemoteMessageUntil = millis() +
+            std::max<uint32_t>(1500, std::min<uint32_t>(duration, 10000));
+        devRemoteMessageVisible = false;
+        showFamiliarSpeech(message, duration);
+    } else {
+        devRemoteMessage = "";
+        devRemoteMessageUntil = 0;
+        devRemoteMessageVisible = false;
     }
-    lastUserActivity = millis();
-    startDevLedFlash(red, green, blue, duration, pulses);
+    startLedFlash(red, green, blue, duration, pulses);
     devLedUdp.beginPacket(devLedUdp.remoteIP(), devLedUdp.remotePort());
     devLedUdp.print("{\"ok\":true}");
     devLedUdp.endPacket();
 }
 
-void updateDevLedAndMessage() {
-    if (devLedDuration > 0) {
-        const uint32_t elapsed = millis() - devLedStarted;
-        if (elapsed >= devLedDuration) {
-            devLedDuration = 0;
-            setDevLed(false);
-            if (devLedPowerBoosted) {
-                M5Cardputer.Display.setBrightness(
-                    screenSleeping ? 0 : screenBrightness);
-                devLedPowerBoosted = false;
+void updateStatusLedAndDevMessage() {
+    if (ledFlashDuration > 0) {
+        const uint32_t elapsed = millis() - ledFlashStarted;
+        if (elapsed >= ledFlashDuration) {
+            ledFlashDuration = 0;
+            ledOn = false;
+            writeStatusLed(0, 0, 0);
+            if (ledPowerBoosted) {
+                M5Cardputer.Display.setBrightness(ledRestoreBrightness);
+                ledPowerBoosted = false;
             }
         } else {
-            const uint32_t phaseLength =
-                std::max<uint32_t>(50, devLedDuration / (devLedPulses * 2));
-            setDevLed(((elapsed / phaseLength) & 1U) == 0);
+            if (ledFlashPulses == 1) {
+                setStatusLed(true);
+            } else {
+                const uint32_t phaseLength = std::max<uint32_t>(
+                    50, ledFlashDuration / (ledFlashPulses * 2));
+                setStatusLed(((elapsed / phaseLength) & 1U) == 0);
+            }
         }
     }
     const bool messageActive = devRemoteMessageUntil != 0 &&
@@ -3807,7 +3902,7 @@ void updateDevLedAndMessage() {
     } else if (devRemoteMessageVisible) {
         devRemoteMessageVisible = false;
         devRemoteMessageUntil = 0;
-        drawCurrentScreen();
+        if (!screenSleeping) drawCurrentScreen();
     }
 }
 
@@ -3836,6 +3931,7 @@ const char* familiarServiceName(uint16_t port) {
 }
 
 void playFamiliarCue(FamiliarCue cue) {
+    flashFamiliarLed(cue);
     if (familiarCueIndex == 0) return;
     if (familiarCueIndex == kFamiliarCueCount - 1) {
         if (millis() - lastFamiliarCueMs >= 1800 ||
@@ -4227,6 +4323,7 @@ void drawCurrentScreen() {
         case Screen::SettingsDisplay: settingsScreens.drawDisplay(); break;
         case Screen::SettingsBoot: settingsScreens.drawBoot(); break;
         case Screen::SettingsConnectivity: settingsScreens.drawConnectivity(); break;
+        case Screen::SettingsFamiliarLed: settingsScreens.drawFamiliarLed(); break;
         case Screen::SettingsReset: settingsScreens.drawResetConfirm(); break;
         case Screen::Placeholder: settingsScreens.drawPlaceholder(); break;
         case Screen::About: settingsScreens.drawAbout(); break;
@@ -7684,20 +7781,21 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 8);
-            if (down) moveSelection(1, 8);
+            if (up) moveSelection(-1, 9);
+            if (down) moveSelection(1, 9);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
                 else if (listSelection == 2) currentScreen = Screen::SettingsConnectivity;
-                else if (listSelection == 3) currentScreen = Screen::System;
-                else if (listSelection == 4) {
+                else if (listSelection == 3) currentScreen = Screen::SettingsFamiliarLed;
+                else if (listSelection == 4) currentScreen = Screen::System;
+                else if (listSelection == 5) {
                     listSelection = 0;
                     listOffset = 0;
                     checkForFirmwareUpdate();
                     return;
-                } else if (listSelection == 5) currentScreen = Screen::About;
-                else if (listSelection == 6) {
+                } else if (listSelection == 6) currentScreen = Screen::About;
+                else if (listSelection == 7) {
                     onboardingPage = 0;
                     onboardingFromSettings = true;
                     currentScreen = Screen::Onboarding;
@@ -7835,6 +7933,39 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 saveSettings();
             }
             settingsScreens.drawConnectivity();
+            break;
+
+        case Screen::SettingsFamiliarLed:
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
+            if (decrease || increase) {
+                if (listSelection == 0) {
+                    familiarLedEnabled = !familiarLedEnabled;
+                } else {
+                    uint8_t* color =
+                        listSelection == 1 ? &familiarLedStartedColor
+                        : listSelection == 2 ? &familiarLedHostColor
+                        : listSelection == 3 ? &familiarLedServiceColor
+                        : listSelection == 4 ? &familiarLedWarningColor
+                        : listSelection == 5 ? &familiarLedCompleteColor
+                                             : &familiarLedErrorColor;
+                    *color = static_cast<uint8_t>(
+                        increase ? (*color + 1) % kLedColorCount
+                                 : (*color + kLedColorCount - 1) %
+                                       kLedColorCount);
+                    // Live preview: flash the newly selected colour so the
+                    // operator can see it without leaving the settings page,
+                    // even while LED alerts are still turned off.
+                    if (*color != 0) {
+                        const LedColor& preview = kLedColorValues[*color];
+                        startLedFlash(preview.red, preview.green,
+                                      preview.blue, 300, 1);
+                    }
+                }
+                saveSettings();
+                lastUserActivity = millis();
+            }
+            settingsScreens.drawFamiliarLed();
             break;
 
         case Screen::SettingsReset:
@@ -8166,6 +8297,38 @@ void setup() {
     if (familiarCueIndex >= kFamiliarCueCount) {
         familiarCueIndex = kDefaultFamiliarCue;
     }
+    familiarLedEnabled =
+        preferences.getBool("led_on", kDefaultFamiliarLedEnabled);
+    familiarLedStartedColor =
+        preferences.getUChar("led_start", kDefaultLedColorStarted);
+    familiarLedHostColor =
+        preferences.getUChar("led_host", kDefaultLedColorHost);
+    familiarLedServiceColor =
+        preferences.getUChar("led_svc", kDefaultLedColorService);
+    familiarLedWarningColor =
+        preferences.getUChar("led_warn", kDefaultLedColorWarning);
+    familiarLedCompleteColor =
+        preferences.getUChar("led_done", kDefaultLedColorComplete);
+    familiarLedErrorColor =
+        preferences.getUChar("led_err", kDefaultLedColorError);
+    if (familiarLedStartedColor >= kLedColorCount) {
+        familiarLedStartedColor = kDefaultLedColorStarted;
+    }
+    if (familiarLedHostColor >= kLedColorCount) {
+        familiarLedHostColor = kDefaultLedColorHost;
+    }
+    if (familiarLedServiceColor >= kLedColorCount) {
+        familiarLedServiceColor = kDefaultLedColorService;
+    }
+    if (familiarLedWarningColor >= kLedColorCount) {
+        familiarLedWarningColor = kDefaultLedColorWarning;
+    }
+    if (familiarLedCompleteColor >= kLedColorCount) {
+        familiarLedCompleteColor = kDefaultLedColorComplete;
+    }
+    if (familiarLedErrorColor >= kLedColorCount) {
+        familiarLedErrorColor = kDefaultLedColorError;
+    }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
         loadWifiProfiles();
@@ -8236,6 +8399,7 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     pollDevLedControl();
+    updateStatusLedAndDevMessage();
     observeFamiliarToolScreen();
     familiarPatrolService.update();
     updateFamiliarVoice();
@@ -8847,8 +9011,6 @@ void loop() {
         lastTimeStatusDraw = millis();
         systemScreens.drawTimeReadouts();
     }
-
-    updateDevLedAndMessage();
 
     if (!screenSleeping && screenTimeoutSeconds > 0 &&
         millis() - lastUserActivity >= screenTimeoutSeconds * 1000UL) {

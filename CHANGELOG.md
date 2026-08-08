@@ -6,6 +6,22 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add Familiar LED alerts: a new `Settings > Familiar LED` page turns the
+  onboard RGB LED into a per-event notifier, off by default. Started, Host
+  found, Service found, Warning, Complete, and Error each get their own
+  colour, cycled from a shared named palette (`Off`, `Red`, `Green`, `Blue`,
+  `Cyan`, `Amber`, `Yellow`, `Magenta`, `Purple`, `White`) with an immediate
+  preview flash while adjusting. It reuses the same event points as the
+  existing Familiar cue tones (Familiar Patrol host/service/warning/complete/
+  error, Wi-Fi Guardian disconnect-burst warnings), independent of the audio
+  cue setting. Because the Cardputer ADV shares LED and backlight power on
+  GPIO38, routine events use a brief single flash and don't interrupt one
+  already in progress, while Warning/Error always pre-empt it with a longer
+  pulsing flash, so a fast patrol pass can't turn into a continuous
+  full-brightness strobe. The RMT-driven WS2812 write path that previously
+  only served the development-only UDP LED test tool (`pollDevLedControl`,
+  `tools/send_led_message.py`) is now shared between both.
+
 - Rework Mesh into a conversation-first Meshtastic client. Its home now follows
   a familiar Chats, Nodes, Map, and Settings layout. Channel and direct messages
   are grouped into conversations with compact live-updating threads and

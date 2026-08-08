@@ -297,7 +297,7 @@ void MenuScreens::drawTools() {
 
 void MenuScreens::drawSettings() {
     static const char* const items[] = {
-        "Display & Audio", "Boot Experience", "Connectivity",
+        "Display & Audio", "Boot Experience", "Connectivity", "Familiar LED",
         "System", "Firmware Update", "About Ghostwire",
         "Replay Introduction", "Restore Defaults",
     };
@@ -305,7 +305,8 @@ void MenuScreens::drawSettings() {
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Theme, sound and navigation", "Animation, sound and boot speed",
-            "Saved Wi-Fi connection options", "Inspect deck health and time",
+            "Saved Wi-Fi connection options",
+            "Colour alerts for Familiar events", "Inspect deck health and time",
             "Check for a signed release", "Version and project identity",
             "Review the Ghostwire field guide",
             "Return preferences to defaults",

@@ -2,8 +2,9 @@
 
 #include <Arduino.h>
 
-// Settings sub-screens (Display, Boot, Connectivity, Reset confirm), plus
-// the standalone About and Placeholder screens -- grouped as one module
+// Settings sub-screens (Display, Boot, Connectivity, Familiar LED, Reset
+// confirm), plus the standalone About and Placeholder screens -- grouped as
+// one module
 // since they're all reached from the Settings/Tools menus and none carry
 // state beyond the shared list cursor and the preference values they show.
 // Adjusting a value (Left/Right), saving to flash, and the boot preview
@@ -20,7 +21,12 @@ public:
                     bool& bootSoundEnabled, uint8_t& bootSoundIndex,
                     uint8_t& bootAnimationIndex, uint8_t& bootSpeedIndex,
                     bool& saveWifiCredentials, bool& autoConnectWifi,
-                    String& placeholderTitle)
+                    bool& familiarLedEnabled, uint8_t& familiarLedStartedColor,
+                    uint8_t& familiarLedHostColor,
+                    uint8_t& familiarLedServiceColor,
+                    uint8_t& familiarLedWarningColor,
+                    uint8_t& familiarLedCompleteColor,
+                    uint8_t& familiarLedErrorColor, String& placeholderTitle)
         : listSelection_(listSelection),
           listOffset_(listOffset),
           speakerVolume_(speakerVolume),
@@ -37,11 +43,19 @@ public:
           bootSpeedIndex_(bootSpeedIndex),
           saveWifiCredentials_(saveWifiCredentials),
           autoConnectWifi_(autoConnectWifi),
+          familiarLedEnabled_(familiarLedEnabled),
+          familiarLedStartedColor_(familiarLedStartedColor),
+          familiarLedHostColor_(familiarLedHostColor),
+          familiarLedServiceColor_(familiarLedServiceColor),
+          familiarLedWarningColor_(familiarLedWarningColor),
+          familiarLedCompleteColor_(familiarLedCompleteColor),
+          familiarLedErrorColor_(familiarLedErrorColor),
           placeholderTitle_(placeholderTitle) {}
 
     void drawDisplay();
     void drawBoot();
     void drawConnectivity();
+    void drawFamiliarLed();
     void drawResetConfirm();
     void drawPlaceholder();
     void drawAbout();
@@ -63,5 +77,12 @@ private:
     uint8_t& bootSpeedIndex_;
     bool& saveWifiCredentials_;
     bool& autoConnectWifi_;
+    bool& familiarLedEnabled_;
+    uint8_t& familiarLedStartedColor_;
+    uint8_t& familiarLedHostColor_;
+    uint8_t& familiarLedServiceColor_;
+    uint8_t& familiarLedWarningColor_;
+    uint8_t& familiarLedCompleteColor_;
+    uint8_t& familiarLedErrorColor_;
     String& placeholderTitle_;
 };

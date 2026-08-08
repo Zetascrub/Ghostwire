@@ -37,10 +37,12 @@ def parse_color(value: str) -> tuple[int, int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", help="Cardputer IPv4 address")
-    parser.add_argument("message", help="message shown on the Cardputer")
+    parser.add_argument("message", nargs="?", default="",
+                        help="optional message shown while the screen is awake")
     parser.add_argument("--color", type=parse_color, default=COLORS["cyan"])
     parser.add_argument("--duration", type=int, default=1800, metavar="MS")
-    parser.add_argument("--pulses", type=int, default=2)
+    parser.add_argument("--pulses", type=int, default=1,
+                        help="number of pulses (default: one solid alert)")
     parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     red, green, blue = args.color

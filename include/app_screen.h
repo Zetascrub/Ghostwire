@@ -89,6 +89,7 @@ enum class Screen {
     SettingsDisplay,
     SettingsBoot,
     SettingsConnectivity,
+    SettingsFamiliarLed,
     SettingsReset,
     Placeholder,
     About,

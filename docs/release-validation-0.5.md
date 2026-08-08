@@ -52,9 +52,13 @@ Development builds also listen on UDP 8766 for bounded LED/message tests from
 `192.168.8.10` only. Run
 `python tools/send_led_message.py CARDPUTER_IP "Test message" --color magenta`.
 The command accepts named colours or `RRGGBB`, a 250-10000 ms duration, and
-1-10 pulses. Release builds do not open the listener. The on-screen delivery
+1-10 pulses. One solid alert is the default and lasts for the requested
+duration. The ADV shares LED power with the backlight, so solid alerts
+temporarily use full backlight brightness.
+Omit the message for an LED-only test; remote commands do not
+wake the UI or reset its idle timer. Release builds do not open the listener. The on-screen delivery
 and StampS3A RGB output were hardware-validated; the LED uses GPIO21 with the
-ADV-specific GPIO38 power enable.
+ADV-specific shared GPIO38 LED/backlight power at the configured brightness.
 
 ### Idle soak reading — 15 minutes
 
