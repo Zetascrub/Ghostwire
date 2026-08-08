@@ -61,11 +61,37 @@ void SettingsScreens::drawConnectivity() {
     ScreenChrome::drawHeader("Settings: Connectivity");
     constexpr size_t count = 2;
     ScreenChrome::normalizeListPosition(count);
-    ScreenChrome::drawListRow(0, "Save Wi-Fi login", listSelection_ == 0,
+    ScreenChrome::drawListRow(0, "Save network profiles", listSelection_ == 0,
                               saveWifiCredentials_ ? "On" : "Off");
     ScreenChrome::drawListRow(1, "Auto-connect Wi-Fi", listSelection_ == 1,
                               autoConnectWifi_ ? "On" : "Off");
     ScreenChrome::drawFooter("Left/Right: toggle   Q: back");
+}
+
+void SettingsScreens::drawFamiliarLed() {
+    ScreenChrome::drawHeader("Settings: Familiar LED");
+    constexpr size_t count = 7;
+    ScreenChrome::normalizeListPosition(count);
+    const char* const labels[count] = {
+        "LED alerts", "Started", "Host found", "Service found",
+        "Warning", "Complete", "Error",
+    };
+    const String values[count] = {
+        familiarLedEnabled_ ? "On" : "Off",
+        kLedColorNames[familiarLedStartedColor_],
+        kLedColorNames[familiarLedHostColor_],
+        kLedColorNames[familiarLedServiceColor_],
+        kLedColorNames[familiarLedWarningColor_],
+        kLedColorNames[familiarLedCompleteColor_],
+        kLedColorNames[familiarLedErrorColor_],
+    };
+    for (size_t row = 0; row < ScreenChrome::kVisibleRows && row + listOffset_ < count;
+        ++row) {
+        const size_t item = row + listOffset_;
+        ScreenChrome::drawListRow(row, labels[item], item == listSelection_,
+                                  values[item]);
+    }
+    ScreenChrome::drawFooter("Left/Right: adjust  Q: back");
 }
 
 void SettingsScreens::drawResetConfirm() {

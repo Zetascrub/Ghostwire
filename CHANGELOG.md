@@ -6,6 +6,134 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix Settings back-navigation landing on the main menu instead of Settings
+  from the new Familiar LED page, and two other Settings sub-screens
+  highlighting the wrong row on return, all left over from inserting
+  Familiar LED into the Settings list without updating the hardcoded row
+  indices elsewhere. The global emergency stop now also silences the SX1262:
+  it was never gated by the operation coordinator (it never conflicts with
+  Wi-Fi/BLE), so a background Meshtastic receive session previously kept
+  running through what's documented as an all-radios-off safety control.
+- Add development-build-only soak instrumentation: with an SD card present,
+  `/ghostwire/logs/heap_soak_NNNN.csv` gets one row a minute (free/minimum
+  heap, longest `loop()` gap that minute, battery, SD free space, active
+  operation, stability events) and `/ghostwire/logs/operation_events_NNNN.csv`
+  gets one row per actual start/stop transition of any tracked operation,
+  Wi-Fi association, or Mesh receive, each carrying the heap reading at that
+  moment. Together they turn the 0.5 hardware soak's heap tracking and
+  per-transition "did it recover" checks into continuous background logging
+  instead of the operator manually transcribing System Diagnostics before and
+  after every test block.
+- Add Familiar LED alerts: a new `Settings > Familiar LED` page turns the
+  onboard RGB LED into a per-event notifier, off by default. Started, Host
+  found, Service found, Warning, Complete, and Error each get their own
+  colour, cycled from a shared named palette (`Off`, `Red`, `Green`, `Blue`,
+  `Cyan`, `Amber`, `Yellow`, `Magenta`, `Purple`, `White`) with an immediate
+  preview flash while adjusting. It reuses the same event points as the
+  existing Familiar cue tones (Familiar Patrol host/service/warning/complete/
+  error, Wi-Fi Guardian disconnect-burst warnings), independent of the audio
+  cue setting. Because the Cardputer ADV shares LED and backlight power on
+  GPIO38, routine events use a brief single flash and don't interrupt one
+  already in progress, while Warning/Error always pre-empt it with a longer
+  pulsing flash, so a fast patrol pass can't turn into a continuous
+  full-brightness strobe. The RMT-driven WS2812 write path that previously
+  only served the development-only UDP LED test tool (`pollDevLedControl`,
+  `tools/send_led_message.py`) is now shared between both.
+
+- Rework Mesh into a conversation-first Meshtastic client. Its home now follows
+  a familiar Chats, Nodes, Map, and Settings layout. Channel and direct messages
+  are grouped into conversations with compact live-updating threads and
+  contextual composition. Node details can start a DM or request a missing
+  identity key. Channel profiles and raw radio diagnostics now live under Mesh
+  Settings instead of competing with everyday messaging at the top level.
+
+- Add interoperable direct Meshtastic replies from received-message detail.
+  Replies target the sender's node ID, use Curve25519-derived AES-CCM PKI,
+  request an acknowledgement, and are journalled with the actual recipient.
+  Ghostwire now maintains a persistent mesh key pair, derives its node ID from
+  the public key, signs broadcast identity/data with XEdDSA, learns peer keys
+  from NodeInfo, requests peer NodeInfo replies during identity advertisement,
+  and shows whether a node is ready for direct messaging.
+  Message lists and details distinguish incoming senders, outgoing recipients,
+  channel, and direct-versus-broadcast traffic.
+
+- Add persistent Background client and Message alerts toggles to Mesh Settings.
+  Background mode starts Meshtastic reception at boot and keeps it active away
+  from Mesh screens; otherwise the SX1262 stops when the operator leaves Mesh.
+  Newly decoded text messages can play a short rate-limited two-note cue that
+  yields to active audio playback.
+- Schedule the message alert's second note after the first note finishes instead
+  of asking the speaker driver to play both simultaneously, which previously
+  caused one tone to replace the other.
+
+- Add dedicated Mesh Settings for persistent Meshtastic long/short names,
+  transmit channel, and hop limit. The page displays the fixed `CLIENT_MUTE`
+  role and EU_868 region and can explicitly advertise a standard NodeInfo
+  identity packet so other nodes learn Ghostwire's configured names.
+
+- Add the first Mesh chat transmitter: compose broadcast text from the message
+  inbox, select any loaded channel, and originate standards-compatible packets
+  as a non-repeating endpoint. The persistent hop limit defaults to 7 and is
+  adjustable from 1-7; channel-activity checks, bounded retries, and an airtime
+  guard protect the shared EU_868 carrier. Sent messages are retained in the SD
+  journal, and positioned nodes now carry a map-pin indicator in the directory.
+
+- Add Meshtastic Channel Profiles. Ghostwire always listens for
+  public LongFast and can validate/load three private AES-128/AES-256 profiles
+  from `/ghostwire/mesh/channels.json`, match frames using Meshtastic's actual
+  name-plus-PSK channel hash, and show loaded names/hashes without displaying
+  secret key material.
+
+- Begin the receive-side Mesh Field Client: retain a bounded 24-node directory
+  and 32-message inbox, decode Meshtastic public-channel identity and position
+  payloads, suppress repeated messages, and add dashboard, list, and readable
+  detail views while the SX1262 continues listening in the background.
+
+- Extend the Mesh Field Client with a GNSS-relative position radar, per-node
+  range and bearing, Meshtastic device battery/channel telemetry, and a
+  debounced `/ghostwire/mesh/state.json` snapshot that restores the bounded
+  node directory and message inbox after reboot.
+
+- Fix a connected BLE Keyboard panic on Escape by disabling automatic
+  re-advertising, explicitly disconnecting peers, waiting for NimBLE's host task
+  to drain the event, and only then deleting the HID server state.
+
+- Harden the 0.5 release candidate by aligning device and native builds on
+  GNU C++17, expanding operation-policy coverage, and treating Biscuit Pro and
+  Chameleon Ultra connections as BLE accessory operations so incompatible
+  capture/transmit modes are refused consistently.
+
+- Add a seven-page first-run field guide after the normal boot experience. It
+  introduces Ghostwire's Observe -> Scout -> Record loop, the Familiar, SD
+  evidence, navigation choice, and profile storage; every page can be skipped,
+  earlier pages can be revisited, and Settings can replay it later.
+
+- Add a five-entry Network Profiles workflow under Wi-Fi. Successful
+  connections update the matching SSID without replacing unrelated profiles;
+  operators can connect, rename, choose the auto-connect default, or explicitly
+  delete each entry. Existing single-network credentials migrate on first boot,
+  while full stores report the limit instead of silently evicting a network.
+
+- Begin the 0.5 Field Reliability milestone with a central operation inventory
+  and tested radio-conflict policy. System Diagnostics now reports the active
+  operation, and firmware installation refuses to begin until other ongoing
+  work is stopped.
+- Derive the System screen's navigation bounds from its live diagnostics rows
+  instead of a fixed count, keeping selection correct when conditional rows
+  appear.
+
+- Preserve the originating parent-menu selection when backing out of Wi-Fi,
+  Network, Settings, and Utility screens instead of jumping to the first item.
+- Make headers, list rows, and footers explicitly single-line regions and
+  shorten over-width shortcut legends so M5GFX cannot wrap and hide controls.
+- Treat short first words as valid card-title wrap points, so labels such as
+  `Boot Experience` retain the same large two-line typography as
+  `Firmware Update`.
+
+- Move System and About out of Field Kit's Utility Tools and into Settings,
+  with System/Clock and About back-navigation returning to their new parent.
+  Restore Defaults is now the final Settings item.
+
 ## 0.4.8 - 2026-08-05
 
 - Move OTA download/signature buffers from the loop-task stack to checked

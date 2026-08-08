@@ -49,6 +49,7 @@ public:
 
     const String& latestVersion() const { return latestVersion_; }
     const String& statusMessage() const { return status_; }
+    void setStatusMessage(const String& status) { status_ = status; }
     size_t totalBytes() const { return firmwareSize_; }
     // True once checkForUpdate() has found and verified a newer, signed
     // release is available to install.

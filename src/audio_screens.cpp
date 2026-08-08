@@ -90,7 +90,7 @@ void AudioScreens::drawAudioFiles() {
                                       row + listOffset_ == listSelection_);
         }
     }
-    ScreenChrome::drawFooter("Enter: play  R: reload  Backspace/Q: back");
+    ScreenChrome::drawFooter("Enter: play  R: reload  Q: back");
 }
 
 void AudioScreens::drawNowPlaying(const String& name, const String& source) {

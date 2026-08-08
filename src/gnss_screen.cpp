@@ -49,6 +49,6 @@ void GnssScreen::draw(bool fullDraw) {
         }
     }
     if (fullDraw) {
-        ScreenChrome::drawFooter("R: restart GNSS   Tab: actions   Q: back");
+        ScreenChrome::drawFooter("R: restart  Tab: actions  Q: back");
     }
 }

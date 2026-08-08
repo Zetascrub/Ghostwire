@@ -29,7 +29,7 @@ void BleScreens::drawDiscovery() {
                                   String(scanner_.droppedCount())).c_str());
     } else {
         ScreenChrome::drawFooter(bleExportStatus_.isEmpty()
-                                     ? "R: scan  Enter: details  Tab: actions  Q: back"
+                                     ? "R:scan Enter:details Tab:menu Q:back"
                                      : bleExportStatus_.c_str());
     }
 }

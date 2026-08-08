@@ -58,7 +58,7 @@ void FileScreens::drawFiles() {
                                       suffix);
         }
     }
-    ScreenChrome::drawFooter((currentPath_ + "   R: remount  Esc: up/back").c_str());
+    ScreenChrome::drawFooter("R: remount   Esc/Q: up or back");
 }
 
 void FileScreens::drawFileDetail() {

@@ -2,17 +2,49 @@
 
 ## Product direction
 
-Ghostwire 0.4 moves from a collection of subsystem demos toward a coherent
-field companion. Its core loop is **Observe -> Scout -> Record**. The Familiar
+Ghostwire 0.5 builds field reliability on the coherent companion introduced in
+0.4. Its core loop remains **Observe -> Scout -> Record**. The Familiar
 connects those stages by reacting to discoveries and changes; it is not merely
 another tool in the menu. Ghostwire should complement workstation tooling by
 collecting bounded, explainable evidence in the field.
 
 The mission-led home screen and unified Evidence browser are implemented in the
 current development build. Screen/controller extraction from `src/main.cpp` is
-complete (see `docs/screen-extraction.md`). The next product work is persistent
-named network profiles, a single operation/radio coordinator, and first-run
-guidance.
+complete (see `docs/screen-extraction.md`). The operation coordinator, named
+network profiles, and first-run guide are now active; repeated hardware
+reliability testing is the remaining 0.5 release gate.
+
+## 0.5 — Field Reliability
+
+- [x] Central inventory of long-running Wi-Fi, BLE, network, audio, remote, and
+  firmware-update operations.
+- [x] Tested conflict policy and clear on-device refusal when a requested radio
+  mode cannot safely coexist with active work.
+- [x] Active operation visibility in System Diagnostics and the header status.
+- [x] Up to five named Wi-Fi/network profiles with deliberate connect, rename,
+  default selection, migration, and deletion.
+- [x] Skippable, replayable first-run guidance for the Observe -> Scout ->
+  Record workflow, Familiar, SD evidence, navigation, and profile storage.
+- [x] First receive-side Mesh Field Client milestone: bounded node/message
+  state, identity and position decoding, duplicate suppression, and navigable
+  dashboard, directory, detail, and inbox views.
+- [x] GNSS-relative mesh radar, node range/bearing, device-metrics decoding,
+  and debounced microSD persistence for the bounded client state.
+- [x] Receive-only EU_868 channel profiles with public LongFast plus validated
+  SD-backed private AES-128/AES-256 keys and on-device hash/status visibility.
+- [x] Conversation-grade Mesh messaging with unread state, timestamps,
+  acknowledgement tracking, SD-backed JSONL history, and message alerts.
+- [x] Active node tools for identity, position, and telemetry requests; bounded
+  telemetry trends; GNSS position sharing; and explicit peer-key change trust.
+- [x] On-device private-channel add/remove plus portable token and QR export,
+  while retaining public LongFast as a safe baseline.
+- [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
+  low-memory behaviour, and recovery after interruption.
+
+The automated release-candidate pass now builds both targets as GNU C++17 and
+tests every operation label plus full conflict-policy symmetry. Real-device
+radio transition and endurance checks remain deliberately open until exercised
+interactively on hardware.
 
 This roadmap favours features that are useful during authorised assessment,
 network administration, or field diagnostics on the Cardputer ADV. Inspiration
@@ -33,6 +65,58 @@ Priority rises when a feature completes an existing workflow, reuses proven
 services, works offline, and benefits both security and administration. It falls
 when a feature is mainly theatrical, duplicates another tool, depends on
 unowned hardware, or creates disproportionate legal, RF, or reliability risk.
+
+## Next release sequence
+
+The next stretch is deliberately divided into release-sized outcomes. New
+features do not displace the remaining 0.5 reliability gates.
+
+### 0.5.0 — release and soak
+
+1. Run a repeated hardware soak across Wi-Fi scan/capture, BLE scan/capture,
+   Mesh background receive, GNSS logging, audio, SD writes, and emergency stop.
+2. Exercise transitions between every pair of radio-owning operations and
+   record heap floor, recovery behaviour, and any reset reason.
+3. Complete a small Meshtastic interoperability matrix: public channel, private
+   channel, broadcast, PKI direct message, ACK/failure state, node requests,
+   position sharing, reboot persistence, and background alerts.
+4. Exercise the OTA forced-bad-boot rollback path on hardware, then publish the
+   signed 0.5.0 release only when the result is recoverable and documented.
+
+No new subsystem is required for this milestone. Fixes, diagnostics, and small
+usability corrections discovered during the soak are in scope.
+
+### 0.6.0 — Field Console
+
+1. Build the Network Socket Workbench: bounded TCP client/listener first, then
+   UDP only after TCP passes interruption and resource tests. Host Discovery and
+   Port Scan should hand a selected host/port into it.
+2. Finish clock provenance: show UTC, local display time, active source, sync
+   age, and uncertainty; add deliberate offline time and timezone controls while
+   keeping evidence timestamps in UTC.
+3. Complete QR handoff presets for Wi-Fi credentials, selected host details,
+   short diagnostic summaries, and supported Ghostwire configuration tokens.
+   Secrets always require an explicit reveal/confirm step.
+4. Bring append-only Mesh history into Evidence with a bounded on-demand reader
+   and useful export, without loading the complete JSONL archive into RAM.
+
+**Release gate:** each utility must produce a saved or transferable result,
+restore its resources on exit, and remain responsive with Wi-Fi connected and a
+near-full SD card. The target remains below 75% application flash and 45% static
+RAM, preserving OTA and runtime headroom.
+
+### 0.6.x — bounded automation and sensors
+
+1. Add BLE DuckyScript transport by reusing the existing reviewed parser,
+   confirmation screen, and explicit connected-host state.
+2. Add operator-confirmed SD template comparison/sync after Wi-Fi connects. It
+   reports differences first and never silently overwrites local files.
+3. Add the microphone spectrum diagnostic only after measuring its heap and CPU
+   cost alongside display buffering and audio playback.
+
+These are follow-up releases rather than blockers for 0.6.0. ESP-NOW exchange
+and a local Web UI remain 0.7 design candidates because both introduce new
+trust, authentication, and long-running service boundaries.
 
 ## Now — complete existing workflows
 
@@ -89,6 +173,31 @@ verified against test tags.
 
 ## Next — high-value operator utilities
 
+### Mesh Field Client progression
+
+- [x] Persist the bounded node database and message journal to microSD.
+- [x] Combine local GNSS with received positions for distance/bearing and a
+  field radar view; decode device battery and channel telemetry.
+- [x] Add deliberate EU_868 receive channel/key configuration before any
+  transmission. Other regions remain unavailable on the 868 MHz cap.
+- [x] Add standards-compatible broadcast text with packet IDs, selectable
+  loaded channel, adjustable 1-7 hop limit, channel-activity checks, and an
+  airtime guard.
+- [x] Add persistent long/short node identity, a dedicated Mesh Settings page,
+  and deliberate NodeInfo advertisement as a `CLIENT_MUTE` endpoint.
+- [x] Add optional boot-started background receive and rate-limited audible
+  notification for newly decoded text messages.
+- [x] Add PKI-encrypted direct reply composition with Meshtastic's
+  acknowledgement-request flag, signed key-bearing identity advertisement,
+  peer-key readiness feedback, and clear incoming/outgoing conversation labels.
+- [x] Rework navigation around Chats, Nodes, Map, and Settings; group channel
+  and direct traffic into conversation threads and allow DMs from node detail.
+- [x] Decode acknowledgement outcomes, show delivery state, and add deliberate
+  GNSS position sharing plus node identity/position/telemetry requests.
+
+The client behaves as a quiet endpoint: it can receive and originate text but
+does not claim router behaviour or rebroadcast other nodes' traffic.
+
 ### 5. Network socket workbench
 
 - TCP client and TCP listener with text/hex views, configurable port, bounded
@@ -127,9 +236,9 @@ emulator.
   level history, and optional CSV summary.
 - Treat it as a diagnostic visualiser, not calibrated test equipment.
 
-### 10. Wi-Fi auto-connect and template sync
+### 10. Wi-Fi auto-connect and template sync — auto-connect complete
 
-- On boot, if a saved Wi-Fi profile exists, connect automatically (still an
+- [x] On boot, if a saved Wi-Fi profile exists, connect automatically (still an
   explicit opt-in setting via `autoConnectWifi`/`saveWifiCredentials`, default
   unchanged otherwise -- this uses the existing, already-implemented saved-
   credential mechanism, not anything new).
@@ -171,8 +280,8 @@ originally sketched here:
   reaches a healthy checkpoint. See `docs/ota-updates.md`'s "Boot safety"
   section for the honest limits of this -- bootloader-level rollback
   support on this exact board hasn't been confirmed on real hardware yet.
-- Not yet added: refusing to start while another radio operation or capture
-  is active.
+- Firmware installation is refused while another tracked operation or capture
+  is active, with the conflicting operation named on screen.
 - Bootloader/partition-table changes remain USB-reflash-only; this covers the
   application partition, not literally everything.
 
@@ -184,10 +293,10 @@ automatic rollback without operator intervention.
 - [x] Signing, verification, and rollback logic implemented; builds clean
       (`pio run -e cardputer_adv`) and native unit tests pass
       (`pio test -e native`).
-- [ ] End-to-end round-trip against a real signed release -- blocked on
-      cutting an actual tagged release (none published yet).
+- [x] End-to-end round-trip completed on real hardware against the signed
+      0.4.8 release.
 - [ ] Forced-bad-boot rollback exercised on real hardware.
-- [ ] Refuse-to-start-during-active-capture guard.
+- [x] Refuse-to-start-during-active-capture guard.
 
 ## Later — useful, but needs design or soak testing
 
@@ -205,9 +314,9 @@ automatic rollback without operator intervention.
   an on-device enable indicator.
 - Bind only while explicitly enabled and stop the service on exit or timeout.
 
-### 14. WiGLE-compatible export
+### 14. WiGLE-compatible export — implemented
 
-- Export wardrive data in a WiGLE-compatible format after validating coordinates,
+- [x] Export wardrive data in a WiGLE-compatible format after validating coordinates,
   timestamps, privacy implications, and schema details.
 - Upload is a separate later decision; local export provides most of the value
   without storing credentials or automating disclosure of location data.

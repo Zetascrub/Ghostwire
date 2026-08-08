@@ -133,23 +133,24 @@ void MenuScreens::drawFieldKit() {
 void MenuScreens::drawWifi() {
     static const char* const items[] = {
         "Discovery", "Channel Analyzer", "Sniffer", "Guardian", "Connect",
+        "Network Profiles",
     };
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Find nearby access points", "Compare channel congestion",
             "Passively inspect Wi-Fi traffic", "Watch for disruption bursts",
-            "Join a network for scouting",
+            "Join a network for scouting", "Connect or manage saved networks",
         };
         String badge = listSelection_ == 3 && wifiGuardian_.isActive()
                            ? "WATCHING" : "";
         ScreenChrome::drawNavigationCard("Wi-Fi airspace", items[listSelection_],
                                          descriptions[listSelection_],
-                                         listSelection_, 5, 1, badge);
+                                         listSelection_, 6, 1, badge);
         return;
     }
     ScreenChrome::drawHeader("Wi-Fi");
-    ScreenChrome::normalizeListPosition(5);
-    for (size_t row = 0; row < 5; ++row) {
+    ScreenChrome::normalizeListPosition(6);
+    for (size_t row = 0; row < 6; ++row) {
         ScreenChrome::drawListRow(row, items[row], row == listSelection_);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");
@@ -219,16 +220,21 @@ void MenuScreens::drawGps() {
 }
 
 void MenuScreens::drawMesh() {
-    static const char* const items[] = {"LoRa / Meshtastic"};
+    static const char* const items[] = {"Chats", "Nodes", "Map", "Settings"};
     if (cardNav_) {
-        ScreenChrome::drawNavigationCard("Mesh signals", items[0],
-                                         "Listen to LoRa and Meshtastic", 0,
-                                         1, 1);
+        static const char* const descriptions[] = {
+            "Channels and direct conversations", "People and devices on the mesh",
+            "Known positions around you", "Identity, channels and radio"};
+        ScreenChrome::drawNavigationCard("Meshtastic", items[listSelection_],
+                                         descriptions[listSelection_],
+                                         listSelection_, 4, 1);
         return;
     }
-    ScreenChrome::drawHeader("Mesh");
-    ScreenChrome::normalizeListPosition(1);
-    ScreenChrome::drawListRow(0, items[0], listSelection_ == 0);
+    ScreenChrome::drawHeader("Meshtastic");
+    ScreenChrome::normalizeListPosition(4);
+    for (size_t index = 0; index < 4; ++index) {
+        ScreenChrome::drawListRow(index, items[index], listSelection_ == index);
+    }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");
 }
 
@@ -262,7 +268,7 @@ void MenuScreens::drawNetwork() {
 void MenuScreens::drawTools() {
     static const char* const items[] = {
         "Infrared",     "USB / HID", "Audio",  "Logs / Sessions",
-        "Motion / IMU", "Files",     "QR Generator", "System", "About",
+        "Motion / IMU", "Files",     "QR Generator",
     };
     constexpr size_t kToolsCount = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
@@ -270,8 +276,7 @@ void MenuScreens::drawTools() {
             "Test the infrared transmitter", "Keyboard and guarded scripts",
             "Speaker, microphone and phrases", "Browse saved log sessions",
             "Inspect motion sensor data", "Browse the microSD card",
-            "Create an offline QR code", "Inspect deck health and time",
-            "Version and project identity",
+            "Create an offline QR code",
         };
         ScreenChrome::drawNavigationCard("Utility tools", items[listSelection_],
                                          descriptions[listSelection_],
@@ -292,15 +297,19 @@ void MenuScreens::drawTools() {
 
 void MenuScreens::drawSettings() {
     static const char* const items[] = {
-        "Display & Audio", "Boot Experience", "Connectivity",
-        "Restore Defaults", "Firmware Update",
+        "Display & Audio", "Boot Experience", "Connectivity", "Familiar LED",
+        "System", "Firmware Update", "About Ghostwire",
+        "Replay Introduction", "Restore Defaults",
     };
     constexpr size_t count = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Theme, sound and navigation", "Animation, sound and boot speed",
-            "Saved Wi-Fi connection options", "Return preferences to defaults",
-            "Check for a signed release",
+            "Saved Wi-Fi connection options",
+            "Colour alerts for Familiar events", "Inspect deck health and time",
+            "Check for a signed release", "Version and project identity",
+            "Review the Ghostwire field guide",
+            "Return preferences to defaults",
         };
         ScreenChrome::drawNavigationCard("Settings", items[listSelection_],
                                          descriptions[listSelection_],
@@ -309,8 +318,11 @@ void MenuScreens::drawSettings() {
     }
     ScreenChrome::drawHeader("Settings");
     ScreenChrome::normalizeListPosition(count);
-    for (size_t row = 0; row < count; ++row) {
-        ScreenChrome::drawListRow(row, items[row], row == listSelection_);
+    ScreenChrome::drawHeaderPosition(listSelection_ + 1, count);
+    for (size_t row = 0;
+         row < ScreenChrome::kVisibleRows && row + listOffset_ < count; ++row) {
+        const size_t item = row + listOffset_;
+        ScreenChrome::drawListRow(row, items[item], item == listSelection_);
     }
     ScreenChrome::drawFooter("Enter: open   Backspace/Q: back");
 }
