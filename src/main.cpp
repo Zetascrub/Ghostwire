@@ -9592,9 +9592,11 @@ void loop() {
                               kMaxTelnetLines);
             newData = true;
         }
+        // See the identical fix/comment on the SSH session block below --
+        // new data must draw immediately, not share the footer's throttle.
+        if (newData) telnetScreens.drawSessionDynamic();
         if (millis() - lastTelnetDraw >= 150) {
             lastTelnetDraw = millis();
-            if (newData) telnetScreens.drawSessionDynamic();
             drawFooter(telnetClient.connected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }
@@ -9603,11 +9605,13 @@ void loop() {
     if (currentScreen == Screen::SocketWorkbenchSession) {
         const size_t linesBefore = socketWorkbenchLines.size();
         updateSocketWorkbench();
+        // Same fix as the Telnet/SSH session blocks above: new data draws
+        // immediately rather than sharing the footer's throttle timer.
+        if (socketWorkbenchLines.size() != linesBefore) {
+            socketWorkbenchScreens.drawSessionDynamic();
+        }
         if (millis() - lastSocketWorkbenchDraw >= 150) {
             lastSocketWorkbenchDraw = millis();
-            if (socketWorkbenchLines.size() != linesBefore) {
-                socketWorkbenchScreens.drawSessionDynamic();
-            }
             socketWorkbenchScreens.drawSessionFooter();
         }
     }
@@ -9641,9 +9645,16 @@ void loop() {
             }
             newData = true;
         }
+        // Draw new data the moment it arrives -- do not gate this behind the
+        // footer's throttle timer below. That timer used to cover both, and
+        // reset on every tick it fired regardless of newData, which could
+        // arm a fresh 150ms cooldown on a tick that drew nothing right
+        // before the real response arrived, delaying it until either the
+        // full window elapsed or another keypress forced a redraw some
+        // other way (reported as "press Enter again to see the response").
+        if (newData) sshScreens.drawSessionDynamic();
         if (millis() - lastSshDraw >= 150) {
             lastSshDraw = millis();
-            if (newData) sshScreens.drawSessionDynamic();
             drawFooter(sshService.isConnected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
         }

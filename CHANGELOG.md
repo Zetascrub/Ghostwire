@@ -6,6 +6,16 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix SSH/Telnet sessions needing a second keypress before a response
+  actually appeared on screen. Their periodic redraw shared one timer between
+  "draw new data" and "refresh the footer," and reset that timer on every
+  tick it fired even when nothing was drawn -- if the real response arrived
+  a few ticks after one of those no-op resets, the draw was suppressed until
+  either the full 150ms window passed or another keystroke forced a redraw
+  through a different path, which is what actually revealed it. New data now
+  draws the moment it arrives, decoupled from the footer's own throttle. The
+  Socket Workbench below copied the same flawed pattern from Telnet before
+  ever being flashed; fixed there too.
 - Add the Network Socket Workbench (`Network > Socket Workbench`): raw TCP
   Connect and Listen modes (`WiFiServer`-based, one accepted client at a
   time), a text/hex view toggle (`Ctrl+H`), and optional SD session logging
