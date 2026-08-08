@@ -29,6 +29,15 @@ the ignored `diagnostic-collections/` directory. HTTP failure never prevents the
 SD export. A falling minimum heap is expected; steadily falling current free
 heap after returning idle is not.
 
+Manual snapshots are optional now: development builds with an SD card present
+also record one row a minute to `/ghostwire/logs/heap_soak_NNNN.csv`
+(`timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,operation,
+stability_events`) for the whole boot session, with no operator action
+required. Pull that file at the end of a soak session (Files browser, or a
+card reader) instead of transcribing Diagnostics before/after every block --
+it's a continuous trend line rather than two point-in-time samples, so it
+also catches a slow leak that only shows up between the blocks below.
+
 ### Initial hardware reading
 
 | Diagnostic | Baseline |

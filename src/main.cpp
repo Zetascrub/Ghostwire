@@ -341,6 +341,13 @@ WifiSnifferScreen wifiSnifferScreen(wifiSnifferService,
                                     recentWifiProbes);
 PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
+// Development-build-only background sampler for the 0.5 hardware soak (see
+// docs/release-validation-0.5.md): appends one heap/operation row per
+// interval so a multi-hour soak produces an actual trend line without the
+// operator needing to open System Diagnostics and transcribe numbers.
+SdLogger heapSoakLogger;
+uint32_t nextHeapSoakSampleMs = 0;
+constexpr uint32_t kHeapSoakIntervalMs = 60000;
 OperationCoordinator operationCoordinator;
 Preferences preferences;
 std::vector<String> audioFiles;
@@ -8374,6 +8381,13 @@ void setup() {
         loraService.begin();
     }
     recordBootTelemetry();
+    if (isDevelopmentBuild() && sdAvailable) {
+        heapSoakLogger.begin(
+            "heap_soak",
+            "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,operation,"
+            "stability_events");
+        nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+    }
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
     chameleonSavedPath = preferences.getString("cham_last", "");
@@ -8576,6 +8590,18 @@ void loop() {
         gnssLogger.append(row);
     }
     gnssLogger.update();
+    if (heapSoakLogger.isActive() &&
+        static_cast<long>(millis() - nextHeapSoakSampleMs) >= 0) {
+        nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+        String row = (clockSynced ? utcTimestamp() : String("")) + "," +
+                     String(millis()) + "," +
+                     String(ESP.getFreeHeap() / 1024) + "," +
+                     String(ESP.getMinFreeHeap() / 1024) + "," +
+                     operationCoordinator.primaryLabel() + "," +
+                     String(abnormalResetCount);
+        heapSoakLogger.append(row);
+    }
+    heapSoakLogger.update();
     if (loraLogger.isActive() &&
         loraService.packetCount() != lastLoggedLoRaPacket) {
         lastLoggedLoRaPacket = loraService.packetCount();

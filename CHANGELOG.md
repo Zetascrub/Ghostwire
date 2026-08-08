@@ -6,6 +6,20 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix Settings back-navigation landing on the main menu instead of Settings
+  from the new Familiar LED page, and two other Settings sub-screens
+  highlighting the wrong row on return, all left over from inserting
+  Familiar LED into the Settings list without updating the hardcoded row
+  indices elsewhere. The global emergency stop now also silences the SX1262:
+  it was never gated by the operation coordinator (it never conflicts with
+  Wi-Fi/BLE), so a background Meshtastic receive session previously kept
+  running through what's documented as an all-radios-off safety control.
+- Add a development-build-only heap soak logger: with an SD card present, one
+  row a minute is appended to `/ghostwire/logs/heap_soak_NNNN.csv`
+  (uptime, free heap, minimum heap, active operation, stability events) for
+  the whole boot session, so the 0.5 hardware soak gets a continuous trend
+  line without the operator manually transcribing System Diagnostics before
+  and after every test block.
 - Add Familiar LED alerts: a new `Settings > Familiar LED` page turns the
   onboard RGB LED into a per-event notifier, off by default. Started, Host
   found, Service found, Warning, Complete, and Error each get their own
