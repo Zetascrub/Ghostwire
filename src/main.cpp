@@ -435,6 +435,11 @@ bool devLedUdpListening = false;
 String devRemoteMessage;
 uint32_t devRemoteMessageUntil = 0;
 bool devRemoteMessageVisible = false;
+// One-shot: set after the boot sequence in dev builds, cleared the first
+// time Wi-Fi is connected that session, whenever that happens (immediately
+// for auto-connect, or later if the operator connects manually). Reuses
+// exportSystemDiagnostics()'s existing HTTP path, so no separate protocol.
+bool bootDiagnosticExportPending = false;
 // Shared WS2812 flash state -- driven both by the dev-only UDP test command
 // (pollDevLedControl()) and by production Familiar LED alerts
 // (flashFamiliarLed()); only one physical LED exists, so both write through
@@ -8456,6 +8461,7 @@ void setup() {
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
     markBootHealthy();
+    bootDiagnosticExportPending = isDevelopmentBuild();
 
     if (!preferences.getBool("intro_done", false)) {
         onboardingPage = 0;
@@ -8606,6 +8612,15 @@ void loop() {
                 bootChimeStatus = "Played after " + String(now) + "ms";
                 bootChimePending = false;
             }
+        }
+    }
+    if (bootDiagnosticExportPending && WiFi.status() == WL_CONNECTED) {
+        bootDiagnosticExportPending = false;
+        exportSystemDiagnostics();
+        if (diagnosticExportStatus.startsWith("HTTP sent")) {
+            devRemoteMessage = "Diagnostic sent";
+            devRemoteMessageUntil = millis() + 1800;
+            devRemoteMessageVisible = false;
         }
     }
     updateBatteryEstimate();
@@ -8832,6 +8847,77 @@ void loop() {
     }
     guardianEventLogger.update();
 
+    // Background operation progress belongs above the screenSleeping early
+    // return below: it must keep advancing even while the display is off,
+    // the same way Wi-Fi/BLE capture, GNSS, LoRa, Guardian, and Patrol
+    // already do further up in loop(). Only their *drawing* stays gated on
+    // currentScreen further down -- harmless and correct to skip while
+    // asleep. (Found via hardware soak: Host Discovery visibly stalled once
+    // the screen timed out mid-scan, because its update() call previously
+    // lived after the early return.)
+    warDriveService.update();
+    WarDriveWifiResult warDriveWifi;
+    while (warDriveService.nextWifiResult(warDriveWifi)) {
+        cyberFamiliar.observeWifiIdentity(warDriveWifi.bssid);
+        logWarDriveWifiResult(warDriveWifi);
+    }
+    WarDriveBleResult warDriveBle;
+    while (warDriveService.nextBleResult(warDriveBle)) {
+        cyberFamiliar.observeBleIdentity(warDriveBle.address);
+        logWarDriveBleResult(warDriveBle);
+    }
+    networkHostScanService.update();
+    NetworkHostResult networkHostResult;
+    while (networkHostScanService.nextHostResult(networkHostResult)) {
+        networkHostResults.push_back(networkHostResult);
+    }
+    networkPortScanService.update();
+    NetworkPortResult networkPortResult;
+    while (networkPortScanService.nextPortResult(networkPortResult)) {
+        networkPortResults.push_back(networkPortResult.port);
+    }
+    if (wifiConnectAttempting) {
+        const wl_status_t status = WiFi.status();
+        if (status == WL_CONNECTED) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Connected";
+            if (saveWifiCredentials) {
+                wifiProfileStatus =
+                    saveWifiProfile(wifiConnectSsid,
+                                    wifiConnectAttemptPassword)
+                        ? "Profile saved"
+                        : "Connected; profile list full";
+            }
+            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
+                wifiConnectPasswordInput.setCharAt(i, '\0');
+            }
+            wifiConnectPasswordInput = "";
+            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
+                wifiConnectAttemptPassword.setCharAt(i, '\0');
+            }
+            wifiConnectAttemptPassword = "";
+        } else if (status == WL_CONNECT_FAILED) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: wrong password?";
+        } else if (status == WL_NO_SSID_AVAIL) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: network not found";
+        } else if (millis() - wifiConnectStartMs > 15000) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: timed out";
+        }
+        if (!wifiConnectAttempting && WiFi.status() != WL_CONNECTED) {
+            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
+                wifiConnectPasswordInput.setCharAt(i, '\0');
+            }
+            wifiConnectPasswordInput = "";
+            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
+                wifiConnectAttemptPassword.setCharAt(i, '\0');
+            }
+            wifiConnectAttemptPassword = "";
+        }
+    }
+
     if (screenSleeping) {
         if (M5Cardputer.Keyboard.isChange() &&
             M5Cardputer.Keyboard.isPressed()) {
@@ -8959,18 +9045,9 @@ void loop() {
         }
     }
 
-    warDriveService.update();
-    WarDriveWifiResult warDriveWifi;
-    while (warDriveService.nextWifiResult(warDriveWifi)) {
-        cyberFamiliar.observeWifiIdentity(warDriveWifi.bssid);
-        logWarDriveWifiResult(warDriveWifi);
-    }
-    WarDriveBleResult warDriveBle;
-    while (warDriveService.nextBleResult(warDriveBle)) {
-        cyberFamiliar.observeBleIdentity(warDriveBle.address);
-        logWarDriveBleResult(warDriveBle);
-    }
-
+    // warDriveService/networkHostScanService/networkPortScanService progress
+    // itself now lives above the screenSleeping early return; only their
+    // periodic redraw stays gated on currentScreen here.
     if (currentScreen == Screen::WarDrive && !actionMenuOpen &&
         millis() - lastWarDriveDraw >= 500) {
         lastWarDriveDraw = millis();
@@ -8983,22 +9060,12 @@ void loop() {
         familiarScreens.drawPatrol(false);
     }
 
-    networkHostScanService.update();
-    NetworkHostResult networkHostResult;
-    while (networkHostScanService.nextHostResult(networkHostResult)) {
-        networkHostResults.push_back(networkHostResult);
-    }
     if (currentScreen == Screen::NetworkHostScan && !actionMenuOpen &&
         millis() - lastNetworkHostScanDraw >= 500) {
         lastNetworkHostScanDraw = millis();
         networkScanScreens.drawNetworkHostScan(false);
     }
 
-    networkPortScanService.update();
-    NetworkPortResult networkPortResult;
-    while (networkPortScanService.nextPortResult(networkPortResult)) {
-        networkPortResults.push_back(networkPortResult.port);
-    }
     if (currentScreen == Screen::NetworkPortScan && !actionMenuOpen &&
         millis() - lastNetworkPortScanDraw >= 500) {
         lastNetworkPortScanDraw = millis();
@@ -9060,48 +9127,8 @@ void loop() {
         }
     }
 
-    if (wifiConnectAttempting) {
-        const wl_status_t status = WiFi.status();
-        if (status == WL_CONNECTED) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Connected";
-            if (saveWifiCredentials) {
-                wifiProfileStatus =
-                    saveWifiProfile(wifiConnectSsid,
-                                    wifiConnectAttemptPassword)
-                        ? "Profile saved"
-                        : "Connected; profile list full";
-            }
-            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
-                wifiConnectPasswordInput.setCharAt(i, '\0');
-            }
-            wifiConnectPasswordInput = "";
-            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
-                wifiConnectAttemptPassword.setCharAt(i, '\0');
-            }
-            wifiConnectAttemptPassword = "";
-        } else if (status == WL_CONNECT_FAILED) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: wrong password?";
-        } else if (status == WL_NO_SSID_AVAIL) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: network not found";
-        } else if (millis() - wifiConnectStartMs > 15000) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: timed out";
-        }
-        if (!wifiConnectAttempting && WiFi.status() != WL_CONNECTED) {
-            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
-                wifiConnectPasswordInput.setCharAt(i, '\0');
-            }
-            wifiConnectPasswordInput = "";
-            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
-                wifiConnectAttemptPassword.setCharAt(i, '\0');
-            }
-            wifiConnectAttemptPassword = "";
-        }
-    }
-
+    // wifiConnectAttempting resolution also now lives above the
+    // screenSleeping early return; only its redraw stays gated here.
     if (currentScreen == Screen::WifiConnectStatus && !actionMenuOpen &&
         millis() - lastWifiConnectDraw >= 1000) {
         lastWifiConnectDraw = millis();
