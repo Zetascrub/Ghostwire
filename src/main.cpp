@@ -4937,6 +4937,13 @@ void stopAllActiveOperations() {
     sshService.stop();
     audioService.stopPlayback();
     audioService.endMicrophone();
+    // The SX1262 isn't gated by OperationCoordinator (it never conflicts
+    // with the Wi-Fi/BLE radio), so nothing else here reaches it. Background
+    // Mesh client mode intentionally survives normal screen navigation, but
+    // a global emergency stop means "every radio off now" -- silence it too,
+    // even though that means meshBackgroundEnabled won't resume receiving
+    // until the operator re-enters a Mesh screen or reboots.
+    loraService.end();
 
     imuLogger.stop();
     gnssLogger.stop();
@@ -5192,12 +5199,14 @@ void goBack() {
     if (currentScreen == Screen::SettingsDisplay ||
         currentScreen == Screen::SettingsBoot ||
         currentScreen == Screen::SettingsConnectivity ||
+        currentScreen == Screen::SettingsFamiliarLed ||
         currentScreen == Screen::SettingsReset) {
         const Screen previous = currentScreen;
         currentScreen = Screen::Settings;
         listSelection = previous == Screen::SettingsDisplay ? 0
                         : previous == Screen::SettingsBoot ? 1
-                        : previous == Screen::SettingsConnectivity ? 2 : 7;
+                        : previous == Screen::SettingsConnectivity ? 2
+                        : previous == Screen::SettingsFamiliarLed ? 3 : 8;
         listOffset = 0;
         menuScreens.drawSettings();
         return;
@@ -5569,7 +5578,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (onboardingFromSettings) {
                 onboardingFromSettings = false;
                 currentScreen = Screen::Settings;
-                listSelection = 6;
+                listSelection = 7;
                 listOffset = 1;
                 menuScreens.drawSettings();
             } else {
