@@ -8,13 +8,15 @@ connects those stages by reacting to discoveries and changes; it is not merely
 another tool in the menu. Ghostwire should complement workstation tooling by
 collecting bounded, explainable evidence in the field.
 
-The mission-led home screen and unified Evidence browser are implemented in the
-current development build. Screen/controller extraction from `src/main.cpp` is
-complete (see `docs/screen-extraction.md`). The operation coordinator, named
-network profiles, and first-run guide are now active; repeated hardware
-reliability testing is the remaining 0.5 release gate.
+**Ghostwire 0.5.0 shipped 2026-08-08.** The mission-led home screen and unified
+Evidence browser, screen/controller extraction from `src/main.cpp` (see
+`docs/screen-extraction.md`), the operation coordinator, named network
+profiles, first-run guide, and a full hardware validation pass (including the
+first real-hardware confirmation of OTA signature-tamper rejection and
+forced-bad-boot rollback) are all complete. 0.6.0 — Field Console is next; see
+"Next release sequence" below.
 
-## 0.5 — Field Reliability
+## 0.5 — Field Reliability (shipped)
 
 - [x] Central inventory of long-running Wi-Fi, BLE, network, audio, remote, and
   firmware-update operations.
@@ -38,7 +40,7 @@ reliability testing is the remaining 0.5 release gate.
   telemetry trends; GNSS position sharing; and explicit peer-key change trust.
 - [x] On-device private-channel add/remove plus portable token and QR export,
   while retaining public LongFast as a safe baseline.
-- [ ] Hardware soak pass covering repeated start/stop, cross-radio transitions,
+- [x] Hardware soak pass covering repeated start/stop, cross-radio transitions,
   low-memory behaviour, and recovery after interruption.
 
 The automated release-candidate pass now builds both targets as GNU C++17 and
@@ -71,20 +73,28 @@ unowned hardware, or creates disproportionate legal, RF, or reliability risk.
 The next stretch is deliberately divided into release-sized outcomes. New
 features do not displace the remaining 0.5 reliability gates.
 
-### 0.5.0 — release and soak
+### 0.5.0 — release and soak (shipped 2026-08-08)
 
-1. Run a repeated hardware soak across Wi-Fi scan/capture, BLE scan/capture,
+1. [x] Ran a repeated hardware soak across Wi-Fi scan/capture, BLE scan/capture,
    Mesh background receive, GNSS logging, audio, SD writes, and emergency stop.
-2. Exercise transitions between every pair of radio-owning operations and
-   record heap floor, recovery behaviour, and any reset reason.
-3. Complete a small Meshtastic interoperability matrix: public channel, private
-   channel, broadcast, PKI direct message, ACK/failure state, node requests,
-   position sharing, reboot persistence, and background alerts.
-4. Exercise the OTA forced-bad-boot rollback path on hardware, then publish the
-   signed 0.5.0 release only when the result is recoverable and documented.
+2. [x] Exercised transitions between radio-owning operation pairs and recorded
+   heap floor, recovery behaviour, and reset reason; found and fixed a real bug
+   along the way (Host Discovery/Port Scan/War Drive/an in-flight Wi-Fi connect
+   attempt silently pausing whenever the screen slept mid-operation).
+3. [x] Completed the Meshtastic interoperability matrix against a second node:
+   public broadcast, PKI direct messages both directions, delivery ACK,
+   identity exchange, background alerts, and reboot persistence all confirmed.
+   Private-channel broadcast, request/response telemetry, GNSS position
+   sharing, the no-ACK failure path, and changed-key rejection were
+   deliberately deferred to a future assessment rather than left untested and
+   unremarked.
+4. [x] Exercised the OTA forced-bad-boot rollback path on real hardware for the
+   first time (previously an explicitly documented gap) -- confirmed
+   recoverable, alongside signature-tamper rejection -- then published the
+   signed 0.5.0 release.
 
-No new subsystem is required for this milestone. Fixes, diagnostics, and small
-usability corrections discovered during the soak are in scope.
+No new subsystem was required for this milestone; the screen-sleep fix above
+was the only non-diagnostic code change that came out of the soak.
 
 ### 0.6.0 — Field Console
 
@@ -125,7 +135,7 @@ trust, authentication, and long-running service boundaries.
 - [x] NTP system-clock synchronisation alongside the existing GNSS source.
 - [x] Offline QR generation for typed text, URLs, and short notes.
 
-### 1. Full passive Wi-Fi capture — implemented, hardware validation pending
+### 1. Full passive Wi-Fi capture — implemented and hardware-validated
 
 - Extend the current probe/EAPOL capture foundation into selectable management,
   data-metadata, and full raw PCAP modes.
@@ -137,7 +147,7 @@ trust, authentication, and long-running service boundaries.
 **Done when:** Wireshark opens the resulting PCAP reliably, long captures do not
 starve the UI, and radio state is restored after leaving the tool.
 
-### 2. BLE capture and protocol inspection — implemented, hardware validation pending
+### 2. BLE capture and protocol inspection — implemented and hardware-validated
 
 - Add continuous BLE logging with address type, advertisement type, service
   data, manufacturer data, and raw payload.
@@ -295,7 +305,9 @@ automatic rollback without operator intervention.
       (`pio test -e native`).
 - [x] End-to-end round-trip completed on real hardware against the signed
       0.4.8 release.
-- [ ] Forced-bad-boot rollback exercised on real hardware.
+- [x] Forced-bad-boot rollback exercised on real hardware -- confirmed
+      2026-08-08 against a throwaway signed test release, alongside
+      signature-tamper rejection.
 - [x] Refuse-to-start-during-active-capture guard.
 
 ## Later — useful, but needs design or soak testing
