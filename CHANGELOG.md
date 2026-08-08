@@ -6,6 +6,16 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix SSH sending both `\r` and `\n` for a single Enter keypress. Over the
+  PTY-backed interactive shell `ssh_service.cpp` requests, that's two
+  line-terminators: `\r` executed the typed command, then the standalone
+  `\n` landed on the now-empty line and submitted again, producing an extra
+  blank prompt (the command itself only ran once). Real terminals send only
+  `\r` for Enter over a PTY.
+- Turn the dev-build boot diagnostic auto-export off by default
+  (`kBootDiagnosticExportEnabled`). It was a convenience for the 0.5
+  hardware soak specifically; flip that one constant back on for a future
+  soak session rather than rebuilding it.
 - Fix SSH/Telnet sessions needing a second keypress before a response
   actually appeared on screen. Their periodic redraw shared one timer between
   "draw new data" and "refresh the footer," and reset that timer on every

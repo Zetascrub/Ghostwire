@@ -465,6 +465,11 @@ bool devRemoteMessageVisible = false;
 // time Wi-Fi is connected that session, whenever that happens (immediately
 // for auto-connect, or later if the operator connects manually). Reuses
 // exportSystemDiagnostics()'s existing HTTP path, so no separate protocol.
+// Off by default (kBootDiagnosticExportEnabled below) -- it was a
+// convenience for the 0.5 hardware soak specifically; flip that one
+// constant back to true for a future soak session rather than rebuilding
+// this from scratch.
+constexpr bool kBootDiagnosticExportEnabled = false;
 bool bootDiagnosticExportPending = false;
 // Shared WS2812 flash state -- driven both by the dev-only UDP test command
 // (pollDevLedControl()) and by production Familiar LED alerts
@@ -6623,8 +6628,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             uint8_t outgoing[72];
             size_t outgoingLength = 0;
             if (keys.enter) {
+                // A real terminal sends only \r for Enter over a PTY
+                // session -- ssh_service.cpp requests one via
+                // ssh_channel_request_pty_size()/request_shell(). Sending
+                // \r\n here was a second, empty Enter as far as the remote
+                // shell's line discipline was concerned: \r executed the
+                // typed command, then the standalone \n landed on the
+                // now-empty line and submitted again, producing an extra
+                // blank prompt even though the command itself only ran
+                // once. sshLocalEchoPending still expects "\r\n" back,
+                // matching onlcr's standard \r -> \r\n echo expansion for
+                // the single byte actually sent.
                 outgoing[outgoingLength++] = '\r';
-                outgoing[outgoingLength++] = '\n';
                 appendTerminalByte('\n', sshLines, sshPendingLine,
                                    sshEscState, kMaxSshLines);
                 sshLocalEchoPending += "\r\n";
@@ -8971,7 +8986,8 @@ void setup() {
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
     markBootHealthy();
-    bootDiagnosticExportPending = isDevelopmentBuild();
+    bootDiagnosticExportPending =
+        isDevelopmentBuild() && kBootDiagnosticExportEnabled;
 
     if (!preferences.getBool("intro_done", false)) {
         onboardingPage = 0;
