@@ -66,6 +66,7 @@
 #include "ssh_service.h"
 #include "ssh_screens.h"
 #include "telnet_screens.h"
+#include "socket_workbench_screens.h"
 #include "terminal_buffer.h"
 #include "pcap_logger.h"
 #include "sd_logger.h"
@@ -241,6 +242,31 @@ TelnetScreens telnetScreens(telnetHostInput, telnetStatus, telnetClient,
                             telnetHost, telnetPort, telnetLines,
                             telnetPendingLine);
 unsigned long lastTelnetDraw = 0;
+constexpr size_t kMaxSocketWorkbenchLines = 48;
+Screen socketWorkbenchReturnScreen = Screen::NetworkMenu;
+WiFiClient socketWorkbenchClient;
+WiFiServer socketWorkbenchServer;
+bool socketWorkbenchListening = false;
+bool socketWorkbenchModeListen = false;
+bool socketWorkbenchHexView = false;
+String socketWorkbenchTargetInput;
+String socketWorkbenchHost;
+uint16_t socketWorkbenchPort = 4444;
+std::vector<String> socketWorkbenchLines;
+String socketWorkbenchComposeInput;
+String socketWorkbenchStatus;
+SdLogger socketWorkbenchLogger;
+// Mirrors socketWorkbenchLogger.isActive() -- kept as a separate bool
+// (rather than passing isActive() itself) since SocketWorkbenchScreens takes
+// it by reference and isActive() returns by value.
+bool socketWorkbenchLoggingActive = false;
+SocketWorkbenchScreens socketWorkbenchScreens(
+    socketWorkbenchTargetInput, socketWorkbenchStatus,
+    socketWorkbenchModeListen, socketWorkbenchClient, socketWorkbenchListening,
+    socketWorkbenchPort, socketWorkbenchHost, socketWorkbenchLines,
+    socketWorkbenchComposeInput, socketWorkbenchHexView,
+    socketWorkbenchLoggingActive);
+unsigned long lastSocketWorkbenchDraw = 0;
 TerminalEscState telnetEscState = TerminalEscState::None;
 constexpr size_t kMaxSshLines = 64;
 SshService sshService;
@@ -833,7 +859,8 @@ void syncOperationCoordinator() {
         networkHostScanService.isActive() || networkPortScanService.isActive());
     operationCoordinator.setActive(
         OperationKind::RemoteSession,
-        telnetClient.connected() || sshService.isConnected());
+        telnetClient.connected() || sshService.isConnected() ||
+            socketWorkbenchClient.connected() || socketWorkbenchListening);
     operationCoordinator.setActive(OperationKind::Audio,
                                    audioService.isPlaying() ||
                                        audioService.isMicrophoneActive());
@@ -1704,11 +1731,15 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                 return {{'e', "Export CSV"},
                         {'f', "Full port scan"},
                         {'t', "Telnet"},
-                        {'q', "QR host IP"}};
+                        {'q', "QR host IP"},
+                        {'w', "Workbench"}};
             }
             return {};
         case Screen::NetworkPortScan:
-            return {{'e', "Export CSV"}};
+            return networkPortResults.empty()
+                       ? std::vector<ActionMenuItem>{{'e', "Export CSV"}}
+                       : std::vector<ActionMenuItem>{{'e', "Export CSV"},
+                                                     {'w', "Workbench"}};
         case Screen::Gnss:
             return {{'l', gnssLogger.isActive() ? "Stop logging"
                                                 : "Start logging"}};
@@ -2394,6 +2425,158 @@ void connectTelnet() {
         telnetStatus = "Connection failed";
         telnetScreens.drawConnect();
     }
+}
+
+// Socket Workbench screens: see
+// include/socket_workbench_screens.h/src/socket_workbench_screens.cpp.
+//
+// Deliberately not a terminal emulator (same non-goal as Telnet/SSH): data
+// is appended as discrete lines rather than a raw continuous byte stream, so
+// hex view and SD logging both have a clean per-line boundary to work with.
+void appendSocketWorkbenchLine(bool outgoing, const uint8_t* data,
+                               size_t length) {
+    String line = outgoing ? "> " : "< ";
+    constexpr size_t kMaxDisplayBytes = 20;
+    if (socketWorkbenchHexView) {
+        for (size_t index = 0; index < length && index < kMaxDisplayBytes;
+            ++index) {
+            char byte[4];
+            snprintf(byte, sizeof(byte), "%02X ", data[index]);
+            line += byte;
+        }
+    } else {
+        for (size_t index = 0;
+            index < length && index < kMaxDisplayBytes * 3; ++index) {
+            const uint8_t value = data[index];
+            line += (value >= 32 && value <= 126)
+                        ? static_cast<char>(value)
+                        : '.';
+        }
+    }
+    if (length > (socketWorkbenchHexView ? kMaxDisplayBytes
+                                         : kMaxDisplayBytes * 3)) {
+        line += "...";
+    }
+    socketWorkbenchLines.push_back(line);
+    if (socketWorkbenchLines.size() > kMaxSocketWorkbenchLines) {
+        socketWorkbenchLines.erase(socketWorkbenchLines.begin());
+    }
+    if (socketWorkbenchLogger.isActive()) {
+        socketWorkbenchLogger.append(
+            utcTimestamp() + "," + (outgoing ? "out" : "in") + "," +
+            csvSafePayload(line.substring(2)));
+    }
+}
+
+void stopSocketWorkbench() {
+    socketWorkbenchClient.stop();
+    if (socketWorkbenchListening) {
+        socketWorkbenchServer.end();
+        socketWorkbenchListening = false;
+    }
+    socketWorkbenchLogger.stop();
+    socketWorkbenchLoggingActive = false;
+}
+
+void startSocketWorkbench() {
+    if (!requireOperationStart(OperationKind::RemoteSession)) return;
+    socketWorkbenchStatus = "";
+    socketWorkbenchLines.clear();
+    socketWorkbenchComposeInput = "";
+    if (socketWorkbenchModeListen) {
+        const int port = socketWorkbenchTargetInput.toInt();
+        if (port <= 0 || port > 65535) {
+            socketWorkbenchStatus = "Enter a valid port";
+            socketWorkbenchScreens.drawSetup();
+            return;
+        }
+        socketWorkbenchPort = static_cast<uint16_t>(port);
+        socketWorkbenchServer.begin(socketWorkbenchPort);
+        socketWorkbenchListening = true;
+        socketWorkbenchStatus = "Listening";
+    } else {
+        String host = socketWorkbenchTargetInput;
+        uint16_t port = 4444;
+        const int colon = host.lastIndexOf(':');
+        if (colon > 0) {
+            const String portPart = host.substring(colon + 1);
+            bool numeric = !portPart.isEmpty();
+            for (size_t index = 0; index < portPart.length() && numeric;
+                ++index) {
+                if (!isDigit(portPart[index])) numeric = false;
+            }
+            if (numeric) {
+                port = static_cast<uint16_t>(portPart.toInt());
+                host = host.substring(0, colon);
+            }
+        }
+        if (host.isEmpty()) {
+            socketWorkbenchStatus = "Enter host:port";
+            socketWorkbenchScreens.drawSetup();
+            return;
+        }
+        drawHeader("Socket Workbench");
+        M5Cardputer.Display.setTextColor(Branding::warning,
+                                         Branding::background);
+        M5Cardputer.Display.setCursor(8, 36);
+        M5Cardputer.Display.printf("Connecting to %s:%u...", host.c_str(),
+                                   port);
+        drawFooter("Please wait");
+        const bool connected =
+            socketWorkbenchClient.connect(host.c_str(), port, 5000);
+        recoverKeyboardAfterBlockingOperation();
+        if (!connected) {
+            socketWorkbenchStatus = "Connection failed";
+            socketWorkbenchScreens.drawSetup();
+            return;
+        }
+        socketWorkbenchHost = host;
+        socketWorkbenchPort = port;
+    }
+    if (sdAvailable) {
+        socketWorkbenchLoggingActive = socketWorkbenchLogger.begin(
+            "socket_workbench", "timestamp_utc,direction,payload");
+    }
+    currentScreen = Screen::SocketWorkbenchSession;
+    drawCurrentScreen();
+}
+
+// Called only while Screen::SocketWorkbenchSession is showing (same
+// screen-gated convention as Telnet/SSH's session polling) -- accepts a
+// pending listener connection, drains available bytes, and pumps the logger.
+void updateSocketWorkbench() {
+    if (socketWorkbenchListening && !socketWorkbenchClient.connected()) {
+        WiFiClient incoming = socketWorkbenchServer.available();
+        if (incoming) {
+            socketWorkbenchClient = incoming;
+            socketWorkbenchStatus =
+                "Client: " + socketWorkbenchClient.remoteIP().toString();
+        }
+    }
+    if (socketWorkbenchClient.connected() &&
+        socketWorkbenchClient.available()) {
+        uint8_t buffer[64];
+        const int length = socketWorkbenchClient.read(buffer, sizeof(buffer));
+        if (length > 0) {
+            appendSocketWorkbenchLine(false, buffer,
+                                      static_cast<size_t>(length));
+        }
+    }
+    socketWorkbenchLogger.update();
+}
+
+void sendSocketWorkbenchCompose() {
+    if (!socketWorkbenchClient.connected() ||
+        socketWorkbenchComposeInput.isEmpty()) {
+        return;
+    }
+    socketWorkbenchClient.print(socketWorkbenchComposeInput);
+    socketWorkbenchClient.print("\n");
+    appendSocketWorkbenchLine(
+        true,
+        reinterpret_cast<const uint8_t*>(socketWorkbenchComposeInput.c_str()),
+        socketWorkbenchComposeInput.length());
+    socketWorkbenchComposeInput = "";
 }
 
 // SSH Client screens: see include/ssh_screens.h/src/ssh_screens.cpp.
@@ -4452,6 +4635,12 @@ void drawCurrentScreen() {
         case Screen::NetworkPortScan: networkScanScreens.drawNetworkPortScan(); break;
         case Screen::TelnetConnect: telnetScreens.drawConnect(); break;
         case Screen::TelnetSession: telnetScreens.drawSession(); break;
+        case Screen::SocketWorkbenchSetup:
+            socketWorkbenchScreens.drawSetup();
+            break;
+        case Screen::SocketWorkbenchSession:
+            socketWorkbenchScreens.drawSession();
+            break;
         case Screen::SshConnect: sshScreens.drawConnect(); break;
         case Screen::SshPassword: sshScreens.drawPassword(); break;
         case Screen::SshSession: sshScreens.drawSession(); break;
@@ -5115,6 +5304,7 @@ void stopAllActiveOperations() {
     chameleonClient.disconnect();
     telnetClient.stop();
     sshService.stop();
+    stopSocketWorkbench();
     audioService.stopPlayback();
     audioService.endMicrophone();
     // The SX1262 isn't gated by OperationCoordinator (it never conflicts
@@ -6243,6 +6433,104 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 telnetClient.write(static_cast<uint8_t>(value));
             }
         }
+        return;
+    }
+
+    // Socket Workbench setup: free-text target field plus a Left/Right mode
+    // toggle (only two states, so either direction just flips it) -- checked
+    // directly here since navigationLeft/navigationRight aren't computed yet
+    // at this point in the function.
+    if (currentScreen == Screen::SocketWorkbenchSetup) {
+        if (keys.esc) {
+            currentScreen = socketWorkbenchReturnScreen;
+            listSelection = socketWorkbenchReturnScreen == Screen::NetworkMenu
+                                ? 4
+                                : 0;
+            listOffset = 0;
+            drawCurrentScreen();
+            return;
+        }
+        if (keys.enter) {
+            startSocketWorkbench();
+            return;
+        }
+        const bool left =
+            keys.left || pressedLetter(keys, ',') || pressedLetter(keys, '-');
+        const bool right =
+            keys.right || pressedLetter(keys, '/') || pressedLetter(keys, '=');
+        if (left || right) {
+            socketWorkbenchModeListen = !socketWorkbenchModeListen;
+            socketWorkbenchTargetInput = "";
+            socketWorkbenchScreens.drawSetup();
+            return;
+        }
+        if (keys.backspace && !socketWorkbenchTargetInput.isEmpty()) {
+            socketWorkbenchTargetInput.remove(
+                socketWorkbenchTargetInput.length() - 1);
+        }
+        for (char value : keys.word) {
+            if (socketWorkbenchTargetInput.length() < 63) {
+                socketWorkbenchTargetInput += value;
+            }
+        }
+        drawTextEntryRow(50,
+                         socketWorkbenchModeListen ? "Port: " : "Host:port: ",
+                         socketWorkbenchTargetInput);
+        return;
+    }
+
+    // Socket Workbench live session: printable keys compose an outgoing
+    // line (sent on Enter) rather than being forwarded per-keystroke like
+    // Telnet/SSH -- deliberately not a terminal emulator. Since a compose
+    // buffer captures every printable key, hex/logging toggles use
+    // Ctrl+letter (already excluded from typed text below) instead of the
+    // Tab action menu -- same convention as AI Chat's Ctrl+R/S/N, and it
+    // sidesteps the action menu's Enter handler re-dispatching the chosen
+    // key through handleInput() as a synthetic keypress, which would
+    // otherwise land right back in this block's typing loop.
+    if (currentScreen == Screen::SocketWorkbenchSession) {
+        if (keys.esc) {
+            stopSocketWorkbench();
+            currentScreen = Screen::SocketWorkbenchSetup;
+            drawCurrentScreen();
+            return;
+        }
+        if (keys.enter) {
+            sendSocketWorkbenchCompose();
+            socketWorkbenchScreens.drawSessionDynamic();
+            return;
+        }
+        if (keys.ctrl && pressedLetter(keys, 'h')) {
+            socketWorkbenchHexView = !socketWorkbenchHexView;
+            socketWorkbenchScreens.drawSessionDynamic();
+            return;
+        }
+        if (keys.ctrl && pressedLetter(keys, 'l')) {
+            if (socketWorkbenchLogger.isActive()) {
+                socketWorkbenchLogger.stop();
+                socketWorkbenchLoggingActive = false;
+            } else if (sdAvailable) {
+                socketWorkbenchLoggingActive = socketWorkbenchLogger.begin(
+                    "socket_workbench", "timestamp_utc,direction,payload");
+            }
+            socketWorkbenchScreens.drawSessionFooter();
+            return;
+        }
+        if (keys.backspace && !socketWorkbenchComposeInput.isEmpty()) {
+            socketWorkbenchComposeInput.remove(
+                socketWorkbenchComposeInput.length() - 1);
+            socketWorkbenchScreens.drawSessionDynamic();
+            return;
+        }
+        bool typed = false;
+        for (char value : keys.word) {
+            if (!keys.ctrl && value >= 32 && value <= 126 &&
+                socketWorkbenchComposeInput.length() < 120) {
+                socketWorkbenchComposeInput += value;
+                typed = true;
+            }
+        }
+        if (typed) socketWorkbenchScreens.drawSessionDynamic();
         return;
     }
 
@@ -7511,8 +7799,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::NetworkMenu:
-            if (up) moveSelection(-1, 4);
-            if (down) moveSelection(1, 4);
+            if (up) moveSelection(-1, 5);
+            if (down) moveSelection(1, 5);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::NetworkDashboard;
@@ -7523,10 +7811,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     telnetHostInput = "";
                     telnetStatus = "";
                     currentScreen = Screen::TelnetConnect;
-                } else {
+                } else if (listSelection == 3) {
                     loadSshHistory();
                     sshHostInput = sshHistory[0];
                     currentScreen = Screen::SshConnect;
+                } else {
+                    socketWorkbenchReturnScreen = Screen::NetworkMenu;
+                    socketWorkbenchTargetInput = "";
+                    socketWorkbenchStatus = "";
+                    currentScreen = Screen::SocketWorkbenchSetup;
                 }
                 listSelection = 0;
                 listOffset = 0;
@@ -7602,6 +7895,17 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 qrScreens.drawDisplay();
                 return;
             }
+            if (pressedLetter(keys, 'w') && !networkHostResults.empty() &&
+                listSelection < networkHostResults.size()) {
+                socketWorkbenchReturnScreen = Screen::NetworkHostScan;
+                socketWorkbenchModeListen = false;
+                socketWorkbenchTargetInput =
+                    networkHostResults[listSelection].ip.toString();
+                socketWorkbenchStatus = "";
+                currentScreen = Screen::SocketWorkbenchSetup;
+                drawCurrentScreen();
+                return;
+            }
             networkScanScreens.drawNetworkHostScan();
             break;
 
@@ -7627,6 +7931,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'e')) {
                 exportNetworkPortResults();
                 networkScanScreens.drawNetworkPortScan();
+                return;
+            }
+            if (pressedLetter(keys, 'w') && !networkPortResults.empty() &&
+                listSelection < networkPortResults.size()) {
+                socketWorkbenchReturnScreen = Screen::NetworkPortScan;
+                socketWorkbenchModeListen = false;
+                socketWorkbenchTargetInput =
+                    networkPortScanTarget.toString() + ":" +
+                    String(networkPortResults[listSelection]);
+                socketWorkbenchStatus = "";
+                currentScreen = Screen::SocketWorkbenchSetup;
+                drawCurrentScreen();
                 return;
             }
             if (up) moveSelection(-1, networkPortResults.size());
@@ -8426,6 +8742,9 @@ void observeFamiliarToolScreen() {
         case Screen::NetworkPortScan: cyberFamiliar.observeTool(5, "port scan"); break;
         case Screen::TelnetSession: cyberFamiliar.observeTool(6, "Telnet"); break;
         case Screen::SshSession: cyberFamiliar.observeTool(7, "SSH"); break;
+        case Screen::SocketWorkbenchSession:
+            cyberFamiliar.observeTool(18, "socket workbench");
+            break;
         case Screen::BleDiscovery: cyberFamiliar.observeTool(8, "BLE survey"); break;
         case Screen::Chameleon: cyberFamiliar.observeTool(9, "Chameleon"); break;
         case Screen::Gnss: cyberFamiliar.observeTool(10, "GNSS"); break;
@@ -9278,6 +9597,18 @@ void loop() {
             if (newData) telnetScreens.drawSessionDynamic();
             drawFooter(telnetClient.connected() ? "Esc: disconnect"
                                                 : "Disconnected   Esc: back");
+        }
+    }
+
+    if (currentScreen == Screen::SocketWorkbenchSession) {
+        const size_t linesBefore = socketWorkbenchLines.size();
+        updateSocketWorkbench();
+        if (millis() - lastSocketWorkbenchDraw >= 150) {
+            lastSocketWorkbenchDraw = millis();
+            if (socketWorkbenchLines.size() != linesBefore) {
+                socketWorkbenchScreens.drawSessionDynamic();
+            }
+            socketWorkbenchScreens.drawSessionFooter();
         }
     }
 

@@ -6,6 +6,22 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add the Network Socket Workbench (`Network > Socket Workbench`): raw TCP
+  Connect and Listen modes (`WiFiServer`-based, one accepted client at a
+  time), a text/hex view toggle (`Ctrl+H`), and optional SD session logging
+  (`Ctrl+L`, `timestamp_utc,direction,payload` CSV) via the shared
+  `SdLogger`. Deliberately not a terminal emulator like Telnet/SSH -- data is
+  composed a line at a time and sent on Enter rather than forwarded
+  keystroke-by-keystroke, which is what makes hex view and logging have a
+  clean per-line boundary to work with. `Ctrl+letter` was used instead of
+  the Tab action menu specifically because the action menu's Enter handler
+  re-dispatches the chosen key through the normal input path as a synthetic
+  keypress, which would otherwise land right back in the free-text compose
+  capture. Host Discovery and Port Scan both get a **Workbench** action menu
+  entry that hands their selected host (and port, for Port Scan) straight
+  into Connect mode. UDP is deliberately not included yet, per the roadmap's
+  own sequencing (TCP first, UDP only once it's proven stable) -- this
+  completes the last of the four 0.6.0 Field Console items.
 - Add three 0.6.0 Field Console items: QR handoff presets, clock provenance,
   and Mesh history in Evidence.
   - **QR handoff presets**: Network Profiles gets a **Share as QR** action

@@ -68,6 +68,8 @@ enum class Screen {
     NetworkPortScan,
     TelnetConnect,
     TelnetSession,
+    SocketWorkbenchSetup,
+    SocketWorkbenchSession,
     SshConnect,
     SshPassword,
     SshSession,

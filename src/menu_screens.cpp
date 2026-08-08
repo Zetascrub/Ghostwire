@@ -244,12 +244,14 @@ void MenuScreens::drawNetwork() {
         "Host Discovery",
         "Telnet Client",
         "SSH Client",
+        "Socket Workbench",
     };
     constexpr size_t kNetworkMenuCount = sizeof(items) / sizeof(items[0]);
     if (cardNav_) {
         static const char* const descriptions[] = {
             "Review the current network", "Find responsive local hosts",
             "Open a plain-text session", "Open a secure shell session",
+            "Raw TCP connect or listen, hex view",
         };
         String badge = patrol_.isActive() ? "PATROL LIVE" : "";
         ScreenChrome::drawNavigationCard(

@@ -98,9 +98,11 @@ was the only non-diagnostic code change that came out of the soak.
 
 ### 0.6.0 — Field Console
 
-1. [ ] Build the Network Socket Workbench: bounded TCP client/listener first, then
-   UDP only after TCP passes interruption and resource tests. Host Discovery and
-   Port Scan should hand a selected host/port into it.
+1. [x] Network Socket Workbench: TCP Connect and Listen modes, text/hex view
+   toggle, optional SD session logging, and a **Workbench** action-menu handoff
+   from both Host Discovery and Port Scan. UDP deliberately deferred until TCP
+   has been through interruption/resource testing on hardware, per this item's
+   own original sequencing.
 2. [x] Clock provenance: System Clock shows sync source, age, and a qualitative
    confidence line (GNSS/NTP high-confidence, manual entry marked low-confidence/
    unverified), plus an operator-set display timezone offset and manual UTC
@@ -117,9 +119,10 @@ was the only non-diagnostic code change that came out of the soak.
    private-channel keys) and is previewable through the existing bounded
    128-line text preview -- the archive is never loaded into RAM whole.
 
-Three of four 0.6.0 items are done; the Network Socket Workbench remains and is
-the largest of the four by a clear margin (comparable in scope to Telnet and
-SSH each getting their own past dot-release).
+All four 0.6.0 Field Console items are done. The Socket Workbench's TCP path
+is implemented but not yet hardware-validated for interruption/resource
+behaviour (same standard every other radio/socket feature on this roadmap is
+held to) -- see the release gate below.
 
 **Release gate:** each utility must produce a saved or transferable result,
 restore its resources on exit, and remain responsive with Wi-Fi connected and a
