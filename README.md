@@ -9,7 +9,7 @@ persistent on-screen companion — the Familiar — reacts to what the deck find
 and helps you notice changes, rather than pretending a handheld replaces a
 laptop-class assessment suite.
 
-Current development firmware: **Ghostwire 0.5.0-dev**. Full version history
+Current development firmware: **Ghostwire 0.6.0-dev**. Full version history
 lives in [CHANGELOG.md](CHANGELOG.md).
 
 > Ghostwire is for use on equipment you own or have explicit authorization to
