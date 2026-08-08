@@ -26,7 +26,7 @@ bool FileScreens::isPreviewableFile(const String& name) {
     String lower = name;
     lower.toLowerCase();
     return lower.endsWith(".csv") || lower.endsWith(".txt") ||
-           lower.endsWith(".log");
+           lower.endsWith(".log") || lower.endsWith(".jsonl");
 }
 
 void FileScreens::drawFiles() {

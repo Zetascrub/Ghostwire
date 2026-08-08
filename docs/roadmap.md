@@ -98,17 +98,28 @@ was the only non-diagnostic code change that came out of the soak.
 
 ### 0.6.0 — Field Console
 
-1. Build the Network Socket Workbench: bounded TCP client/listener first, then
+1. [ ] Build the Network Socket Workbench: bounded TCP client/listener first, then
    UDP only after TCP passes interruption and resource tests. Host Discovery and
    Port Scan should hand a selected host/port into it.
-2. Finish clock provenance: show UTC, local display time, active source, sync
-   age, and uncertainty; add deliberate offline time and timezone controls while
-   keeping evidence timestamps in UTC.
-3. Complete QR handoff presets for Wi-Fi credentials, selected host details,
-   short diagnostic summaries, and supported Ghostwire configuration tokens.
-   Secrets always require an explicit reveal/confirm step.
-4. Bring append-only Mesh history into Evidence with a bounded on-demand reader
-   and useful export, without loading the complete JSONL archive into RAM.
+2. [x] Clock provenance: System Clock shows sync source, age, and a qualitative
+   confidence line (GNSS/NTP high-confidence, manual entry marked low-confidence/
+   unverified), plus an operator-set display timezone offset and manual UTC
+   date/time entry for offline logging. The RTC and every logged timestamp stay
+   true UTC; the offset only shifts the displayed local readout.
+3. [x] QR handoff presets: Wi-Fi credentials (Network Profiles' confirm-gated
+   **Share as QR**), selected host details (Host Discovery's **QR host IP**),
+   and short diagnostic summaries (System Diagnostics' **QR summary**) all
+   reuse the existing offline QR generator. Ghostwire configuration tokens were
+   already covered by Mesh channel profile export.
+4. [x] Mesh history in Evidence: `/ghostwire/mesh/messages.jsonl` appears in the
+   unified Evidence list as a deliberate single-file allowlist entry (not a full
+   `/ghostwire/mesh/` directory scan, since that also holds `channels.json`'s
+   private-channel keys) and is previewable through the existing bounded
+   128-line text preview -- the archive is never loaded into RAM whole.
+
+Three of four 0.6.0 items are done; the Network Socket Workbench remains and is
+the largest of the four by a clear margin (comparable in scope to Telnet and
+SSH each getting their own past dot-release).
 
 **Release gate:** each utility must produce a saved or transferable result,
 restore its resources on exit, and remain responsive with Wi-Fi connected and a

@@ -469,8 +469,20 @@ int8_t idleNodeDx[kIdleNodeCount]{};
 int8_t idleNodeDy[kIdleNodeCount]{};
 bool clockSynced = false;
 String clockStatus = "Waiting for GNSS UTC";
+// Clock provenance: how the system clock got set, how long ago, and how much
+// to trust it. The RTC and every logged timestamp always stay true UTC --
+// clockUtcOffsetMinutes only shifts the *displayed* local readout, computed
+// by hand (see localTimestamp()) rather than through libc's TZ machinery, so
+// there's no hidden DST guess to get wrong.
+unsigned long lastClockSyncMs = 0;
+int16_t clockUtcOffsetMinutes = 0;
+String clockProvenance;
+bool clockManualEntryActive = false;
+String clockManualInput;
 SystemScreens systemScreens(listSelection, listOffset, diagnosticExportStatus,
-                            clockSynced, clockStatus);
+                            clockSynced, clockStatus, lastClockSyncMs,
+                            clockUtcOffsetMinutes, clockProvenance,
+                            clockManualEntryActive, clockManualInput);
 OtaService otaService;
 OtaScreens otaScreens(otaService);
 unsigned long lastClockSyncAttempt = 0;
@@ -574,6 +586,7 @@ constexpr uint8_t kDefaultLedColorService = 2;   // Green
 constexpr uint8_t kDefaultLedColorWarning = 5;   // Amber
 constexpr uint8_t kDefaultLedColorComplete = 8;  // Purple
 constexpr uint8_t kDefaultLedColorError = 1;     // Red
+constexpr int16_t kDefaultClockUtcOffsetMinutes = 0;
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
 // Boot/settings name tables: see include/settings_names.h.
 
@@ -611,6 +624,7 @@ void saveSettings() {
     preferences.putUChar("led_warn", familiarLedWarningColor);
     preferences.putUChar("led_done", familiarLedCompleteColor);
     preferences.putUChar("led_err", familiarLedErrorColor);
+    preferences.putShort("utc_off", clockUtcOffsetMinutes);
     preferences.putBool("mesh_bg", meshBackgroundEnabled);
     preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
     preferences.putUChar("mesh_hops", meshHopLimit);
@@ -763,6 +777,7 @@ void restoreDefaultSettings() {
     familiarLedWarningColor = kDefaultLedColorWarning;
     familiarLedCompleteColor = kDefaultLedColorComplete;
     familiarLedErrorColor = kDefaultLedColorError;
+    clockUtcOffsetMinutes = kDefaultClockUtcOffsetMinutes;
     meshBackgroundEnabled = kDefaultMeshBackground;
     meshMessageAlertsEnabled = kDefaultMeshMessageAlerts;
     meshHopLimit = 7;
@@ -1417,6 +1432,29 @@ String meshChannelToken(size_t index) {
         reinterpret_cast<const char*>(encoded.data()), encodedLength);
 }
 
+// Escapes the characters the de-facto WIFI: QR URI scheme treats as
+// delimiters (RFC-less, but universally implemented this way) so a stray
+// ';', ',', '"', or '\' in an SSID/password doesn't truncate or corrupt the
+// scanned result.
+String wifiQrEscape(const String& value) {
+    String escaped;
+    escaped.reserve(value.length());
+    for (size_t index = 0; index < value.length(); ++index) {
+        const char character = value[index];
+        if (character == '\\' || character == ';' || character == ',' ||
+            character == '"' || character == ':') {
+            escaped += '\\';
+        }
+        escaped += character;
+    }
+    return escaped;
+}
+
+String wifiProfileQrToken(const WifiProfile& profile) {
+    return "WIFI:T:WPA;S:" + wifiQrEscape(profile.ssid) + ";P:" +
+           wifiQrEscape(profile.password) + ";;";
+}
+
 void drawHeaderStatus(bool force = false) {
     auto& display = M5Cardputer.Display;
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
@@ -1609,7 +1647,8 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                        ? std::vector<ActionMenuItem>{}
                        : std::vector<ActionMenuItem>{{'a', "Set default"},
                                                      {'n', "Rename profile"},
-                                                     {'d', "Delete profile"}};
+                                                     {'d', "Delete profile"},
+                                                     {'x', "Share as QR"}};
         case Screen::Chameleon: {
             std::vector<ActionMenuItem> items;
             if (chameleonClient.isConnected()) {
@@ -1653,17 +1692,19 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
             }
             return {};
         case Screen::System:
-            return {{'e', "Export diagnostics"}};
+            return {{'e', "Export diagnostics"}, {'q', "QR summary"}};
         case Screen::TimeStatus:
             if (WiFi.status() == WL_CONNECTED) {
-                return {{'g', "Sync from GNSS"}, {'n', "Sync from NTP"}};
+                return {{'g', "Sync from GNSS"}, {'n', "Sync from NTP"},
+                        {'m', "Set time manually"}};
             }
-            return {{'g', "Sync from GNSS"}};
+            return {{'g', "Sync from GNSS"}, {'m', "Set time manually"}};
         case Screen::NetworkHostScan:
             if (!networkHostResults.empty()) {
                 return {{'e', "Export CSV"},
                         {'f', "Full port scan"},
-                        {'t', "Telnet"}};
+                        {'t', "Telnet"},
+                        {'q', "QR host IP"}};
             }
             return {};
         case Screen::NetworkPortScan:
@@ -2849,6 +2890,20 @@ void loadLogSessions() {
     if (!sdAvailable) return;
     collectEvidenceFiles("/ghostwire/logs", 0);
     collectEvidenceFiles("/ghostwire/assessments", 0);
+    // Only the append-only message archive, not the rest of /ghostwire/mesh
+    // -- channels.json holds private-channel key material and state.json is
+    // internal client state, neither belongs in a browsable/deletable
+    // evidence list, so this is a deliberate single-file allowlist rather
+    // than a third collectEvidenceFiles() directory scan.
+    if (SD.exists(kMeshMessageArchivePath)) {
+        File archive = SD.open(kMeshMessageArchivePath, FILE_READ);
+        if (archive && !archive.isDirectory()) {
+            logSessions.push_back(
+                {"messages.jsonl", "Mesh", kMeshMessageArchivePath,
+                 archive.size()});
+        }
+        if (archive) archive.close();
+    }
     std::sort(logSessions.begin(), logSessions.end(),
               [](const LogEntry& left, const LogEntry& right) {
                   String a = left.name;
@@ -3184,6 +3239,24 @@ std::vector<SystemDiagnostic> systemDiagnostics() {
     return rows;
 }
 
+// Compact multi-line diagnostic summary for the QR handoff preset -- short
+// enough to stay easily scannable, unlike the full systemDiagnostics() list.
+String systemDiagnosticSummary() {
+    const uint64_t chipId = ESP.getEfuseMac();
+    char identity[24];
+    snprintf(identity, sizeof(identity), "%04X%08X",
+             static_cast<unsigned>((chipId >> 32) & 0xFFFF),
+             static_cast<unsigned>(chipId & 0xFFFFFFFF));
+    String summary;
+    summary += String(Branding::productName) + " " + Branding::version + "\n";
+    summary += "ID: " + String(identity) + "\n";
+    summary += "Up: " + formatUptime() + "\n";
+    summary += "Heap: " + String(ESP.getFreeHeap() / 1024) + "/" +
+               String(ESP.getMinFreeHeap() / 1024) + " KB\n";
+    summary += String("SD: ") + (sdAvailable ? "READY" : "NONE");
+    return summary;
+}
+
 bool exportSystemDiagnostics() {
     const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
     String path;
@@ -3301,12 +3374,10 @@ bool syncClockFromGnss() {
     }
     const timeval systemTime{epoch, 0};
     settimeofday(&systemTime, nullptr);
-    // UK civil time: GMT in winter and BST from the last Sunday in March
-    // until the last Sunday in October. Log formatting continues to use UTC.
-    setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0/2", 1);
-    tzset();
     clockSynced = true;
     clockStatus = "Synchronized from GNSS";
+    clockProvenance = "High confidence: independent GNSS UTC source";
+    lastClockSyncMs = millis();
     return true;
 }
 
@@ -3316,15 +3387,53 @@ bool syncClockFromNtp() {
         return false;
     }
     clockStatus = "Contacting NTP servers...";
-    configTzTime("GMT0BST,M3.5.0/1,M10.5.0/2", "time.cloudflare.com",
-                 "pool.ntp.org", "time.google.com");
-    struct tm local {};
-    if (!getLocalTime(&local, 5000)) {
+    // gmtOffset/daylightOffset stay 0 -- the RTC is always kept as true UTC;
+    // the operator-configurable clockUtcOffsetMinutes only ever shifts the
+    // *displayed* local readout (see SystemScreens::drawTimeReadouts()).
+    configTime(0, 0, "time.cloudflare.com", "pool.ntp.org", "time.google.com");
+    struct tm utc {};
+    if (!getLocalTime(&utc, 5000)) {
         clockStatus = "NTP sync timed out";
         return false;
     }
     clockSynced = true;
     clockStatus = "Synchronized from NTP";
+    clockProvenance = "High confidence: network time, no local verification";
+    lastClockSyncMs = millis();
+    return true;
+}
+
+// Operator-entered UTC date/time for offline logging when neither GNSS nor
+// NTP is available. Deliberately kept lower-confidence than either
+// automatic source in clockProvenance -- nothing independently verifies it.
+bool syncClockManually(const String& text) {
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0;
+    if (sscanf(text.c_str(), "%d-%d-%d %d:%d", &year, &month, &day, &hour,
+              &minute) != 5) {
+        return false;
+    }
+    if (year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 ||
+        day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+        return false;
+    }
+    struct tm utc {};
+    utc.tm_year = year - 1900;
+    utc.tm_mon = month - 1;
+    utc.tm_mday = day;
+    utc.tm_hour = hour;
+    utc.tm_min = minute;
+    utc.tm_sec = 0;
+    utc.tm_isdst = 0;
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    const time_t epoch = mktime(&utc);
+    if (epoch <= 0) return false;
+    const timeval systemTime{epoch, 0};
+    settimeofday(&systemTime, nullptr);
+    clockSynced = true;
+    clockStatus = "Manually entered (UTC)";
+    clockProvenance = "Low confidence: operator-entered, unverified";
+    lastClockSyncMs = millis();
     return true;
 }
 
@@ -4282,6 +4391,9 @@ void drawCurrentScreen() {
         case Screen::WifiProfileRename: wifiScreens.drawProfileRename(); break;
         case Screen::WifiProfileDeleteConfirm:
             wifiScreens.drawProfileDeleteConfirm();
+            break;
+        case Screen::WifiProfileQrConfirm:
+            wifiScreens.drawProfileQrConfirm();
             break;
         case Screen::BleMenu: menuScreens.drawBle(); break;
         case Screen::DevicesMenu: menuScreens.drawDevices(); break;
@@ -5457,6 +5569,11 @@ void goBack() {
         wifiScreens.drawProfiles();
         return;
     }
+    if (currentScreen == Screen::WifiProfileQrConfirm) {
+        currentScreen = Screen::WifiProfiles;
+        wifiScreens.drawProfiles();
+        return;
+    }
     if (currentScreen == Screen::WifiProfileRename) {
         currentScreen = Screen::WifiProfiles;
         wifiScreens.drawProfiles();
@@ -5785,6 +5902,30 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                                 meshHopLimit, meshBackgroundEnabled,
                                 meshMessageAlertsEnabled, meshIdentityEditing,
                                 meshSettingsStatus);
+        return;
+    }
+    if (currentScreen == Screen::TimeStatus && clockManualEntryActive) {
+        if (keys.esc) {
+            clockManualEntryActive = false;
+            clockStatus = clockSynced ? clockStatus : "Waiting for GNSS UTC";
+        } else if (keys.enter) {
+            if (syncClockManually(clockManualInput)) {
+                clockManualEntryActive = false;
+            } else {
+                clockStatus = "Invalid format: use YYYY-MM-DD HH:MM";
+            }
+        } else {
+            if (keys.backspace && !clockManualInput.isEmpty()) {
+                clockManualInput.remove(clockManualInput.length() - 1);
+            }
+            for (char character : keys.word) {
+                if (!keys.ctrl && character >= 32 && character <= 126 &&
+                    clockManualInput.length() < 19) {
+                    clockManualInput += character;
+                }
+            }
+        }
+        systemScreens.drawTimeStatus();
         return;
     }
     // QR composition owns printable keys before global letter shortcuts.
@@ -6299,7 +6440,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         currentScreen == Screen::SettingsBoot ||
         currentScreen == Screen::SettingsConnectivity ||
         currentScreen == Screen::MeshChannels ||
-        currentScreen == Screen::MeshSettings;
+        currentScreen == Screen::MeshSettings ||
+        (currentScreen == Screen::TimeStatus && !clockManualEntryActive);
     const bool alternateBack =
         (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
         pressedLetter(keys, 'q') ||
@@ -6579,6 +6721,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 wifiScreens.drawProfileDeleteConfirm();
                 return;
             }
+            if (pressedLetter(keys, 'x') &&
+                listSelection < wifiProfiles.size()) {
+                currentScreen = Screen::WifiProfileQrConfirm;
+                wifiScreens.drawProfileQrConfirm();
+                return;
+            }
             wifiScreens.drawProfiles();
             break;
 
@@ -6591,6 +6739,15 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 wifiProfileStatus = "Profile deleted";
                 currentScreen = Screen::WifiProfiles;
                 wifiScreens.drawProfiles();
+            }
+            break;
+
+        case Screen::WifiProfileQrConfirm:
+            if (keys.enter && listSelection < wifiProfiles.size()) {
+                qrText = wifiProfileQrToken(wifiProfiles[listSelection]);
+                qrDisplayReturnScreen = Screen::WifiProfiles;
+                currentScreen = Screen::QrDisplay;
+                qrScreens.drawDisplay();
             }
             break;
 
@@ -7253,6 +7410,13 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 if (down) moveSelection(1, diagnosticCount);
             }
             if (pressedLetter(keys, 'e')) exportSystemDiagnostics();
+            if (pressedLetter(keys, 'q')) {
+                qrText = systemDiagnosticSummary();
+                qrDisplayReturnScreen = Screen::System;
+                currentScreen = Screen::QrDisplay;
+                qrScreens.drawDisplay();
+                return;
+            }
             if (keys.enter) {
                 currentScreen = Screen::TimeStatus;
                 systemScreens.drawTimeStatus();
@@ -7264,6 +7428,20 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::TimeStatus:
             if (pressedLetter(keys, 'g')) syncClockFromGnss();
             if (pressedLetter(keys, 'n')) syncClockFromNtp();
+            if (pressedLetter(keys, 'm')) {
+                clockManualEntryActive = true;
+                clockManualInput = "";
+                systemScreens.drawTimeStatus();
+                return;
+            }
+            if (decrease || increase) {
+                const int direction = increase ? 1 : -1;
+                clockUtcOffsetMinutes = static_cast<int16_t>(std::max(
+                    -720, std::min(840,
+                        static_cast<int>(clockUtcOffsetMinutes) +
+                            direction * 30)));
+                saveSettings();
+            }
             systemScreens.drawTimeStatus();
             break;
 
@@ -7414,6 +7592,14 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 telnetStatus = "";
                 currentScreen = Screen::TelnetConnect;
                 drawCurrentScreen();
+                return;
+            }
+            if (pressedLetter(keys, 'q') && !networkHostResults.empty() &&
+                listSelection < networkHostResults.size()) {
+                qrText = networkHostResults[listSelection].ip.toString();
+                qrDisplayReturnScreen = Screen::NetworkHostScan;
+                currentScreen = Screen::QrDisplay;
+                qrScreens.drawDisplay();
                 return;
             }
             networkScanScreens.drawNetworkHostScan();
@@ -8406,6 +8592,11 @@ void setup() {
     if (familiarLedErrorColor >= kLedColorCount) {
         familiarLedErrorColor = kDefaultLedColorError;
     }
+    clockUtcOffsetMinutes = preferences.getShort(
+        "utc_off", kDefaultClockUtcOffsetMinutes);
+    if (clockUtcOffsetMinutes < -720 || clockUtcOffsetMinutes > 840) {
+        clockUtcOffsetMinutes = kDefaultClockUtcOffsetMinutes;
+    }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
         loadWifiProfiles();
@@ -9153,6 +9344,7 @@ void loop() {
     }
 
     if (currentScreen == Screen::TimeStatus && !actionMenuOpen &&
+        !clockManualEntryActive &&
         millis() - lastTimeStatusDraw >= 1000) {
         lastTimeStatusDraw = millis();
         systemScreens.drawTimeReadouts();

@@ -6,6 +6,33 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add three 0.6.0 Field Console items: QR handoff presets, clock provenance,
+  and Mesh history in Evidence.
+  - **QR handoff presets**: Network Profiles gets a **Share as QR** action
+    (`WIFI:T:WPA;...` format most phone cameras join directly from, gated
+    behind an explicit confirm screen since it embeds the saved password),
+    Network Host Discovery gets **QR host IP**, and System Diagnostics gets
+    **QR summary** (firmware version, device ID, uptime, heap, SD state) --
+    all reusing the existing offline QR generator and its `qrDisplayReturnScreen`
+    handoff, the same mechanism Mesh channel profile export already used.
+  - **Clock provenance**: System Clock now shows sync source, age since last
+    sync, and a qualitative confidence line (GNSS/NTP high-confidence,
+    manual entry explicitly marked low-confidence/unverified), plus a
+    persistent operator-set display timezone offset (Left/Right, 30-minute
+    steps) and a manual UTC date/time entry path for offline logging. The
+    RTC and every logged timestamp stay true UTC always; the offset only
+    shifts the displayed local readout, computed by hand rather than
+    through libc's TZ/DST machinery -- this also replaces the previously
+    hardcoded UK GMT/BST assumption.
+  - **Mesh history in Evidence**: `/ghostwire/mesh/messages.jsonl` now
+    appears in the unified Evidence list (as a deliberate single-file
+    allowlist entry, not a full `/ghostwire/mesh/` directory scan, since
+    that directory also holds `channels.json`'s private-channel key
+    material) and is previewable through the existing bounded 128-line
+    text preview -- the complete archive is never loaded into RAM.
+
+## 0.5.0 - 2026-08-08
+
 - Fix Settings back-navigation landing on the main menu instead of Settings
   from the new Familiar LED page, and two other Settings sub-screens
   highlighting the wrong row on return, all left over from inserting

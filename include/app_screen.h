@@ -17,6 +17,7 @@ enum class Screen {
     WifiProfiles,
     WifiProfileRename,
     WifiProfileDeleteConfirm,
+    WifiProfileQrConfirm,
     BleMenu,
     DevicesMenu,
     AiChat,

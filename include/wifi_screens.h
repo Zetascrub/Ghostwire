@@ -66,6 +66,7 @@ public:
     void drawProfiles();
     void drawProfileRename();
     void drawProfileDeleteConfirm();
+    void drawProfileQrConfirm();
 
     // Single source of truth for the auth-mode label shown on-screen and
     // used in a couple of main.cpp's CSV exports.
