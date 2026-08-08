@@ -1,9 +1,14 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <ArduinoJson.h>
+#include <Curve25519.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <driver/rmt.h>
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -15,6 +20,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <vector>
+#include <mbedtls/base64.h>
 
 #include "branding.h"
 #include "app_screen.h"
@@ -33,6 +39,8 @@
 #include "settings_names.h"
 #include "settings_screens.h"
 #include "ota_service.h"
+#include "operation_coordinator.h"
+#include "onboarding_screens.h"
 #include "ota_screens.h"
 #include "system_screens.h"
 #include "eapol_parser.h"
@@ -68,6 +76,7 @@
 #include "wifi_screens.h"
 #include "wifi_guardian_service.h"
 #include "wifi_guardian_screen.h"
+#include "wifi_profile.h"
 
 namespace {
 
@@ -79,6 +88,10 @@ constexpr int kSdMiso = 39;
 constexpr int kSdCompatibilityPin = 5;
 constexpr uint32_t kSdFrequency = 4000000;
 constexpr size_t kVisibleRows = 6;
+constexpr char kDevDiagnosticCollectorUrl[] =
+    "http://192.168.8.10:8765/diagnostics";
+constexpr uint16_t kDevLedControlPort = 8766;
+const IPAddress kDevControlHost(192, 168, 8, 10);
 
 // FileEntry / LogEntry: see include/file_screens.h.
 
@@ -110,6 +123,7 @@ Screen evidenceReturnScreen = Screen::MainMenu;
 String nowPlayingName;
 String nowPlayingSource;
 String qrText;
+Screen qrDisplayReturnScreen = Screen::QrEntry;
 String placeholderTitle;
 String wifiStatus = "Press R to scan";
 String bleStatus = "Press R to scan";
@@ -123,6 +137,10 @@ unsigned long wifiConnectStartMs = 0;
 bool wifiConnectAttempting = false;
 String wifiConnectSavedSsid;
 String wifiConnectSavedPassword;
+std::vector<WifiProfile> wifiProfiles;
+size_t activeWifiProfile = SIZE_MAX;
+String wifiProfileStatus;
+String wifiProfileNameInput;
 String bleExportStatus;
 String diagnosticExportStatus;
 uint32_t bootCount = 0;
@@ -305,7 +323,7 @@ WifiSnifferService wifiSnifferService;
 WifiGuardianService wifiGuardianService;
 SdLogger imuLogger;
 SdLogger loraLogger;
-LoRaScreen loraScreen(loraService, loraLogger);
+LoRaScreen loraScreen(loraService, loraLogger, gnssService);
 SdLogger wifiSnifferLogger;
 SdLogger guardianEventLogger;
 SdLogger chameleonLogger;
@@ -323,6 +341,31 @@ WifiSnifferScreen wifiSnifferScreen(wifiSnifferService,
                                     recentWifiProbes);
 PcapLogger guardianEvidenceLogger;
 PcapLogger handshakeCaptureLogger;
+// Development-build-only background sampler for the 0.5 hardware soak (see
+// docs/release-validation-0.5.md): appends one heap/operation row per
+// interval so a multi-hour soak produces an actual trend line without the
+// operator needing to open System Diagnostics and transcribe numbers.
+SdLogger heapSoakLogger;
+uint32_t nextHeapSoakSampleMs = 0;
+uint32_t lastHeapSoakLoopMs = 0;
+uint32_t heapSoakMaxLoopGapMs = 0;
+uint8_t heapSoakSampleCounter = 0;
+uint64_t heapSoakSdFreeMb = 0;
+constexpr uint32_t kHeapSoakIntervalMs = 60000;
+// SD.usedBytes() walks the FAT free-cluster count on a FatFs volume that
+// doesn't have it cached, which can stall for a while on a large/fragmented
+// card -- too risky to call every sample. Refreshed roughly every 10 minutes
+// instead; the value between refreshes is simply held over.
+constexpr uint8_t kHeapSoakSdFreeEveryNSamples = 10;
+// Same soak instrumentation, but for state transitions rather than a fixed
+// interval: one row per actual start/stop edge (OperationCoordinator's
+// tracked operations, plus Wi-Fi association and Mesh receive since neither
+// is coordinator-gated), each carrying the heap reading at that moment. This
+// is what turns docs/release-validation-0.5.md's section B "heap recovered"
+// column from a hand-timed spot check into something produced automatically
+// for every transition during the soak, not just the ones tested manually.
+SdLogger operationEventLogger;
+OperationCoordinator operationCoordinator;
 Preferences preferences;
 std::vector<String> audioFiles;
 std::vector<String> duckyScripts;
@@ -352,6 +395,8 @@ bool autoConnectWifi = false;
 bool cyberdeckIdleEnabled = false;
 uint8_t cyberdeckIdleStyle = 0;
 bool cardNavigationEnabled = false;
+uint8_t onboardingPage = 0;
+bool onboardingFromSettings = false;
 MenuScreens menuScreens(listSelection, listOffset, menuSelection,
                         cardNavigationEnabled, cyberFamiliar,
                         wifiGuardianService, familiarPatrolService,
@@ -360,13 +405,54 @@ size_t themeIndex = 0;
 uint8_t bootAnimationIndex = 0;
 uint8_t bootSoundIndex = 0;
 uint8_t familiarCueIndex = 0;
+// Familiar LED alert colours: palette index into settings_names.h's
+// kLedColorNames/kLedColorValues, 0 ("Off") disables that event's flash.
+// Defaults are picked so each event reads distinctly at a glance: Blue for
+// an activity starting, Cyan for a new host, Green for a routine service,
+// Amber for a sensitive one, Purple for a completed pass, Red for an error.
+bool familiarLedEnabled = false;
+uint8_t familiarLedStartedColor = 3;   // Blue
+uint8_t familiarLedHostColor = 4;      // Cyan
+uint8_t familiarLedServiceColor = 2;   // Green
+uint8_t familiarLedWarningColor = 5;   // Amber
+uint8_t familiarLedCompleteColor = 8;  // Purple
+uint8_t familiarLedErrorColor = 1;     // Red
 SettingsScreens settingsScreens(
     listSelection, listOffset, speakerVolume, screenBrightness,
     screenTimeoutSeconds, cyberdeckIdleEnabled, themeIndex, familiarCueIndex,
     cardNavigationEnabled, cyberdeckIdleStyle, bootSoundEnabled,
     bootSoundIndex, bootAnimationIndex, bootSpeedIndex, saveWifiCredentials,
-    autoConnectWifi, placeholderTitle);
+    autoConnectWifi, familiarLedEnabled, familiarLedStartedColor,
+    familiarLedHostColor, familiarLedServiceColor, familiarLedWarningColor,
+    familiarLedCompleteColor, familiarLedErrorColor, placeholderTitle);
+OnboardingScreens onboardingScreens(onboardingPage, sdAvailable,
+                                    cardNavigationEnabled,
+                                    saveWifiCredentials);
 bool screenSleeping = false;
+WiFiUDP devLedUdp;
+bool statusLedReady = false;
+bool devLedUdpListening = false;
+String devRemoteMessage;
+uint32_t devRemoteMessageUntil = 0;
+bool devRemoteMessageVisible = false;
+// One-shot: set after the boot sequence in dev builds, cleared the first
+// time Wi-Fi is connected that session, whenever that happens (immediately
+// for auto-connect, or later if the operator connects manually). Reuses
+// exportSystemDiagnostics()'s existing HTTP path, so no separate protocol.
+bool bootDiagnosticExportPending = false;
+// Shared WS2812 flash state -- driven both by the dev-only UDP test command
+// (pollDevLedControl()) and by production Familiar LED alerts
+// (flashFamiliarLed()); only one physical LED exists, so both write through
+// the same timeline.
+uint8_t ledFlashRed = 0;
+uint8_t ledFlashGreen = 0;
+uint8_t ledFlashBlue = 0;
+uint8_t ledFlashPulses = 0;
+uint32_t ledFlashStarted = 0;
+uint32_t ledFlashDuration = 0;
+bool ledOn = false;
+bool ledPowerBoosted = false;
+uint8_t ledRestoreBrightness = 0;
 bool cyberdeckIdleActive = false;
 constexpr size_t kCyberdeckColumns = 40;
 int16_t cyberdeckRainHead[kCyberdeckColumns]{};
@@ -397,6 +483,34 @@ unsigned long lastGnssDraw = 0;
 unsigned long lastGnssLog = 0;
 unsigned long lastLoRaDraw = 0;
 uint32_t lastLoggedLoRaPacket = 0;
+uint32_t lastPersistedMeshPacket = 0;
+unsigned long meshPersistDue = 0;
+String meshChannelStatus;
+String meshChannelEditInput;
+String meshChannelEditStatus;
+String meshDraft;
+String meshComposeStatus;
+String meshNodeName;
+String meshNodeShortName;
+String meshIdentityEditOriginal;
+String meshSettingsStatus;
+bool meshIdentityEditing = false;
+bool meshBackgroundEnabled = false;
+bool meshMessageAlertsEnabled = true;
+uint32_t observedMeshMessageCount = 0;
+uint32_t observedMeshMessageRevision = 0;
+bool meshAlertSecondNotePending = false;
+unsigned long meshAlertSecondNoteDue = 0;
+uint32_t meshNodeId = 0;
+std::vector<uint8_t> meshPrivateKey;
+std::vector<uint8_t> meshPublicKey;
+uint8_t meshHopLimit = 7;
+size_t meshTransmitChannel = 0;
+uint32_t meshComposeRecipient = 0xffffffffU;
+bool meshConversationDirect = false;
+uint32_t meshConversationPeer = 0;
+String meshConversationChannel = "LongFast";
+Screen meshComposeReturnScreen = Screen::MeshMessages;
 unsigned long lastWifiSnifferDraw = 0;
 unsigned long lastGuardianDraw = 0;
 String guardianLastEvent = "No alerts observed";
@@ -419,7 +533,9 @@ WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
                         handshakeMessageSeen, handshakePmkidFound,
                         handshakePmkid, handshakeCaptureLogger,
                         wifiConnectSavedSsid, wifiConnectSsid,
-                        wifiConnectPasswordInput, wifiConnectStatusText);
+                        wifiConnectPasswordInput, wifiConnectStatusText,
+                        wifiProfiles, activeWifiProfile, wifiProfileStatus,
+                        wifiProfileNameInput);
 unsigned long lastImuDraw = 0;
 unsigned long lastImuLog = 0;
 m5::imu_data_t imuData{};
@@ -449,8 +565,16 @@ constexpr bool kDefaultCardNavigation = false;
 constexpr uint8_t kDefaultBootAnimation = 0;
 constexpr uint8_t kDefaultBootSoundPreset = 0;
 constexpr uint8_t kDefaultFamiliarCue = 0;
+constexpr bool kDefaultMeshBackground = false;
+constexpr bool kDefaultMeshMessageAlerts = true;
+constexpr bool kDefaultFamiliarLedEnabled = false;
+constexpr uint8_t kDefaultLedColorStarted = 3;   // Blue
+constexpr uint8_t kDefaultLedColorHost = 4;      // Cyan
+constexpr uint8_t kDefaultLedColorService = 2;   // Green
+constexpr uint8_t kDefaultLedColorWarning = 5;   // Amber
+constexpr uint8_t kDefaultLedColorComplete = 8;  // Purple
+constexpr uint8_t kDefaultLedColorError = 1;     // Red
 constexpr uint16_t kScreenTimeoutOptions[] = {0, 15, 30, 60, 120};
-constexpr size_t kSystemDiagnosticCount = 22;
 // Boot/settings name tables: see include/settings_names.h.
 
 String csvSafePayload(const String& payload);
@@ -480,6 +604,140 @@ void saveSettings() {
     preferences.putUChar("boot_anim", bootAnimationIndex);
     preferences.putUChar("boot_tone", bootSoundIndex);
     preferences.putUChar("fam_cue", familiarCueIndex);
+    preferences.putBool("led_on", familiarLedEnabled);
+    preferences.putUChar("led_start", familiarLedStartedColor);
+    preferences.putUChar("led_host", familiarLedHostColor);
+    preferences.putUChar("led_svc", familiarLedServiceColor);
+    preferences.putUChar("led_warn", familiarLedWarningColor);
+    preferences.putUChar("led_done", familiarLedCompleteColor);
+    preferences.putUChar("led_err", familiarLedErrorColor);
+    preferences.putBool("mesh_bg", meshBackgroundEnabled);
+    preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
+    preferences.putUChar("mesh_hops", meshHopLimit);
+    preferences.putUChar("mesh_tx_ch",
+                         static_cast<uint8_t>(meshTransmitChannel));
+    preferences.putString("mesh_name", meshNodeName);
+    preferences.putString("mesh_short", meshNodeShortName);
+}
+
+String wifiProfileKey(const char* field, size_t index) {
+    return String("wp_") + field + String(index);
+}
+
+void refreshActiveWifiCredentialCache() {
+    if (activeWifiProfile >= wifiProfiles.size()) {
+        activeWifiProfile = wifiProfiles.empty() ? SIZE_MAX : 0;
+    }
+    if (activeWifiProfile == SIZE_MAX) {
+        wifiConnectSavedSsid = "";
+        wifiConnectSavedPassword = "";
+        return;
+    }
+    wifiConnectSavedSsid = wifiProfiles[activeWifiProfile].ssid;
+    wifiConnectSavedPassword = wifiProfiles[activeWifiProfile].password;
+}
+
+void persistWifiProfiles() {
+    preferences.putUChar("wp_count",
+                         static_cast<uint8_t>(wifiProfiles.size()));
+    preferences.putUChar("wp_active",
+                         activeWifiProfile < wifiProfiles.size()
+                             ? static_cast<uint8_t>(activeWifiProfile)
+                             : UINT8_MAX);
+    for (size_t index = 0; index < kMaxWifiProfiles; ++index) {
+        const String nameKey = wifiProfileKey("name", index);
+        const String ssidKey = wifiProfileKey("ssid", index);
+        const String passKey = wifiProfileKey("pass", index);
+        if (index < wifiProfiles.size()) {
+            preferences.putString(nameKey.c_str(), wifiProfiles[index].name);
+            preferences.putString(ssidKey.c_str(), wifiProfiles[index].ssid);
+            preferences.putString(passKey.c_str(), wifiProfiles[index].password);
+        } else {
+            preferences.remove(nameKey.c_str());
+            preferences.remove(ssidKey.c_str());
+            preferences.remove(passKey.c_str());
+        }
+    }
+    refreshActiveWifiCredentialCache();
+}
+
+void clearWifiProfiles() {
+    for (auto& profile : wifiProfiles) {
+        for (size_t index = 0; index < profile.password.length(); ++index) {
+            profile.password.setCharAt(index, '\0');
+        }
+    }
+    wifiProfiles.clear();
+    activeWifiProfile = SIZE_MAX;
+    persistWifiProfiles();
+    preferences.remove("wifi_ssid");
+    preferences.remove("wifi_pass");
+}
+
+void loadWifiProfiles() {
+    wifiProfiles.clear();
+    const size_t count = std::min<size_t>(preferences.getUChar("wp_count", 0),
+                                          kMaxWifiProfiles);
+    for (size_t index = 0; index < count; ++index) {
+        WifiProfile profile;
+        profile.ssid = preferences.getString(
+            wifiProfileKey("ssid", index).c_str(), "");
+        if (profile.ssid.isEmpty()) continue;
+        profile.name = preferences.getString(
+            wifiProfileKey("name", index).c_str(), profile.ssid);
+        if (profile.name.isEmpty()) profile.name = profile.ssid;
+        profile.password = preferences.getString(
+            wifiProfileKey("pass", index).c_str(), "");
+        wifiProfiles.push_back(profile);
+    }
+
+    // One-time migration from the pre-0.5 single saved credential.
+    if (wifiProfiles.empty()) {
+        const String legacySsid = preferences.getString("wifi_ssid", "");
+        if (!legacySsid.isEmpty()) {
+            wifiProfiles.push_back({legacySsid, legacySsid,
+                                    preferences.getString("wifi_pass", "")});
+        }
+    }
+    const uint8_t storedActive = preferences.getUChar("wp_active", 0);
+    activeWifiProfile = storedActive < wifiProfiles.size() ? storedActive
+                                                           : SIZE_MAX;
+    if (!wifiProfiles.empty() && activeWifiProfile == SIZE_MAX) {
+        activeWifiProfile = 0;
+    }
+    persistWifiProfiles();
+    preferences.remove("wifi_ssid");
+    preferences.remove("wifi_pass");
+}
+
+bool saveWifiProfile(const String& ssid, const String& password) {
+    for (size_t index = 0; index < wifiProfiles.size(); ++index) {
+        if (wifiProfiles[index].ssid == ssid) {
+            wifiProfiles[index].password = password;
+            persistWifiProfiles();
+            return true;
+        }
+    }
+    if (wifiProfiles.size() >= kMaxWifiProfiles) return false;
+    wifiProfiles.push_back({ssid, ssid, password});
+    if (activeWifiProfile == SIZE_MAX) activeWifiProfile = 0;
+    persistWifiProfiles();
+    return true;
+}
+
+void deleteWifiProfile(size_t index) {
+    if (index >= wifiProfiles.size()) return;
+    for (size_t character = 0;
+         character < wifiProfiles[index].password.length(); ++character) {
+        wifiProfiles[index].password.setCharAt(character, '\0');
+    }
+    wifiProfiles.erase(wifiProfiles.begin() + index);
+    if (wifiProfiles.empty()) activeWifiProfile = SIZE_MAX;
+    else if (activeWifiProfile == index) activeWifiProfile = 0;
+    else if (activeWifiProfile > index && activeWifiProfile != SIZE_MAX) {
+        --activeWifiProfile;
+    }
+    persistWifiProfiles();
 }
 
 void restoreDefaultSettings() {
@@ -493,14 +751,27 @@ void restoreDefaultSettings() {
     cyberdeckIdleEnabled = kDefaultCyberdeckIdle;
     cyberdeckIdleStyle = kDefaultCyberdeckIdleStyle;
     cardNavigationEnabled = kDefaultCardNavigation;
-    preferences.remove("wifi_ssid");
-    preferences.remove("wifi_pass");
-    wifiConnectSavedSsid = "";
-    wifiConnectSavedPassword = "";
+    clearWifiProfiles();
     themeIndex = 0;
     bootAnimationIndex = kDefaultBootAnimation;
     bootSoundIndex = kDefaultBootSoundPreset;
     familiarCueIndex = kDefaultFamiliarCue;
+    familiarLedEnabled = kDefaultFamiliarLedEnabled;
+    familiarLedStartedColor = kDefaultLedColorStarted;
+    familiarLedHostColor = kDefaultLedColorHost;
+    familiarLedServiceColor = kDefaultLedColorService;
+    familiarLedWarningColor = kDefaultLedColorWarning;
+    familiarLedCompleteColor = kDefaultLedColorComplete;
+    familiarLedErrorColor = kDefaultLedColorError;
+    meshBackgroundEnabled = kDefaultMeshBackground;
+    meshMessageAlertsEnabled = kDefaultMeshMessageAlerts;
+    meshHopLimit = 7;
+    meshTransmitChannel = 0;
+    char defaultMeshName[25];
+    snprintf(defaultMeshName, sizeof(defaultMeshName), "Ghostwire %04lX",
+             static_cast<unsigned long>(meshNodeId & 0xffffU));
+    meshNodeName = defaultMeshName;
+    meshNodeShortName = "GW";
     Branding::applyTheme(themeIndex);
     applySettings();
     saveSettings();
@@ -515,6 +786,107 @@ void recoverKeyboardAfterBlockingOperation() {
         M5Cardputer.update();
         delay(10);
     }
+}
+
+void syncOperationCoordinator() {
+    operationCoordinator.clear();
+    operationCoordinator.setActive(OperationKind::WifiGuardian,
+                                   wifiGuardianService.isActive());
+    operationCoordinator.setActive(OperationKind::HandshakeCapture,
+                                   handshakeCaptureLogger.isActive());
+    operationCoordinator.setActive(
+        OperationKind::WifiCapture,
+        (wifiSnifferService.isActive() || wifiSnifferLogger.isActive() ||
+         wifiPassiveCaptureLogger.isActive()) &&
+            !wifiGuardianService.isActive() &&
+            !handshakeCaptureLogger.isActive());
+    operationCoordinator.setActive(OperationKind::WarDrive,
+                                   warDriveService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleCapture,
+        bleScanner.isContinuous() || bleCaptureLogger.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleTransmit,
+        bleSpamService.isActive() || bleKeyboardService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::BleAccessory,
+        biscuitClient.isConnected() || chameleonClient.isConnected());
+    operationCoordinator.setActive(OperationKind::FamiliarPatrol,
+                                   familiarPatrolService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::NetworkScan,
+        networkHostScanService.isActive() || networkPortScanService.isActive());
+    operationCoordinator.setActive(
+        OperationKind::RemoteSession,
+        telnetClient.connected() || sshService.isConnected());
+    operationCoordinator.setActive(OperationKind::Audio,
+                                   audioService.isPlaying() ||
+                                       audioService.isMicrophoneActive());
+
+    if (operationEventLogger.isActive()) {
+        static bool previousActive[static_cast<size_t>(OperationKind::Count)] =
+            {};
+        static bool previousWifiConnected = false;
+        static bool previousMeshReady = false;
+        const uint32_t freeKb = ESP.getFreeHeap() / 1024;
+        const uint32_t minKb = ESP.getMinFreeHeap() / 1024;
+        for (uint8_t value = 0;
+             value < static_cast<uint8_t>(OperationKind::Count); ++value) {
+            const auto kind = static_cast<OperationKind>(value);
+            const bool nowActive = operationCoordinator.isActive(kind);
+            if (nowActive == previousActive[value]) continue;
+            previousActive[value] = nowActive;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + "," + OperationCoordinator::label(kind) +
+                "," + (nowActive ? "start" : "stop") + "," + String(freeKb) +
+                "," + String(minKb));
+        }
+        const bool wifiConnected = WiFi.status() == WL_CONNECTED;
+        if (wifiConnected != previousWifiConnected) {
+            previousWifiConnected = wifiConnected;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + ",Wi-Fi Connect," +
+                (wifiConnected ? "start" : "stop") + "," + String(freeKb) +
+                "," + String(minKb));
+        }
+        const bool meshReady = loraService.isReady();
+        if (meshReady != previousMeshReady) {
+            previousMeshReady = meshReady;
+            operationEventLogger.append(
+                (clockSynced ? utcTimestamp() : String("")) + "," +
+                String(millis()) + ",Mesh Receive," +
+                (meshReady ? "start" : "stop") + "," + String(freeKb) + "," +
+                String(minKb));
+        }
+    }
+}
+
+bool prepareOperationStart(OperationKind requested, String& reason) {
+    syncOperationCoordinator();
+    OperationKind conflict = OperationKind::Count;
+    if (operationCoordinator.canStart(requested, &conflict)) return true;
+    reason = String("Stop ") + OperationCoordinator::label(conflict) +
+             " before starting " + OperationCoordinator::label(requested) +
+             ".";
+    return false;
+}
+
+bool requireOperationStart(OperationKind requested) {
+    String reason;
+    if (prepareOperationStart(requested, reason)) return true;
+    ScreenChrome::drawHeader("Operation Busy");
+    M5Cardputer.Display.setTextColor(Branding::warning,
+                                     Branding::background);
+    M5Cardputer.Display.setTextWrap(true);
+    M5Cardputer.Display.setCursor(8, 38);
+    M5Cardputer.Display.print(reason);
+    M5Cardputer.Display.setTextWrap(false);
+    ScreenChrome::drawFooter("Stop active work, then retry");
+    delay(1400);
+    drawCurrentScreen();
+    return false;
 }
 
 // Queries the public repo's latest release (see OtaService::checkForUpdate)
@@ -538,6 +910,15 @@ void checkForFirmwareUpdate() {
 // waitDuckyDelay(). Reboots on success; otherwise returns to Screen::OtaCheck
 // with the failure reason so the operator can retry or back out.
 void installFirmwareUpdate() {
+    String conflictReason;
+    if (!prepareOperationStart(OperationKind::FirmwareUpdate,
+                               conflictReason)) {
+        otaService.setStatusMessage(conflictReason);
+        currentScreen = Screen::OtaCheck;
+        drawCurrentScreen();
+        return;
+    }
+    operationCoordinator.setActive(OperationKind::FirmwareUpdate, true);
     currentScreen = Screen::OtaInstalling;
     otaScreens.drawInstalling();
     unsigned long lastRedrawMs = 0;
@@ -568,6 +949,7 @@ void installFirmwareUpdate() {
         ESP.restart();
         return;
     }
+    operationCoordinator.setActive(OperationKind::FirmwareUpdate, false);
     currentScreen = Screen::OtaCheck;
     drawCurrentScreen();
 }
@@ -660,19 +1042,388 @@ void initSd() {
     }
 }
 
+constexpr char kMeshStatePath[] = "/ghostwire/mesh/state.json";
+constexpr char kMeshStateTempPath[] = "/ghostwire/mesh/state.tmp";
+constexpr char kMeshStateBackupPath[] = "/ghostwire/mesh/state.bak";
+constexpr char kMeshMessageArchivePath[] = "/ghostwire/mesh/messages.jsonl";
+
+String meshKeyHex(const std::vector<uint8_t>& key) {
+    String value;
+    value.reserve(key.size() * 2);
+    const char digits[] = "0123456789abcdef";
+    for (uint8_t byte : key) {
+        value += digits[byte >> 4];
+        value += digits[byte & 0x0f];
+    }
+    return value;
+}
+
+std::vector<uint8_t> meshKeyFromHex(const String& value) {
+    if (value.length() != 64) return {};
+    std::vector<uint8_t> key(32);
+    for (size_t index = 0; index < key.size(); ++index) {
+        const auto nibble = [](char character) -> int {
+            if (character >= '0' && character <= '9') return character - '0';
+            if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+            if (character >= 'A' && character <= 'F') return character - 'A' + 10;
+            return -1;
+        };
+        const int high = nibble(value[index * 2]);
+        const int low = nibble(value[index * 2 + 1]);
+        if (high < 0 || low < 0) return {};
+        key[index] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return key;
+}
+
+uint32_t meshIdentityCrc32(const std::vector<uint8_t>& value) {
+    uint32_t crc = 0xffffffffU;
+    for (uint8_t byte : value) {
+        crc ^= byte;
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1U) ? 0xedb88320U : 0U);
+        }
+    }
+    return ~crc;
+}
+
+void loadMeshState() {
+    if (!sdAvailable) return;
+    const char* source = SD.exists(kMeshStatePath) ? kMeshStatePath
+                       : SD.exists(kMeshStateBackupPath) ? kMeshStateBackupPath
+                                                        : nullptr;
+    if (source == nullptr) return;
+    File file = SD.open(source, FILE_READ);
+    if (!file) return;
+    JsonDocument document;
+    if (deserializeJson(document, file)) {
+        file.close();
+        return;
+    }
+    file.close();
+    for (JsonObject value : document["nodes"].as<JsonArray>()) {
+        LoRaService::MeshNode node;
+        node.id = value["id"] | 0U;
+        node.longName = value["long"] | "";
+        node.shortName = value["short"] | "";
+        node.publicKey = meshKeyFromHex(value["public_key"] | "");
+        node.keyState = static_cast<LoRaService::MeshNode::KeyState>(
+            value["key_state"] | static_cast<uint8_t>(
+                LoRaService::MeshNode::KeyState::Unknown));
+        node.lastRssi = value["rssi"] | 0.0F;
+        node.lastSnr = value["snr"] | 0.0F;
+        node.packets = value["packets"] | 0U;
+        node.hasPosition = value["position"] | false;
+        node.latitude = value["lat"] | 0.0;
+        node.longitude = value["lon"] | 0.0;
+        node.altitude = value["alt"] | 0;
+        node.hasDeviceMetrics = value["metrics"] | false;
+        node.batteryLevel = value["battery"] | 0U;
+        node.voltage = value["voltage"] | 0.0F;
+        node.channelUtilization = value["channel"] | 0.0F;
+        node.airUtilTx = value["air"] | 0.0F;
+        for (JsonObject sampleValue : value["telemetry"].as<JsonArray>()) {
+            LoRaService::MeshNode::TelemetrySample sample;
+            sample.timestamp = sampleValue["timestamp"] | 0U;
+            sample.batteryLevel = sampleValue["battery"] | 0U;
+            sample.voltage = sampleValue["voltage"] | 0.0F;
+            sample.rssi = sampleValue["rssi"] | 0.0F;
+            node.telemetryHistory.push_back(sample);
+        }
+        loraService.restoreNode(node);
+    }
+    for (JsonObject value : document["messages"].as<JsonArray>()) {
+        LoRaService::MeshMessage message;
+        message.from = value["from"] | 0U;
+        message.to = value["to"] | 0U;
+        message.packetId = value["id"] | 0U;
+        message.timestamp = value["timestamp"] | 0U;
+        message.text = value["text"] | "";
+        message.channel = value["channel"] | "";
+        message.outgoing = value["outgoing"] | false;
+        message.unread = value["unread"] | false;
+        message.delivery = static_cast<LoRaService::MeshMessage::Delivery>(
+            value["delivery"] | static_cast<uint8_t>(
+                message.outgoing ? LoRaService::MeshMessage::Delivery::Sent
+                                 : LoRaService::MeshMessage::Delivery::Received));
+        message.routingError = value["routing_error"] | 0U;
+        message.archived = value["archived"] | false;
+        loraService.restoreMessage(message);
+    }
+}
+
+void saveMeshState() {
+    if (!sdAvailable) return;
+    SD.mkdir("/ghostwire");
+    SD.mkdir("/ghostwire/mesh");
+    JsonDocument document;
+    JsonArray nodes = document["nodes"].to<JsonArray>();
+    for (const auto& node : loraService.nodes()) {
+        JsonObject value = nodes.add<JsonObject>();
+        value["id"] = node.id;
+        value["long"] = node.longName;
+        value["short"] = node.shortName;
+        if (node.publicKey.size() == 32) {
+            value["public_key"] = meshKeyHex(node.publicKey);
+        }
+        value["key_state"] = static_cast<uint8_t>(node.keyState);
+        value["rssi"] = node.lastRssi;
+        value["snr"] = node.lastSnr;
+        value["packets"] = node.packets;
+        value["position"] = node.hasPosition;
+        value["lat"] = node.latitude;
+        value["lon"] = node.longitude;
+        value["alt"] = node.altitude;
+        value["metrics"] = node.hasDeviceMetrics;
+        value["battery"] = node.batteryLevel;
+        value["voltage"] = node.voltage;
+        value["channel"] = node.channelUtilization;
+        value["air"] = node.airUtilTx;
+        if (!node.telemetryHistory.empty()) {
+            JsonArray telemetry = value["telemetry"].to<JsonArray>();
+            for (const auto& sample : node.telemetryHistory) {
+                JsonObject sampleValue = telemetry.add<JsonObject>();
+                sampleValue["timestamp"] = sample.timestamp;
+                sampleValue["battery"] = sample.batteryLevel;
+                sampleValue["voltage"] = sample.voltage;
+                sampleValue["rssi"] = sample.rssi;
+            }
+        }
+    }
+    JsonArray messages = document["messages"].to<JsonArray>();
+    for (const auto& message : loraService.messages()) {
+        JsonObject value = messages.add<JsonObject>();
+        value["from"] = message.from;
+        value["to"] = message.to;
+        value["id"] = message.packetId;
+        value["timestamp"] = message.timestamp;
+        value["text"] = message.text;
+        value["channel"] = message.channel;
+        value["outgoing"] = message.outgoing;
+        value["unread"] = message.unread;
+        value["delivery"] = static_cast<uint8_t>(message.delivery);
+        if (message.routingError != 0) {
+            value["routing_error"] = message.routingError;
+        }
+        value["archived"] = message.archived;
+    }
+    SD.remove(kMeshStateTempPath);
+    File file = SD.open(kMeshStateTempPath, FILE_WRITE);
+    if (!file) return;
+    const bool written = serializeJson(document, file) > 0;
+    file.flush();
+    file.close();
+    if (!written) {
+        SD.remove(kMeshStateTempPath);
+        return;
+    }
+    SD.remove(kMeshStateBackupPath);
+    if (SD.exists(kMeshStatePath)) {
+        SD.rename(kMeshStatePath, kMeshStateBackupPath);
+    }
+    if (!SD.rename(kMeshStateTempPath, kMeshStatePath)) {
+        if (SD.exists(kMeshStateBackupPath)) {
+            SD.rename(kMeshStateBackupPath, kMeshStatePath);
+        }
+        return;
+    }
+    SD.remove(kMeshStateBackupPath);
+    lastPersistedMeshPacket = loraService.packetCount();
+}
+
+void archivePendingMeshMessages() {
+    if (!sdAvailable) return;
+    for (const auto& message : loraService.messages()) {
+        if (message.archived) continue;
+        SD.mkdir("/ghostwire");
+        SD.mkdir("/ghostwire/mesh");
+        File file = SD.open(kMeshMessageArchivePath, FILE_APPEND);
+        if (!file) return;
+        JsonDocument value;
+        value["timestamp"] = message.timestamp;
+        value["from"] = message.from;
+        value["to"] = message.to;
+        value["id"] = message.packetId;
+        value["channel"] = message.channel;
+        value["outgoing"] = message.outgoing;
+        value["text"] = message.text;
+        value["delivery"] = static_cast<uint8_t>(message.delivery);
+        const bool written = serializeJson(value, file) > 0 && file.println();
+        file.flush();
+        file.close();
+        if (!written) return;
+        loraService.markMessageArchived(message.packetId, message.from,
+                                        message.outgoing);
+        meshPersistDue = millis() + 2000;
+    }
+}
+
+constexpr char kMeshChannelsPath[] = "/ghostwire/mesh/channels.json";
+
+void loadMeshChannels() {
+    static const uint8_t publicKey[] = {
+        0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
+        0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01,
+    };
+    std::vector<MeshtasticChannel> channels;
+    channels.push_back({"LongFast",
+                        std::vector<uint8_t>(publicKey,
+                                             publicKey + sizeof(publicKey)),
+                        0, true});
+    meshChannelStatus = "Public LongFast";
+    if (!sdAvailable || !SD.exists(kMeshChannelsPath)) {
+        loraService.setMeshChannels(channels);
+        meshChannelStatus += sdAvailable ? "; no private config" : "; SD unavailable";
+        return;
+    }
+    File file = SD.open(kMeshChannelsPath, FILE_READ);
+    JsonDocument document;
+    const DeserializationError error = deserializeJson(document, file);
+    file.close();
+    if (error) {
+        loraService.setMeshChannels(channels);
+        meshChannelStatus = "Invalid channels.json";
+        return;
+    }
+    size_t rejected = 0;
+    for (JsonObject value : document["channels"].as<JsonArray>()) {
+        if (channels.size() >= 4) break;
+        const String name = value["name"] | "";
+        const String encoded = value["psk_base64"] | "";
+        if (name.isEmpty() || name.length() > 12 || encoded.isEmpty()) {
+            ++rejected;
+            continue;
+        }
+        uint8_t decoded[32] = {};
+        size_t decodedLength = 0;
+        const int result = mbedtls_base64_decode(
+            decoded, sizeof(decoded), &decodedLength,
+            reinterpret_cast<const unsigned char*>(encoded.c_str()),
+            encoded.length());
+        if (result != 0 || (decodedLength != 16 && decodedLength != 32)) {
+            ++rejected;
+            continue;
+        }
+        channels.push_back({name,
+                            std::vector<uint8_t>(decoded,
+                                                 decoded + decodedLength),
+                            0, false});
+    }
+    loraService.setMeshChannels(channels);
+    meshChannelStatus = String(channels.size()) + " profiles loaded";
+    if (rejected > 0) meshChannelStatus += "; rejected " + String(rejected);
+}
+
+bool saveMeshChannels() {
+    if (!sdAvailable) return false;
+    SD.mkdir("/ghostwire");
+    SD.mkdir("/ghostwire/mesh");
+    JsonDocument document;
+    JsonArray values = document["channels"].to<JsonArray>();
+    for (const auto& channel : loraService.meshChannels()) {
+        if (channel.isPublic) continue;
+        JsonObject value = values.add<JsonObject>();
+        value["name"] = channel.name;
+        size_t encodedLength = 0;
+        std::vector<uint8_t> encoded(((channel.key.size() + 2) / 3) * 4 + 1);
+        if (mbedtls_base64_encode(encoded.data(), encoded.size(), &encodedLength,
+                                  channel.key.data(), channel.key.size()) != 0) {
+            return false;
+        }
+        value["psk_base64"] = String(
+            reinterpret_cast<const char*>(encoded.data()), encodedLength);
+    }
+    SD.remove(kMeshChannelsPath);
+    File file = SD.open(kMeshChannelsPath, FILE_WRITE);
+    if (!file) return false;
+    const bool written = serializeJsonPretty(document, file) > 0;
+    file.flush();
+    file.close();
+    return written;
+}
+
+bool addMeshChannel(const String& input, String& status) {
+    const int separator = input.indexOf('|');
+    if (separator <= 0 || separator >= static_cast<int>(input.length()) - 1) {
+        status = "Use Name|Base64PSK";
+        return false;
+    }
+    String name = input.substring(0, separator);
+    String encoded = input.substring(separator + 1);
+    name.trim();
+    encoded.trim();
+    if (name.isEmpty() || name.length() > 12) {
+        status = "Name must be 1-12 characters";
+        return false;
+    }
+    if (loraService.meshChannels().size() >= 4) {
+        status = "Maximum four channels";
+        return false;
+    }
+    uint8_t decoded[32] = {};
+    size_t decodedLength = 0;
+    if (mbedtls_base64_decode(
+            decoded, sizeof(decoded), &decodedLength,
+            reinterpret_cast<const unsigned char*>(encoded.c_str()),
+            encoded.length()) != 0 ||
+        (decodedLength != 16 && decodedLength != 32)) {
+        status = "PSK must decode to 16 or 32 bytes";
+        return false;
+    }
+    auto channels = loraService.meshChannels();
+    for (const auto& channel : channels) {
+        if (channel.name == name) {
+            status = "Channel name already exists";
+            return false;
+        }
+    }
+    channels.push_back({name, std::vector<uint8_t>(decoded,
+                                                   decoded + decodedLength),
+                        0, false});
+    loraService.setMeshChannels(channels);
+    if (!saveMeshChannels()) {
+        status = "Could not save channels.json";
+        return false;
+    }
+    status = "Channel added";
+    return true;
+}
+
+bool deleteMeshChannel(size_t index) {
+    const auto& current = loraService.meshChannels();
+    if (index >= current.size() || current[index].isPublic) return false;
+    std::vector<MeshtasticChannel> channels;
+    for (size_t channel = 0; channel < current.size(); ++channel) {
+        if (channel != index) channels.push_back(current[channel]);
+    }
+    loraService.setMeshChannels(channels);
+    if (meshTransmitChannel >= channels.size()) meshTransmitChannel = 0;
+    preferences.putUChar("mesh_tx_ch",
+                         static_cast<uint8_t>(meshTransmitChannel));
+    return saveMeshChannels();
+}
+
+String meshChannelToken(size_t index) {
+    const auto& channels = loraService.meshChannels();
+    if (index >= channels.size()) return "";
+    const auto& channel = channels[index];
+    size_t encodedLength = 0;
+    std::vector<uint8_t> encoded(((channel.key.size() + 2) / 3) * 4 + 1);
+    if (mbedtls_base64_encode(encoded.data(), encoded.size(), &encodedLength,
+                              channel.key.data(), channel.key.size()) != 0) {
+        return "";
+    }
+    return channel.name + "|" + String(
+        reinterpret_cast<const char*>(encoded.data()), encodedLength);
+}
+
 void drawHeaderStatus(bool force = false) {
     auto& display = M5Cardputer.Display;
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
-    const bool captureActive = wifiSnifferService.isActive() ||
-                               wifiGuardianService.isActive() ||
-                               bleSpamService.isActive() ||
-                               warDriveService.isActive() ||
-                               handshakeCaptureLogger.isActive() ||
-                               bleCaptureLogger.isActive() ||
-                               gnssLogger.isActive() ||
-                               loraLogger.isActive() ||
-                               imuLogger.isActive() ||
-                               familiarPatrolService.isActive();
+    syncOperationCoordinator();
+    const bool captureActive = operationCoordinator.anyActive() ||
+                               gnssLogger.isActive() || loraLogger.isActive() ||
+                               imuLogger.isActive();
     const uint8_t battery = batteryPercentage();
     const uint32_t clockMinute =
         clockSynced ? static_cast<uint32_t>(time(nullptr) / 60) : 0;
@@ -727,11 +1478,13 @@ void drawHeader(const char* title) {
     display.fillRect(0, 0, display.width(), 22, Branding::panel);
     display.drawFastHLine(0, 21, display.width(), Branding::accent);
     display.setTextSize(1);
+    display.setTextWrap(false);
     display.setTextColor(Branding::text, Branding::panel);
     display.setCursor(6, 7);
     // Reserve the right side for connection/time/battery status. Long titles
     // used to render underneath that strip and become visually corrupted.
     display.print(String(title).substring(0, 23));
+    display.setTextWrap(true);
     drawHeaderStatus(true);
 }
 
@@ -764,8 +1517,13 @@ void drawFooter(const char* text) {
     display.drawFastHLine(0, display.height() - 15, display.width(),
                           Branding::accent);
     display.setTextColor(Branding::muted, Branding::panel);
+    display.setTextSize(1);
+    display.setTextWrap(false);
     display.setCursor(5, display.height() - 11);
-    display.print(text);
+    // A footer is intentionally one line tall. Clip defensive/dynamic text
+    // rather than letting M5GFX wrap it below the display and hide controls.
+    display.print(String(text).substring(0, 38));
+    display.setTextWrap(true);
 }
 
 // Live screens repaint only their content pane. Their header and footer are
@@ -806,6 +1564,8 @@ void drawListRow(int row, const String& label, bool selected,
         selected ? Branding::background : Branding::text;
     display.fillRect(4, y, display.width() - 8, 14, background);
     display.setTextColor(foreground, background);
+    display.setTextSize(1);
+    display.setTextWrap(false);
     display.setCursor(8, y + 3);
     size_t labelCharacters = 37;
     int suffixX = display.width() - 8;
@@ -820,6 +1580,7 @@ void drawListRow(int row, const String& label, bool selected,
         display.setCursor(suffixX, y + 3);
         display.print(suffix);
     }
+    display.setTextWrap(true);
 }
 
 // Returns the one-off actions available on the current screen, filtered
@@ -843,6 +1604,12 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
             return {};
         case Screen::WifiConnectStatus:
             return {{'d', "Disconnect"}};
+        case Screen::WifiProfiles:
+            return wifiProfiles.empty()
+                       ? std::vector<ActionMenuItem>{}
+                       : std::vector<ActionMenuItem>{{'a', "Set default"},
+                                                     {'n', "Rename profile"},
+                                                     {'d', "Delete profile"}};
         case Screen::Chameleon: {
             std::vector<ActionMenuItem> items;
             if (chameleonClient.isConnected()) {
@@ -907,7 +1674,27 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
         case Screen::LoRa:
             return {{'l', loraLogger.isActive() ? "Stop logging"
                                                 : "Start logging"},
-                    {'p', "Switch profile"}};
+                    {'p', "Switch profile"},
+                    {'n', "Open node directory"},
+                    {'m', "Open message inbox"}};
+        case Screen::MeshMessages:
+            return {{'c', "Write in selected chat"}};
+        case Screen::MeshMessageDetail:
+            return {{'c', "Write message"}};
+        case Screen::MeshNodeDetail:
+            return {{'m', "Send direct message"},
+                    {'c', "Open direct conversation"},
+                    {'h', "View telemetry history"},
+                    {'p', "Request position"},
+                    {'t', "Request telemetry"},
+                    {'i', "Request identity"},
+                    {'v', "Accept changed identity key"}};
+        case Screen::MeshNodeTelemetry:
+            return {{'t', "Request telemetry"}};
+        case Screen::MeshChannels:
+            return {{'a', "Add channel"}, {'d', "Delete selected channel"},
+                    {'x', "Show channel QR"},
+                    {'r', "Reload channels.json"}};
         case Screen::WifiSniffer:
             return {{'l', wifiSnifferLogger.isActive() ? "Stop probe CSV"
                                                         : "Start probe CSV"},
@@ -1054,16 +1841,23 @@ void drawNavigationCard(const char* header, const String& label,
     display.setTextColor(Branding::text, Branding::background);
     String titleFirst = label;
     String titleSecond;
+    bool compactTitle = false;
     int descriptionY = 57;
     if (titleFirst.length() > 13) {
         int split = titleFirst.substring(0, 14).lastIndexOf(' ');
-        if (split < 5) split = 13;
-        titleSecond = titleFirst.substring(split + 1);
-        titleFirst = titleFirst.substring(0, split);
-        descriptionY = 68;
+        if (split <= 0) {
+            // A long first/single word has no honest wrap point. Keep the
+            // word intact at the smaller size instead of breaking mid-word.
+            compactTitle = true;
+        } else {
+            titleSecond = titleFirst.substring(split + 1);
+            titleFirst = titleFirst.substring(0, split);
+            descriptionY = 68;
+        }
     }
+    if (compactTitle) display.setTextSize(1);
     display.setCursor(76, titleSecond.isEmpty() ? 31 : 25);
-    display.print(titleFirst.substring(0, 13));
+    display.print(titleFirst.substring(0, compactTitle ? 26 : 13));
     if (!titleSecond.isEmpty()) {
         display.setCursor(76, 43);
         display.print(titleSecond.substring(0, 13));
@@ -1219,6 +2013,7 @@ void exportWifiResults() {
 }
 
 void scanWifiNetworks() {
+    if (!requireOperationStart(OperationKind::WifiCapture)) return;
     drawHeader("Wi-Fi Discovery");
     M5Cardputer.Display.setTextColor(Branding::warning,
                                     Branding::background);
@@ -1354,6 +2149,7 @@ void exportBleResults() {
 }
 
 void scanBleDevices() {
+    if (!requireOperationStart(OperationKind::BleCapture)) return;
     bleCaptureLogger.stop();
     bleScanner.stop();
     drawHeader("BLE Advertisement Sniffer");
@@ -1454,6 +2250,7 @@ constexpr size_t kNetworkPortScanPortCount =
     sizeof(kNetworkPortScanPorts) / sizeof(kNetworkPortScanPorts[0]);
 
 void scanNetworkPorts(IPAddress target) {
+    if (!requireOperationStart(OperationKind::NetworkScan)) return;
     networkPortScanTarget = target;
     networkPortResults.clear();
     networkPortScanExportStatus = "";
@@ -1513,6 +2310,7 @@ void exportNetworkPortResults() {
 // scanNetworkPorts(), acceptable here for the same reason: one bounded
 // attempt, not a scan across many targets.
 void connectTelnet() {
+    if (!requireOperationStart(OperationKind::RemoteSession)) return;
     String host = telnetHostInput;
     uint16_t port = 23;
     const int colon = host.lastIndexOf(':');
@@ -1632,6 +2430,7 @@ String sshFingerprintPreferenceKey() {
 // SSH Password/Session screens: see include/ssh_screens.h/src/ssh_screens.cpp.
 
 void connectSsh() {
+    if (!requireOperationStart(OperationKind::RemoteSession)) return;
     preferences.putUChar("ssh_stage", 4);
     sshService.begin();
     preferences.putUChar("ssh_stage", 5);
@@ -1640,7 +2439,7 @@ void connectSsh() {
     M5Cardputer.Display.setCursor(8, 36);
     M5Cardputer.Display.printf("Connecting to %s@%s:%u...",
                                sshUsername.c_str(), sshHost.c_str(), sshPort);
-    drawFooter("Please wait (this can take several seconds)");
+    drawFooter("Please wait - may take several seconds");
 
     sshLines.clear();
     sshPendingLine = "";
@@ -2276,9 +3075,25 @@ String formatUptime() {
 
 std::vector<SystemDiagnostic> systemDiagnostics() {
     std::vector<SystemDiagnostic> rows;
-    rows.reserve(22);
+    rows.reserve(25);
+    syncOperationCoordinator();
     rows.push_back({"Firmware", Branding::version});
     rows.push_back({"Uptime", formatUptime()});
+    String operationStatus = operationCoordinator.primaryLabel();
+    if (operationCoordinator.activeCount() > 1) {
+        operationStatus += " +" +
+                           String(operationCoordinator.activeCount() - 1);
+    }
+    rows.push_back({"Operations", operationStatus,
+                    operationCoordinator.anyActive()
+                        ? DiagnosticState::Information
+                        : DiagnosticState::Ready});
+    rows.push_back({"Wi-Fi profiles",
+                    saveWifiCredentials
+                        ? String(wifiProfiles.size()) + " stored"
+                        : "Disabled",
+                    saveWifiCredentials ? DiagnosticState::Ready
+                                        : DiagnosticState::Information});
     const esp_reset_reason_t resetReason = esp_reset_reason();
     rows.push_back({"Last reset", resetReasonName(resetReason),
                     resetReason == ESP_RST_PANIC ||
@@ -2370,42 +3185,86 @@ std::vector<SystemDiagnostic> systemDiagnostics() {
 }
 
 bool exportSystemDiagnostics() {
-    if (!sdAvailable) {
-        diagnosticExportStatus = "Export failed: no SD card";
-        return false;
-    }
-    SD.mkdir("/ghostwire");
-    SD.mkdir("/ghostwire/logs");
+    const std::vector<SystemDiagnostic> diagnostics = systemDiagnostics();
     String path;
-    for (uint16_t index = 1; index < 10000; ++index) {
-        char candidate[64];
-        snprintf(candidate, sizeof(candidate),
-                 "/ghostwire/logs/diagnostics_%04u.txt", index);
-        if (!SD.exists(candidate)) {
-            path = candidate;
-            break;
+    bool saved = false;
+    if (sdAvailable) {
+        SD.mkdir("/ghostwire");
+        SD.mkdir("/ghostwire/logs");
+        for (uint16_t index = 1; index < 10000; ++index) {
+            char candidate[64];
+            snprintf(candidate, sizeof(candidate),
+                     "/ghostwire/logs/diagnostics_%04u.txt", index);
+            if (!SD.exists(candidate)) {
+                path = candidate;
+                break;
+            }
+        }
+        if (!path.isEmpty()) {
+            File report = SD.open(path, FILE_WRITE);
+            if (report) {
+                report.printf("%s system diagnostics\n", Branding::productName);
+                report.printf("Creator: %s\n", Branding::creatorName);
+                report.printf("Generated UTC: %s\n\n",
+                              clockSynced ? utcTimestamp().c_str()
+                                          : "unavailable");
+                for (const auto& diagnostic : diagnostics) {
+                    report.printf("%-13s%s\n", diagnostic.label.c_str(),
+                                  diagnostic.value.c_str());
+                }
+                report.close();
+                saved = true;
+            }
         }
     }
-    if (path.isEmpty()) {
-        diagnosticExportStatus = "Export failed: filenames full";
-        return false;
+
+    bool uploaded = false;
+    int uploadStatus = 0;
+    const bool developmentBuild =
+        String(Branding::version).indexOf("-dev") >= 0;
+    if (developmentBuild && WiFi.status() == WL_CONNECTED) {
+        JsonDocument document;
+        document["schema"] = 1;
+        document["product"] = Branding::productName;
+        document["firmware"] = Branding::version;
+        document["generated_utc"] =
+            clockSynced ? utcTimestamp() : String("unavailable");
+        document["uptime_ms"] = millis();
+        document["collector"] = "manual-export";
+        JsonObject values = document["diagnostics"].to<JsonObject>();
+        for (const auto& diagnostic : diagnostics) {
+            values[diagnostic.label] = diagnostic.value;
+        }
+        String body;
+        serializeJson(document, body);
+        HTTPClient http;
+        http.setConnectTimeout(1500);
+        http.setTimeout(2500);
+        if (http.begin(kDevDiagnosticCollectorUrl)) {
+            http.addHeader("Content-Type", "application/json");
+            uploadStatus = http.POST(body);
+            uploaded = uploadStatus >= 200 && uploadStatus < 300;
+            http.end();
+        }
     }
-    File report = SD.open(path, FILE_WRITE);
-    if (!report) {
-        diagnosticExportStatus = "Export failed: SD write";
-        return false;
+
+    if (saved) {
+        diagnosticExportStatus =
+            "Saved " + path.substring(path.lastIndexOf('/') + 1);
+    } else if (!sdAvailable) {
+        diagnosticExportStatus = "SD unavailable";
+    } else if (path.isEmpty()) {
+        diagnosticExportStatus = "SD filenames full";
+    } else {
+        diagnosticExportStatus = "SD write failed";
     }
-    report.printf("%s system diagnostics\n", Branding::productName);
-    report.printf("Creator: %s\n", Branding::creatorName);
-    report.printf("Generated UTC: %s\n\n",
-                  clockSynced ? utcTimestamp().c_str() : "unavailable");
-    for (const auto& diagnostic : systemDiagnostics()) {
-        report.printf("%-13s%s\n", diagnostic.label.c_str(),
-                      diagnostic.value.c_str());
+    if (developmentBuild && WiFi.status() == WL_CONNECTED) {
+        const String sdResult = saved ? " + SD saved" : " + " + diagnosticExportStatus;
+        diagnosticExportStatus = uploaded
+                                     ? "HTTP sent" + sdResult
+                                     : "HTTP " + String(uploadStatus) + sdResult;
     }
-    report.close();
-    diagnosticExportStatus = "Saved " + path.substring(path.lastIndexOf('/') + 1);
-    return true;
+    return saved || uploaded;
 }
 
 // System Diagnostics screen: see include/system_screens.h/src/system_screens.cpp.
@@ -2475,6 +3334,7 @@ bool syncClockFromNtp() {
 
 bool startWifiGuardian() {
     guardianLastEvent = "Starting passive watch...";
+    if (!requireOperationStart(OperationKind::WifiGuardian)) return false;
     if (!sdAvailable) {
         guardianLastEvent = "microSD required for evidence";
         return false;
@@ -2923,6 +3783,197 @@ void showFamiliarSpeech(const String& message, uint32_t durationMs = 2600) {
     familiarSpeechBubbleUntil = millis() + durationMs;
 }
 
+bool isDevelopmentBuild() {
+    return String(Branding::version).indexOf("-dev") >= 0;
+}
+
+bool beginStatusLed() {
+    if (statusLedReady) return true;
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(GPIO_NUM_21, RMT_CHANNEL_3);
+    config.clk_div = 2;  // 40 MHz: one RMT tick is 25 ns.
+    config.mem_block_num = 1;
+    config.tx_config.loop_en = false;
+    config.tx_config.carrier_en = false;
+    config.tx_config.idle_output_en = true;
+    config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
+    if (rmt_config(&config) != ESP_OK) return false;
+    if (rmt_driver_install(config.channel, 0, 0) != ESP_OK) return false;
+    statusLedReady = true;
+    return true;
+}
+
+void writeStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
+    if (!beginStatusLed()) return;
+    const uint8_t bytes[] = {green, red, blue};
+    rmt_item32_t items[24]{};
+    size_t item = 0;
+    for (uint8_t value : bytes) {
+        for (uint8_t mask = 0x80; mask != 0; mask >>= 1) {
+            const bool one = (value & mask) != 0;
+            items[item].level0 = 1;
+            items[item].duration0 = one ? 28 : 14;
+            items[item].level1 = 0;
+            items[item].duration1 = one ? 24 : 32;
+            ++item;
+        }
+    }
+    rmt_write_items(RMT_CHANNEL_3, items, item, true);
+    delayMicroseconds(80);
+}
+
+void setStatusLed(bool enabled) {
+    if (ledOn == enabled) return;
+    ledOn = enabled;
+    writeStatusLed(enabled ? ledFlashRed : 0,
+                   enabled ? ledFlashGreen : 0,
+                   enabled ? ledFlashBlue : 0);
+}
+
+void startLedFlash(uint8_t red, uint8_t green, uint8_t blue,
+                   uint32_t durationMs, uint8_t pulses) {
+    // Cardputer ADV powers the RGB LED and LCD backlight from GPIO38. A solid
+    // LED therefore requires the shared rail (and backlight) at full power.
+    ledRestoreBrightness = screenSleeping ? 0 : screenBrightness;
+    M5Cardputer.Display.setBrightness(255);
+    delay(5);
+    ledPowerBoosted = true;
+    beginStatusLed();
+    ledFlashRed = red;
+    ledFlashGreen = green;
+    ledFlashBlue = blue;
+    ledFlashDuration = std::max<uint32_t>(250, std::min<uint32_t>(durationMs, 10000));
+    ledFlashPulses = std::max<uint8_t>(1, std::min<uint8_t>(pulses, 10));
+    ledFlashStarted = millis();
+    ledOn = false;
+    setStatusLed(true);
+}
+
+// Flashes the LED for a Familiar event using the operator's configured
+// per-event colour. Independent of the "Familiar cues" audio setting -- LED
+// alerts have their own enable toggle. Warning/Error always interrupt
+// whatever is currently flashing; routine events (Started/Host/Service/
+// Complete) are dropped rather than restarted if a flash is already running,
+// so a fast patrol pass finding many hosts in a row can't turn into a
+// continuous full-brightness strobe of the shared LED/backlight rail.
+void flashFamiliarLed(FamiliarCue cue) {
+    if (!familiarLedEnabled) return;
+    uint8_t colorIndex = 0;
+    switch (cue) {
+        case FamiliarCue::Started: colorIndex = familiarLedStartedColor; break;
+        case FamiliarCue::Host: colorIndex = familiarLedHostColor; break;
+        case FamiliarCue::Service: colorIndex = familiarLedServiceColor; break;
+        case FamiliarCue::Warning: colorIndex = familiarLedWarningColor; break;
+        case FamiliarCue::Complete: colorIndex = familiarLedCompleteColor; break;
+        case FamiliarCue::Error: colorIndex = familiarLedErrorColor; break;
+    }
+    if (colorIndex == 0 || colorIndex >= kLedColorCount) return;  // "Off"
+    const bool urgent =
+        cue == FamiliarCue::Warning || cue == FamiliarCue::Error;
+    if (ledFlashDuration > 0 && !urgent) return;
+    const LedColor& color = kLedColorValues[colorIndex];
+    if (urgent) {
+        startLedFlash(color.red, color.green, color.blue, 1200, 3);
+    } else if (cue == FamiliarCue::Complete) {
+        startLedFlash(color.red, color.green, color.blue, 900, 2);
+    } else {
+        startLedFlash(color.red, color.green, color.blue, 300, 1);
+    }
+}
+
+void pollDevLedControl() {
+    if (!isDevelopmentBuild()) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        if (devLedUdpListening) {
+            devLedUdp.stop();
+            devLedUdpListening = false;
+        }
+        return;
+    }
+    if (!devLedUdpListening) {
+        devLedUdpListening = devLedUdp.begin(kDevLedControlPort) == 1;
+        if (!devLedUdpListening) return;
+    }
+    const int packetSize = devLedUdp.parsePacket();
+    if (packetSize <= 0) return;
+    if (devLedUdp.remoteIP() != kDevControlHost || packetSize > 512) {
+        while (devLedUdp.available()) devLedUdp.read();
+        return;
+    }
+    char payload[513]{};
+    const int received = devLedUdp.read(
+        reinterpret_cast<uint8_t*>(payload), sizeof(payload) - 1);
+    if (received <= 0) return;
+    payload[received] = '\0';
+    JsonDocument document;
+    if (deserializeJson(document, payload) != DeserializationError::Ok) return;
+    const int red = document["red"] | -1;
+    const int green = document["green"] | -1;
+    const int blue = document["blue"] | -1;
+    if (red < 0 || red > 255 || green < 0 || green > 255 ||
+        blue < 0 || blue > 255) return;
+    String message = document["message"] | "";
+    message.replace("\r", " ");
+    message.replace("\n", " ");
+    if (message.length() > 80) message.remove(80);
+    const uint32_t duration = document["duration_ms"] | 1800U;
+    const uint8_t pulses = document["pulses"] | 1U;
+    if (message.length() > 0) {
+        devRemoteMessage = message;
+        devRemoteMessageUntil = millis() +
+            std::max<uint32_t>(1500, std::min<uint32_t>(duration, 10000));
+        devRemoteMessageVisible = false;
+        showFamiliarSpeech(message, duration);
+    } else {
+        devRemoteMessage = "";
+        devRemoteMessageUntil = 0;
+        devRemoteMessageVisible = false;
+    }
+    startLedFlash(red, green, blue, duration, pulses);
+    devLedUdp.beginPacket(devLedUdp.remoteIP(), devLedUdp.remotePort());
+    devLedUdp.print("{\"ok\":true}");
+    devLedUdp.endPacket();
+}
+
+void updateStatusLedAndDevMessage() {
+    if (ledFlashDuration > 0) {
+        const uint32_t elapsed = millis() - ledFlashStarted;
+        if (elapsed >= ledFlashDuration) {
+            ledFlashDuration = 0;
+            ledOn = false;
+            writeStatusLed(0, 0, 0);
+            if (ledPowerBoosted) {
+                M5Cardputer.Display.setBrightness(ledRestoreBrightness);
+                ledPowerBoosted = false;
+            }
+        } else {
+            if (ledFlashPulses == 1) {
+                setStatusLed(true);
+            } else {
+                const uint32_t phaseLength = std::max<uint32_t>(
+                    50, ledFlashDuration / (ledFlashPulses * 2));
+                setStatusLed(((elapsed / phaseLength) & 1U) == 0);
+            }
+        }
+    }
+    const bool messageActive = devRemoteMessageUntil != 0 &&
+        static_cast<int32_t>(devRemoteMessageUntil - millis()) > 0;
+    if (messageActive && !screenSleeping) {
+        auto& display = M5Cardputer.Display;
+        display.fillRoundRect(4, 22, display.width() - 8, 19, 4,
+                              Branding::panel);
+        display.drawRoundRect(4, 22, display.width() - 8, 19, 4,
+                              Branding::accent);
+        display.setTextColor(Branding::text, Branding::panel);
+        display.setCursor(10, 28);
+        display.print(devRemoteMessage.substring(0, 36));
+        devRemoteMessageVisible = true;
+    } else if (devRemoteMessageVisible) {
+        devRemoteMessageVisible = false;
+        devRemoteMessageUntil = 0;
+        if (!screenSleeping) drawCurrentScreen();
+    }
+}
+
 String familiarHostLabel(const IPAddress& ip) {
     // Always-available compact fallback. A future non-blocking name resolver
     // can replace this without changing reaction or rendering code.
@@ -2948,6 +3999,7 @@ const char* familiarServiceName(uint16_t port) {
 }
 
 void playFamiliarCue(FamiliarCue cue) {
+    flashFamiliarLed(cue);
     if (familiarCueIndex == 0) return;
     if (familiarCueIndex == kFamiliarCueCount - 1) {
         if (millis() - lastFamiliarCueMs >= 1800 ||
@@ -2987,6 +4039,34 @@ void playFamiliarCue(FamiliarCue cue) {
     M5Cardputer.Speaker.setVolume(speakerVolume);
     M5Cardputer.Speaker.tone(first, duration);
     if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
+}
+
+void playMeshMessageAlert() {
+    if (!meshMessageAlertsEnabled || speakerVolume == 0 ||
+        audioService.isPlaying() || millis() - lastFamiliarCueMs < 700) {
+        return;
+    }
+    lastFamiliarCueMs = millis();
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
+    M5Cardputer.Speaker.tone(988, 55);
+    meshAlertSecondNotePending = true;
+    meshAlertSecondNoteDue = millis() + 70;
+}
+
+void updateMeshMessageAlert() {
+    if (!meshAlertSecondNotePending ||
+        static_cast<long>(millis() - meshAlertSecondNoteDue) < 0) {
+        return;
+    }
+    meshAlertSecondNotePending = false;
+    if (!meshMessageAlertsEnabled || speakerVolume == 0 ||
+        audioService.isPlaying()) {
+        return;
+    }
+    M5Cardputer.Speaker.begin();
+    M5Cardputer.Speaker.setVolume(speakerVolume);
+    M5Cardputer.Speaker.tone(1319, 75);
 }
 
 // drawFamiliarSpeechBubble(): see FamiliarScreens::drawSpeechBubble.
@@ -3185,6 +4265,7 @@ void updateImu() {
 
 void drawCurrentScreen() {
     switch (currentScreen) {
+        case Screen::Onboarding: onboardingScreens.draw(); break;
         case Screen::MainMenu: menuScreens.drawMain(); break;
         case Screen::ObserveMenu: menuScreens.drawObserve(); break;
         case Screen::FieldKitMenu: menuScreens.drawFieldKit(); break;
@@ -3197,6 +4278,11 @@ void drawCurrentScreen() {
         case Screen::WifiConnectSelect: wifiScreens.drawConnectSelect(); break;
         case Screen::WifiConnectPassword: wifiScreens.drawConnectPassword(); break;
         case Screen::WifiConnectStatus: wifiScreens.drawConnectStatus(); break;
+        case Screen::WifiProfiles: wifiScreens.drawProfiles(); break;
+        case Screen::WifiProfileRename: wifiScreens.drawProfileRename(); break;
+        case Screen::WifiProfileDeleteConfirm:
+            wifiScreens.drawProfileDeleteConfirm();
+            break;
         case Screen::BleMenu: menuScreens.drawBle(); break;
         case Screen::DevicesMenu: menuScreens.drawDevices(); break;
         case Screen::AiChat: aiChatScreen.draw(); break;
@@ -3259,6 +4345,45 @@ void drawCurrentScreen() {
         case Screen::SshSession: sshScreens.drawSession(); break;
         case Screen::Gnss: gnssScreen.draw(); break;
         case Screen::LoRa: loraScreen.draw(); break;
+        case Screen::MeshNodes:
+            loraScreen.drawNodes(listSelection, listOffset);
+            break;
+        case Screen::MeshNodeDetail:
+            loraScreen.drawNodeDetail(listSelection);
+            break;
+        case Screen::MeshNodeTelemetry:
+            loraScreen.drawNodeTelemetry(listSelection);
+            break;
+        case Screen::MeshMessages:
+            loraScreen.drawChats(listSelection, listOffset);
+            break;
+        case Screen::MeshMessageDetail:
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
+            break;
+        case Screen::MeshRadar: loraScreen.drawRadar(); break;
+        case Screen::MeshChannels:
+            loraScreen.drawChannels(listSelection, listOffset,
+                                    meshChannelStatus, meshHopLimit);
+            break;
+        case Screen::MeshChannelEdit:
+            loraScreen.drawChannelEdit(meshChannelEditInput,
+                                       meshChannelEditStatus);
+            break;
+        case Screen::MeshCompose:
+            loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                   meshHopLimit, meshComposeRecipient,
+                                   meshComposeStatus);
+            break;
+        case Screen::MeshSettings:
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled,
+                                    meshIdentityEditing,
+                                    meshSettingsStatus);
+            break;
         case Screen::WifiSniffer: wifiSnifferScreen.draw(); break;
         case Screen::WifiGuardian: wifiGuardianScreen.draw(); break;
         case Screen::Imu: imuScreen.draw(); break;
@@ -3266,6 +4391,7 @@ void drawCurrentScreen() {
         case Screen::SettingsDisplay: settingsScreens.drawDisplay(); break;
         case Screen::SettingsBoot: settingsScreens.drawBoot(); break;
         case Screen::SettingsConnectivity: settingsScreens.drawConnectivity(); break;
+        case Screen::SettingsFamiliarLed: settingsScreens.drawFamiliarLed(); break;
         case Screen::SettingsReset: settingsScreens.drawResetConfirm(); break;
         case Screen::Placeholder: settingsScreens.drawPlaceholder(); break;
         case Screen::About: settingsScreens.drawAbout(); break;
@@ -3864,6 +4990,7 @@ bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
 void stopAllActiveOperations() {
     wifiGuardianService.stop();
     wifiSnifferService.end();
+    bleScanner.stop();
     bleSpamService.end();
     bleKeyboardService.end();
     stopBiscuitWardrive();
@@ -3877,6 +5004,14 @@ void stopAllActiveOperations() {
     telnetClient.stop();
     sshService.stop();
     audioService.stopPlayback();
+    audioService.endMicrophone();
+    // The SX1262 isn't gated by OperationCoordinator (it never conflicts
+    // with the Wi-Fi/BLE radio), so nothing else here reaches it. Background
+    // Mesh client mode intentionally survives normal screen navigation, but
+    // a global emergency stop means "every radio off now" -- silence it too,
+    // even though that means meshBackgroundEnabled won't resume receiving
+    // until the operator re-enters a Mesh screen or reboots.
+    loraService.end();
 
     imuLogger.stop();
     gnssLogger.stop();
@@ -3995,6 +5130,89 @@ void goBack() {
     if (currentScreen == Screen::Gnss) {
         gnssLogger.stop();
     }
+    if (currentScreen == Screen::MeshNodes ||
+        currentScreen == Screen::MeshMessages) {
+        const bool wasNodes = currentScreen == Screen::MeshNodes;
+        currentScreen = Screen::MeshMenu;
+        listSelection = wasNodes ? 1 : 0;
+        listOffset = 0;
+        menuScreens.drawMesh();
+        return;
+    }
+    if (currentScreen == Screen::MeshNodeDetail) {
+        currentScreen = Screen::MeshNodes;
+        loraScreen.drawNodes(listSelection, listOffset);
+        return;
+    }
+    if (currentScreen == Screen::MeshNodeTelemetry) {
+        currentScreen = Screen::MeshNodeDetail;
+        loraScreen.drawNodeDetail(listSelection);
+        return;
+    }
+    if (currentScreen == Screen::MeshMessageDetail) {
+        currentScreen = Screen::MeshMessages;
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.drawChats(listSelection, listOffset);
+        return;
+    }
+    if (currentScreen == Screen::MeshRadar) {
+        currentScreen = Screen::MeshMenu;
+        listSelection = 2;
+        listOffset = 0;
+        menuScreens.drawMesh();
+        return;
+    }
+    if (currentScreen == Screen::MeshChannels) {
+        currentScreen = Screen::MeshSettings;
+        listSelection = 6;
+        listOffset = 2;
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, false,
+                                meshSettingsStatus);
+        return;
+    }
+    if (currentScreen == Screen::MeshChannelEdit) {
+        currentScreen = Screen::MeshChannels;
+        listSelection = 0;
+        listOffset = 0;
+        loraScreen.drawChannels(listSelection, listOffset,
+                                meshChannelStatus, meshHopLimit);
+        return;
+    }
+    if (currentScreen == Screen::MeshCompose) {
+        currentScreen = meshComposeReturnScreen;
+        listSelection = 0;
+        listOffset = 0;
+        if (currentScreen == Screen::MeshMessageDetail) {
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
+        } else {
+            loraScreen.drawChats(listSelection, listOffset);
+        }
+        return;
+    }
+    if (currentScreen == Screen::MeshSettings) {
+        if (meshIdentityEditing) {
+            if (listSelection == 0) meshNodeName = meshIdentityEditOriginal;
+            else meshNodeShortName = meshIdentityEditOriginal;
+            meshIdentityEditing = false;
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled, false,
+                                    meshSettingsStatus);
+            return;
+        }
+        currentScreen = Screen::MeshMenu;
+        listSelection = 3;
+        listOffset = 0;
+        menuScreens.drawMesh();
+        return;
+    }
     if (currentScreen == Screen::LoRa) {
         loraLogger.stop();
     }
@@ -4015,15 +5233,20 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::LoRa) {
-        currentScreen = Screen::MeshMenu;
-        listSelection = 0;
-        menuScreens.drawMesh();
+        currentScreen = Screen::MeshSettings;
+        listSelection = 7;
+        listOffset = 3;
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, false,
+                                meshSettingsStatus);
         return;
     }
     if (currentScreen == Screen::NetworkHostScan) {
         networkHostScanService.stop();
         currentScreen = Screen::NetworkMenu;
-        listSelection = 0;
+        listSelection = 1;
         menuScreens.drawNetwork();
         return;
     }
@@ -4044,9 +5267,14 @@ void goBack() {
     if (currentScreen == Screen::SettingsDisplay ||
         currentScreen == Screen::SettingsBoot ||
         currentScreen == Screen::SettingsConnectivity ||
+        currentScreen == Screen::SettingsFamiliarLed ||
         currentScreen == Screen::SettingsReset) {
+        const Screen previous = currentScreen;
         currentScreen = Screen::Settings;
-        listSelection = 0;
+        listSelection = previous == Screen::SettingsDisplay ? 0
+                        : previous == Screen::SettingsBoot ? 1
+                        : previous == Screen::SettingsConnectivity ? 2
+                        : previous == Screen::SettingsFamiliarLed ? 3 : 8;
         listOffset = 0;
         menuScreens.drawSettings();
         return;
@@ -4071,8 +5299,8 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::QrDisplay) {
-        currentScreen = Screen::QrEntry;
-        qrScreens.drawEntry();
+        currentScreen = qrDisplayReturnScreen;
+        drawCurrentScreen();
         return;
     }
     if (currentScreen == Screen::TtsLab) {
@@ -4122,6 +5350,28 @@ void goBack() {
     if (currentScreen == Screen::TimeStatus) {
         currentScreen = Screen::System;
         systemScreens.drawSystem(systemDiagnostics());
+        return;
+    }
+    if (currentScreen == Screen::System || currentScreen == Screen::About) {
+        const bool wasSystem = currentScreen == Screen::System;
+        currentScreen = Screen::Settings;
+        listSelection = wasSystem ? 3 : 5;
+        listOffset = 0;
+        menuScreens.drawSettings();
+        return;
+    }
+    if (currentScreen == Screen::OtaCheck) {
+        currentScreen = Screen::Settings;
+        listSelection = 4;
+        listOffset = 0;
+        menuScreens.drawSettings();
+        return;
+    }
+    if (currentScreen == Screen::Onboarding) {
+        if (onboardingPage > 0) {
+            --onboardingPage;
+            onboardingScreens.draw();
+        }
         return;
     }
     if (currentScreen == Screen::WifiDetail) {
@@ -4174,8 +5424,11 @@ void goBack() {
         currentScreen == Screen::WifiChannelAnalyzer ||
         currentScreen == Screen::WifiSniffer ||
         currentScreen == Screen::WifiGuardian) {
+        const Screen previous = currentScreen;
         currentScreen = Screen::WifiMenu;
-        listSelection = 0;
+        listSelection = previous == Screen::WifiRecon ? 0
+                        : previous == Screen::WifiChannelAnalyzer ? 1
+                        : previous == Screen::WifiSniffer ? 2 : 3;
         menuScreens.drawWifi();
         return;
     }
@@ -4197,6 +5450,23 @@ void goBack() {
         // the explicit D key on this screen, not a side effect of leaving.
         currentScreen = Screen::WifiConnectSelect;
         wifiScreens.drawConnectSelect();
+        return;
+    }
+    if (currentScreen == Screen::WifiProfileDeleteConfirm) {
+        currentScreen = Screen::WifiProfiles;
+        wifiScreens.drawProfiles();
+        return;
+    }
+    if (currentScreen == Screen::WifiProfileRename) {
+        currentScreen = Screen::WifiProfiles;
+        wifiScreens.drawProfiles();
+        return;
+    }
+    if (currentScreen == Screen::WifiProfiles) {
+        currentScreen = Screen::WifiMenu;
+        listSelection = 5;
+        listOffset = 0;
+        menuScreens.drawWifi();
         return;
     }
     if (currentScreen == Screen::BleDiscovery) {
@@ -4271,12 +5541,18 @@ void goBack() {
     if (currentScreen == Screen::Infrared || currentScreen == Screen::UsbHid ||
         currentScreen == Screen::Audio ||
         currentScreen == Screen::Imu ||
-        currentScreen == Screen::System || currentScreen == Screen::About ||
         currentScreen == Screen::Files) {
         // Files only reaches here when at "/" -- the case above already
         // returns for "go up a directory" when currentPath isn't root.
+        const Screen previous = currentScreen;
         currentScreen = Screen::ToolsMenu;
-        listSelection = 0;
+        listSelection = previous == Screen::Infrared ? 0
+                        : previous == Screen::UsbHid ? 1
+                        : previous == Screen::Audio ? 2
+                        : previous == Screen::Imu ? 4 : 5;
+        listOffset = listSelection >= ScreenChrome::kVisibleRows
+                         ? listSelection - ScreenChrome::kVisibleRows + 1
+                         : 0;
         menuScreens.drawTools();
         return;
     }
@@ -4298,6 +5574,9 @@ void goBack() {
     if (currentScreen == Screen::WifiMenu || currentScreen == Screen::BleMenu ||
         currentScreen == Screen::GpsMenu || currentScreen == Screen::MeshMenu) {
         const Screen previous = currentScreen;
+        if (previous == Screen::MeshMenu && !meshBackgroundEnabled) {
+            loraService.end();
+        }
         currentScreen = Screen::ObserveMenu;
         listSelection = previous == Screen::WifiMenu ? 0
                         : previous == Screen::BleMenu ? 1
@@ -4334,6 +5613,180 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         stopAllActiveOperations();
         return;
     }
+    if (currentScreen == Screen::Onboarding) {
+        const bool skip = pressedLetter(keys, 's');
+        const bool back = keys.esc || pressedLetter(keys, 'q');
+        const bool choiceLeft = keys.left || pressedLetter(keys, ',');
+        const bool choiceRight = keys.right || pressedLetter(keys, '/');
+        if (back && onboardingPage > 0) {
+            --onboardingPage;
+            onboardingScreens.draw();
+            return;
+        }
+        if ((choiceLeft || choiceRight) && onboardingPage == 4) {
+            cardNavigationEnabled = !cardNavigationEnabled;
+            onboardingScreens.draw();
+            return;
+        }
+        if ((choiceLeft || choiceRight) && onboardingPage == 5) {
+            saveWifiCredentials = !saveWifiCredentials;
+            onboardingScreens.draw();
+            return;
+        }
+        if (skip || (back && onboardingPage == 0) ||
+            (keys.enter &&
+             onboardingPage == OnboardingScreens::kPageCount - 1)) {
+            if (!saveWifiCredentials) {
+                autoConnectWifi = false;
+                clearWifiProfiles();
+            }
+            saveSettings();
+            preferences.putBool("intro_done", true);
+            onboardingPage = 0;
+            if (onboardingFromSettings) {
+                onboardingFromSettings = false;
+                currentScreen = Screen::Settings;
+                listSelection = 7;
+                listOffset = 1;
+                menuScreens.drawSettings();
+            } else {
+                currentScreen = Screen::MainMenu;
+                menuSelection = 0;
+                listSelection = 0;
+                listOffset = 0;
+                menuScreens.drawMain();
+            }
+            return;
+        }
+        if (keys.enter &&
+            onboardingPage + 1 < OnboardingScreens::kPageCount) {
+            ++onboardingPage;
+            onboardingScreens.draw();
+        }
+        return;
+    }
+    if (currentScreen == Screen::MeshChannelEdit) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (keys.enter) {
+            if (addMeshChannel(meshChannelEditInput, meshChannelEditStatus)) {
+                meshChannelStatus = meshChannelEditStatus;
+                meshChannelEditInput = "";
+                currentScreen = Screen::MeshChannels;
+                listSelection = loraService.meshChannels().size() - 1;
+                listOffset = 0;
+                loraScreen.drawChannels(listSelection, listOffset,
+                                        meshChannelStatus, meshHopLimit);
+                return;
+            }
+        } else {
+            if (keys.backspace && !meshChannelEditInput.isEmpty()) {
+                meshChannelEditInput.remove(meshChannelEditInput.length() - 1);
+            }
+            for (char character : keys.word) {
+                if (!keys.ctrl && character >= 32 && character <= 126 &&
+                    meshChannelEditInput.length() < 100) {
+                    meshChannelEditInput += character;
+                }
+            }
+            meshChannelEditStatus = "";
+        }
+        loraScreen.drawChannelEdit(meshChannelEditInput, meshChannelEditStatus);
+        return;
+    }
+    if (currentScreen == Screen::MeshCompose) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (meshComposeRecipient == 0xffffffffU && keys.left &&
+            !loraService.meshChannels().empty()) {
+            meshTransmitChannel = meshTransmitChannel == 0
+                                      ? loraService.meshChannels().size() - 1
+                                      : meshTransmitChannel - 1;
+        }
+        if (meshComposeRecipient == 0xffffffffU && keys.right &&
+            !loraService.meshChannels().empty()) {
+            meshTransmitChannel =
+                (meshTransmitChannel + 1) % loraService.meshChannels().size();
+        }
+        if (keys.enter && !meshDraft.isEmpty()) {
+            if (loraService.sendText(meshDraft, meshTransmitChannel, meshNodeId,
+                                     meshComposeRecipient, meshHopLimit)) {
+                meshDraft = "";
+                meshPersistDue = millis() + 2000;
+                meshComposeStatus = loraService.transmitStatus();
+                currentScreen = meshComposeReturnScreen;
+                listSelection = 0;
+                listOffset = 0;
+                if (currentScreen == Screen::MeshMessageDetail) {
+                    loraScreen.drawConversation(meshConversationDirect,
+                                                meshConversationPeer,
+                                                meshConversationChannel);
+                } else {
+                    loraScreen.drawChats(listSelection, listOffset);
+                }
+                return;
+            }
+            meshComposeStatus = loraService.transmitStatus();
+            loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                   meshHopLimit, meshComposeRecipient,
+                                   meshComposeStatus);
+            return;
+        }
+        if (keys.backspace && !meshDraft.isEmpty()) {
+            meshDraft.remove(meshDraft.length() - 1);
+        }
+        for (char value : keys.word) {
+            if (!keys.ctrl && meshDraft.length() < 180) meshDraft += value;
+        }
+        meshComposeStatus = "";
+        loraScreen.drawCompose(meshDraft, meshTransmitChannel, meshHopLimit,
+                               meshComposeRecipient, meshComposeStatus);
+        return;
+    }
+    if (currentScreen == Screen::MeshSettings && meshIdentityEditing) {
+        String& value = listSelection == 0 ? meshNodeName : meshNodeShortName;
+        const size_t limit = listSelection == 0 ? 24 : 4;
+        if (keys.esc) {
+            value = meshIdentityEditOriginal;
+            meshIdentityEditing = false;
+        } else if (keys.enter) {
+            value.trim();
+            if (value.isEmpty()) {
+                value = meshIdentityEditOriginal;
+                meshSettingsStatus = "Name cannot be empty";
+            } else {
+                preferences.putString(listSelection == 0 ? "mesh_name"
+                                                         : "mesh_short",
+                                      value);
+                meshSettingsStatus = "Saved; advertise to publish";
+                LoRaService::MeshNode localMeshNode;
+                localMeshNode.id = meshNodeId;
+                localMeshNode.longName = meshNodeName;
+                localMeshNode.shortName = meshNodeShortName;
+                localMeshNode.publicKey = meshPublicKey;
+                loraService.restoreNode(localMeshNode);
+            }
+            meshIdentityEditing = false;
+        } else {
+            if (keys.backspace && !value.isEmpty()) {
+                value.remove(value.length() - 1);
+            }
+            for (char character : keys.word) {
+                if (!keys.ctrl && character >= 32 && character <= 126 &&
+                    value.length() < limit) value += character;
+            }
+        }
+        loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                meshNodeShortName, meshTransmitChannel,
+                                meshHopLimit, meshBackgroundEnabled,
+                                meshMessageAlertsEnabled, meshIdentityEditing,
+                                meshSettingsStatus);
+        return;
+    }
     // QR composition owns printable keys before global letter shortcuts.
     if (currentScreen == Screen::QrEntry) {
         if (keys.esc) {
@@ -4341,6 +5794,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             return;
         }
         if (keys.enter && !qrText.isEmpty()) {
+            qrDisplayReturnScreen = Screen::QrEntry;
             currentScreen = Screen::QrDisplay;
             qrScreens.drawDisplay();
             return;
@@ -4361,6 +5815,31 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             currentScreen = Screen::QrEntry;
             qrScreens.drawEntry();
         }
+        return;
+    }
+    if (currentScreen == Screen::WifiProfileRename) {
+        if (keys.esc) {
+            goBack();
+            return;
+        }
+        if (keys.enter && !wifiProfileNameInput.isEmpty() &&
+            listSelection < wifiProfiles.size()) {
+            wifiProfiles[listSelection].name = wifiProfileNameInput;
+            persistWifiProfiles();
+            wifiProfileStatus = "Profile renamed";
+            currentScreen = Screen::WifiProfiles;
+            wifiScreens.drawProfiles();
+            return;
+        }
+        if (keys.backspace && !wifiProfileNameInput.isEmpty()) {
+            wifiProfileNameInput.remove(wifiProfileNameInput.length() - 1);
+        }
+        for (char value : keys.word) {
+            if (!keys.ctrl && wifiProfileNameInput.length() < 24) {
+                wifiProfileNameInput += value;
+            }
+        }
+        drawTextEntryRow(56, "Name: ", wifiProfileNameInput);
         return;
     }
     if (currentScreen == Screen::TtsLab) {
@@ -4527,6 +6006,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         }
         if (!bleKeyboardService.isActive()) {
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleTransmit)) {
+                    return;
+                }
                 bleKeyboardService.begin(batteryPercentage());
             }
             bleScreens.drawKeyboard();
@@ -4573,7 +6055,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::TelnetConnect) {
         if (keys.esc) {
             currentScreen = telnetReturnScreen;
-            listSelection = 0;
+            listSelection = telnetReturnScreen == Screen::NetworkMenu ? 2 : 0;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -4627,7 +6109,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::SshConnect) {
         if (keys.esc) {
             currentScreen = Screen::NetworkMenu;
-            listSelection = 0;
+            listSelection = 3;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -4815,7 +6297,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     const bool settingsAdjustmentScreen =
         currentScreen == Screen::SettingsDisplay ||
         currentScreen == Screen::SettingsBoot ||
-        currentScreen == Screen::SettingsConnectivity;
+        currentScreen == Screen::SettingsConnectivity ||
+        currentScreen == Screen::MeshChannels ||
+        currentScreen == Screen::MeshSettings;
     const bool alternateBack =
         (navigationLeft && !cardMenuScreen && !settingsAdjustmentScreen) ||
         pressedLetter(keys, 'q') ||
@@ -4842,6 +6326,12 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     }
 
     switch (currentScreen) {
+        case Screen::MeshCompose:
+            // Handled before the global navigation shortcuts above.
+            break;
+        case Screen::MeshChannelEdit:
+            // Handled before global shortcuts so Base64 input is literal.
+            break;
         case Screen::MainMenu:
             if (up) {
                 menuSelection = menuSelection == 0 ? MenuScreens::kMenuCount - 1
@@ -4903,8 +6393,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::WifiMenu:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 6);
+            if (down) moveSelection(1, 6);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::WifiRecon;
@@ -4915,18 +6405,30 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     drawCurrentScreen();
                     scanWifiNetworks();
                 } else if (listSelection == 2) {
+                    if (!requireOperationStart(OperationKind::WifiCapture)) {
+                        return;
+                    }
                     currentScreen = Screen::WifiSniffer;
                     recentWifiProbes.clear();
                     wifiSnifferService.begin();
                     drawCurrentScreen();
                 } else if (listSelection == 3) {
+                    if (!requireOperationStart(OperationKind::WifiGuardian)) {
+                        return;
+                    }
                     currentScreen = Screen::WifiGuardian;
                     startWifiGuardian();
                     drawCurrentScreen();
-                } else {
+                } else if (listSelection == 4) {
                     currentScreen = Screen::WifiConnectSelect;
                     drawCurrentScreen();
                     scanWifiNetworks();
+                } else {
+                    currentScreen = Screen::WifiProfiles;
+                    listSelection = 0;
+                    listOffset = 0;
+                    wifiProfileStatus = "";
+                    drawCurrentScreen();
                 }
                 return;
             }
@@ -4968,6 +6470,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             if (pressedLetter(keys, 'h') && !accessPoints.empty()) {
+                if (!requireOperationStart(
+                        OperationKind::HandshakeCapture)) return;
                 handshakeEapolFrameCount = 0;
                 for (bool& seen : handshakeMessageSeen) seen = false;
                 handshakePmkidFound = false;
@@ -5047,6 +6551,49 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             wifiScreens.drawConnectStatus();
             break;
 
+        case Screen::WifiProfiles:
+            if (up) moveSelection(-1, wifiProfiles.size());
+            if (down) moveSelection(1, wifiProfiles.size());
+            if (keys.enter && listSelection < wifiProfiles.size()) {
+                const WifiProfile profile = wifiProfiles[listSelection];
+                wifiProfileStatus = "";
+                startWifiConnection(profile.ssid, profile.password);
+                return;
+            }
+            if (pressedLetter(keys, 'a') &&
+                listSelection < wifiProfiles.size()) {
+                activeWifiProfile = listSelection;
+                persistWifiProfiles();
+                wifiProfileStatus = "Default profile selected";
+            }
+            if (pressedLetter(keys, 'n') &&
+                listSelection < wifiProfiles.size()) {
+                wifiProfileNameInput = wifiProfiles[listSelection].name;
+                currentScreen = Screen::WifiProfileRename;
+                wifiScreens.drawProfileRename();
+                return;
+            }
+            if (pressedLetter(keys, 'd') &&
+                listSelection < wifiProfiles.size()) {
+                currentScreen = Screen::WifiProfileDeleteConfirm;
+                wifiScreens.drawProfileDeleteConfirm();
+                return;
+            }
+            wifiScreens.drawProfiles();
+            break;
+
+        case Screen::WifiProfileDeleteConfirm:
+            if (keys.enter && listSelection < wifiProfiles.size()) {
+                deleteWifiProfile(listSelection);
+                if (!wifiProfiles.empty() && listSelection >= wifiProfiles.size()) {
+                    listSelection = wifiProfiles.size() - 1;
+                }
+                wifiProfileStatus = "Profile deleted";
+                currentScreen = Screen::WifiProfiles;
+                wifiScreens.drawProfiles();
+            }
+            break;
+
         case Screen::BleMenu:
             if (up) moveSelection(-1, 3);
             if (down) moveSelection(1, 3);
@@ -5073,6 +6620,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (up) moveSelection(-1, 2);
             if (down) moveSelection(1, 2);
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleAccessory)) {
+                    return;
+                }
                 currentScreen = listSelection == 0 ? Screen::Biscuit
                                                    : Screen::Chameleon;
                 if (currentScreen == Screen::Chameleon) {
@@ -5089,6 +6639,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::Biscuit:
             if (refresh || (keys.enter && !biscuitClient.isConnected())) {
+                if (!requireOperationStart(OperationKind::BleAccessory)) {
+                    return;
+                }
                 drawHeader("Biscuit Pro");
                 M5Cardputer.Display.setTextColor(Branding::warning,
                                                  Branding::background);
@@ -5192,6 +6745,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (up) moveSelection(-1, BleSpamScreen::kModeCount);
             if (down) moveSelection(1, BleSpamScreen::kModeCount);
             if (keys.enter) {
+                if (!requireOperationStart(OperationKind::BleTransmit)) {
+                    break;
+                }
                 bleSpamService.begin(
                     BleSpamScreen::modeForSelection(listSelection));
                 currentScreen = Screen::BleSpam;
@@ -5301,6 +6857,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     bleCaptureLogger.stop();
                     bleStatus = "Continuous capture stopped";
                 } else {
+                    if (!requireOperationStart(OperationKind::BleCapture)) {
+                        return;
+                    }
                     bleDevices.clear();
                     bleExportStatus = "";
                     if (bleScanner.beginContinuous(bleStatus) && sdAvailable) {
@@ -5398,6 +6957,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             if (keys.enter && sdAvailable && WiFi.status() == WL_CONNECTED) {
+                if (!requireOperationStart(OperationKind::FamiliarPatrol)) {
+                    return;
+                }
                 if (familiarPatrolService.start(WiFi.localIP(),
                         WiFi.subnetMask(), familiarPatrolContinuousChoice,
                         kFamiliarPatrolIntervals[familiarPatrolIntervalIndex])) {
@@ -5436,8 +6998,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::ToolsMenu:
-            if (up) moveSelection(-1, 9);
-            if (down) moveSelection(1, 9);
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
             if (keys.enter) {
                 const size_t toolIndex = listSelection;
                 listSelection = 0;
@@ -5464,8 +7026,6 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         qrText = "";
                         currentScreen = Screen::QrEntry;
                         break;
-                    case 7: currentScreen = Screen::System; break;
-                    case 8: currentScreen = Screen::About; break;
                 }
                 drawCurrentScreen();
                 return;
@@ -5687,8 +7247,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 initSd();
                 diagnosticExportStatus = "";
             }
-            if (up) moveSelection(-1, kSystemDiagnosticCount);
-            if (down) moveSelection(1, kSystemDiagnosticCount);
+            if (up || down) {
+                const size_t diagnosticCount = systemDiagnostics().size();
+                if (up) moveSelection(-1, diagnosticCount);
+                if (down) moveSelection(1, diagnosticCount);
+            }
             if (pressedLetter(keys, 'e')) exportSystemDiagnostics();
             if (keys.enter) {
                 currentScreen = Screen::TimeStatus;
@@ -5715,15 +7278,23 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::MeshMenu:
+            if (up) moveSelection(-1, 4);
+            if (down) moveSelection(1, 4);
             if (keys.enter) {
-                currentScreen = Screen::LoRa;
+                const size_t destination = listSelection;
+                currentScreen = destination == 0 ? Screen::MeshMessages
+                              : destination == 1 ? Screen::MeshNodes
+                              : destination == 2 ? Screen::MeshRadar
+                                                 : Screen::MeshSettings;
+                listSelection = 0;
+                listOffset = 0;
                 drawHeader("LoRa Receive");
                 M5Cardputer.Display.setTextColor(Branding::warning,
                                                 Branding::background);
                 M5Cardputer.Display.setCursor(8, 42);
                 M5Cardputer.Display.print("Initialising SX1262...");
                 loraService.begin();
-                loraScreen.draw();
+                drawCurrentScreen();
                 return;
             }
             menuScreens.drawMesh();
@@ -5732,6 +7303,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::WarDrive:
             if (refresh) {
                 if (!warDriveService.isActive()) {
+                    if (!requireOperationStart(OperationKind::WarDrive)) {
+                        return;
+                    }
                     warDriveService.start();
                     if (sdAvailable) {
                         const String wigleHeader =
@@ -5795,6 +7369,9 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             }
             if (refresh) {
                 if (!networkHostScanService.isActive()) {
+                    if (!requireOperationStart(OperationKind::NetworkScan)) {
+                        return;
+                    }
                     networkHostResults.clear();
                     networkHostScanExportStatus = "";
                     listSelection = 0;
@@ -5902,10 +7479,313 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 }
             } else if (pressedLetter(keys, 'p')) {
                 loraService.toggleProfile();
+            } else if (pressedLetter(keys, 'n')) {
+                currentScreen = Screen::MeshNodes;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.drawNodes(listSelection, listOffset);
+                return;
+            } else if (pressedLetter(keys, 'm')) {
+                currentScreen = Screen::MeshMessages;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.drawChats(listSelection, listOffset);
+                return;
             } else if (refresh) {
                 loraService.restartReceive();
             }
             loraScreen.draw();
+            break;
+
+        case Screen::MeshNodes:
+            if (up) moveSelection(-1, loraService.nodes().size());
+            if (down) moveSelection(1, loraService.nodes().size());
+            normalizeListPosition(loraService.nodes().size());
+            if (keys.enter && !loraService.nodes().empty()) {
+                currentScreen = Screen::MeshNodeDetail;
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            loraScreen.drawNodes(listSelection, listOffset);
+            break;
+
+        case Screen::MeshNodeDetail:
+            if (pressedLetter(keys, 'v') &&
+                listSelection < loraService.nodes().size()) {
+                if (loraService.acceptChangedKey(
+                        loraService.nodes()[listSelection].id)) {
+                    meshPersistDue = millis() + 100;
+                }
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            if (pressedLetter(keys, 'h')) {
+                currentScreen = Screen::MeshNodeTelemetry;
+                loraScreen.drawNodeTelemetry(listSelection);
+                return;
+            }
+            if (listSelection < loraService.nodes().size() &&
+                (pressedLetter(keys, 'p') || pressedLetter(keys, 't') ||
+                 pressedLetter(keys, 'i'))) {
+                const auto& node = loraService.nodes()[listSelection];
+                const uint32_t port = pressedLetter(keys, 'p') ? 3
+                                      : pressedLetter(keys, 't') ? 67 : 4;
+                loraService.sendRequest(port, meshTransmitChannel, meshNodeId,
+                                        node.id, meshHopLimit);
+                loraScreen.drawNodeDetail(listSelection);
+                return;
+            }
+            if (pressedLetter(keys, 'c') &&
+                listSelection < loraService.nodes().size()) {
+                const auto& node = loraService.nodes()[listSelection];
+                if (node.id != meshNodeId) {
+                    meshConversationDirect = true;
+                    meshConversationPeer = node.id;
+                    meshConversationChannel = "PKI";
+                    loraService.markConversationRead(true, node.id, "PKI");
+                    currentScreen = Screen::MeshMessageDetail;
+                    loraScreen.drawConversation(true, node.id, "PKI");
+                    return;
+                }
+            }
+            if ((keys.enter || pressedLetter(keys, 'm')) &&
+                listSelection < loraService.nodes().size()) {
+                const auto& node = loraService.nodes()[listSelection];
+                if (node.id != meshNodeId) {
+                    if (node.publicKey.size() != 32 ||
+                        node.keyState == LoRaService::MeshNode::KeyState::Changed) {
+                        loraService.sendNodeInfo(
+                            meshNodeName, meshNodeShortName,
+                            meshTransmitChannel, meshNodeId, meshHopLimit);
+                        meshSettingsStatus = loraService.transmitStatus();
+                        loraScreen.drawNodeDetail(listSelection);
+                        return;
+                    }
+                    meshConversationDirect = true;
+                    meshConversationPeer = node.id;
+                    meshConversationChannel = "PKI";
+                    meshComposeRecipient = node.id;
+                    meshComposeReturnScreen = Screen::MeshMessageDetail;
+                    meshDraft = "";
+                    meshComposeStatus = "";
+                    currentScreen = Screen::MeshCompose;
+                    loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                           meshHopLimit, meshComposeRecipient,
+                                           meshComposeStatus);
+                    return;
+                }
+            }
+            loraScreen.drawNodeDetail(listSelection);
+            break;
+
+        case Screen::MeshNodeTelemetry:
+            if (pressedLetter(keys, 't') &&
+                listSelection < loraService.nodes().size()) {
+                loraService.sendRequest(67, meshTransmitChannel, meshNodeId,
+                                        loraService.nodes()[listSelection].id,
+                                        meshHopLimit);
+            }
+            loraScreen.drawNodeTelemetry(listSelection);
+            break;
+
+        case Screen::MeshMessages: {
+            const auto chats = loraService.conversations();
+            if (up) moveSelection(-1, chats.size());
+            if (down) moveSelection(1, chats.size());
+            normalizeListPosition(chats.size());
+            if ((keys.enter || pressedLetter(keys, 'c')) && !chats.empty()) {
+                const auto& chat = chats[listSelection];
+                meshConversationDirect = chat.direct;
+                meshConversationPeer = chat.peer;
+                meshConversationChannel = chat.channel;
+                for (size_t channel = 0;
+                     channel < loraService.meshChannels().size(); ++channel) {
+                    if (loraService.meshChannels()[channel].name == chat.channel) {
+                        meshTransmitChannel = channel;
+                        break;
+                    }
+                }
+                if (pressedLetter(keys, 'c')) {
+                    meshComposeRecipient = chat.direct ? chat.peer : 0xffffffffU;
+                    meshComposeReturnScreen = Screen::MeshMessages;
+                    meshDraft = "";
+                    meshComposeStatus = "";
+                    currentScreen = Screen::MeshCompose;
+                    loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                           meshHopLimit, meshComposeRecipient,
+                                           meshComposeStatus);
+                } else {
+                    loraService.markConversationRead(
+                        meshConversationDirect, meshConversationPeer,
+                        meshConversationChannel);
+                    meshPersistDue = millis() + 2000;
+                    currentScreen = Screen::MeshMessageDetail;
+                    loraScreen.drawConversation(meshConversationDirect,
+                                                meshConversationPeer,
+                                                meshConversationChannel);
+                }
+                return;
+            }
+            loraScreen.drawChats(listSelection, listOffset);
+            break;
+        }
+
+        case Screen::MeshMessageDetail:
+            if (keys.enter || pressedLetter(keys, 'c')) {
+                meshComposeRecipient = meshConversationDirect
+                                           ? meshConversationPeer
+                                           : 0xffffffffU;
+                meshComposeReturnScreen = Screen::MeshMessageDetail;
+                meshDraft = "";
+                meshComposeStatus = "";
+                currentScreen = Screen::MeshCompose;
+                loraScreen.drawCompose(meshDraft, meshTransmitChannel,
+                                       meshHopLimit, meshComposeRecipient,
+                                       meshComposeStatus);
+                return;
+            }
+            loraScreen.drawConversation(meshConversationDirect,
+                                        meshConversationPeer,
+                                        meshConversationChannel);
+            break;
+
+        case Screen::MeshRadar:
+            loraScreen.drawRadar();
+            break;
+
+        case Screen::MeshChannels:
+            if (pressedLetter(keys, 'x')) {
+                qrText = meshChannelToken(listSelection);
+                if (!qrText.isEmpty()) {
+                    qrDisplayReturnScreen = Screen::MeshChannels;
+                    currentScreen = Screen::QrDisplay;
+                    qrScreens.drawDisplay();
+                    return;
+                }
+            }
+            if (pressedLetter(keys, 'a')) {
+                meshChannelEditInput = "";
+                meshChannelEditStatus = "";
+                currentScreen = Screen::MeshChannelEdit;
+                loraScreen.drawChannelEdit(meshChannelEditInput,
+                                           meshChannelEditStatus);
+                return;
+            }
+            if (pressedLetter(keys, 'd')) {
+                if (deleteMeshChannel(listSelection)) {
+                    meshChannelStatus = "Channel deleted";
+                    if (listSelection >= loraService.meshChannels().size() &&
+                        listSelection > 0) --listSelection;
+                } else {
+                    meshChannelStatus = listSelection == 0
+                                            ? "Public channel cannot be deleted"
+                                            : "Delete failed";
+                }
+            }
+            if (refresh) loadMeshChannels();
+            if (navigationLeft && meshHopLimit > 1) {
+                --meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
+            if (navigationRight && meshHopLimit < 7) {
+                ++meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
+            if (up) moveSelection(-1, loraService.meshChannels().size());
+            if (down) moveSelection(1, loraService.meshChannels().size());
+            normalizeListPosition(loraService.meshChannels().size());
+            loraScreen.drawChannels(listSelection, listOffset,
+                                    meshChannelStatus, meshHopLimit);
+            break;
+
+        case Screen::MeshSettings:
+            if (up) moveSelection(-1, 12);
+            if (down) moveSelection(1, 12);
+            normalizeListPosition(12);
+            if (listSelection == 4 && (navigationLeft || navigationRight)) {
+                meshBackgroundEnabled = !meshBackgroundEnabled;
+                preferences.putBool("mesh_bg", meshBackgroundEnabled);
+                if (meshBackgroundEnabled && !loraService.isReady()) {
+                    loraService.begin();
+                }
+                meshSettingsStatus = meshBackgroundEnabled
+                                         ? "Background receive enabled"
+                                         : "Stops after leaving Mesh";
+            }
+            if (listSelection == 5 && (navigationLeft || navigationRight)) {
+                meshMessageAlertsEnabled = !meshMessageAlertsEnabled;
+                preferences.putBool("mesh_alert", meshMessageAlertsEnabled);
+                meshSettingsStatus = meshMessageAlertsEnabled
+                                         ? "New-message tones enabled"
+                                         : "Message alerts muted";
+            }
+            if (listSelection == 2 && !loraService.meshChannels().empty()) {
+                if (navigationLeft) {
+                    meshTransmitChannel = meshTransmitChannel == 0
+                        ? loraService.meshChannels().size() - 1
+                        : meshTransmitChannel - 1;
+                }
+                if (navigationRight) {
+                    meshTransmitChannel =
+                        (meshTransmitChannel + 1) %
+                        loraService.meshChannels().size();
+                }
+                preferences.putUChar("mesh_tx_ch",
+                                     static_cast<uint8_t>(meshTransmitChannel));
+            }
+            if (listSelection == 3) {
+                if (navigationLeft && meshHopLimit > 1) --meshHopLimit;
+                if (navigationRight && meshHopLimit < 7) ++meshHopLimit;
+                preferences.putUChar("mesh_hops", meshHopLimit);
+            }
+            if (keys.enter && (listSelection == 0 || listSelection == 1)) {
+                meshIdentityEditOriginal = listSelection == 0
+                                               ? meshNodeName
+                                               : meshNodeShortName;
+                meshIdentityEditing = true;
+                meshSettingsStatus = "";
+            } else if (keys.enter && listSelection == 6) {
+                currentScreen = Screen::MeshChannels;
+                listSelection = meshTransmitChannel;
+                listOffset = 0;
+                loraScreen.drawChannels(listSelection, listOffset,
+                                        meshChannelStatus, meshHopLimit);
+                return;
+            } else if (keys.enter && listSelection == 7) {
+                currentScreen = Screen::LoRa;
+                listSelection = 0;
+                listOffset = 0;
+                loraScreen.draw();
+                return;
+            } else if (keys.enter && listSelection == 10) {
+                if (loraService.sendNodeInfo(
+                        meshNodeName, meshNodeShortName, meshTransmitChannel,
+                        meshNodeId, meshHopLimit)) {
+                    LoRaService::MeshNode localMeshNode;
+                    localMeshNode.id = meshNodeId;
+                    localMeshNode.longName = meshNodeName;
+                    localMeshNode.shortName = meshNodeShortName;
+                    localMeshNode.publicKey = meshPublicKey;
+                    loraService.restoreNode(localMeshNode);
+                }
+                meshSettingsStatus = loraService.transmitStatus();
+            } else if (keys.enter && listSelection == 11) {
+                if (!gnssService.hasFix()) {
+                    meshSettingsStatus = "GNSS fix required";
+                } else {
+                    loraService.sendPosition(
+                        gnssService.latitude(), gnssService.longitude(),
+                        static_cast<int32_t>(gnssService.altitudeMetres()),
+                        meshTransmitChannel, meshNodeId, meshHopLimit);
+                    meshSettingsStatus = loraService.transmitStatus();
+                }
+            }
+            loraScreen.drawSettings(listSelection, listOffset, meshNodeName,
+                                    meshNodeShortName, meshTransmitChannel,
+                                    meshHopLimit, meshBackgroundEnabled,
+                                    meshMessageAlertsEnabled,
+                                    meshIdentityEditing,
+                                    meshSettingsStatus);
             break;
 
         case Screen::WifiSniffer:
@@ -5978,19 +7858,25 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Settings:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 9);
+            if (down) moveSelection(1, 9);
             if (keys.enter) {
                 if (listSelection == 0) currentScreen = Screen::SettingsDisplay;
                 else if (listSelection == 1) currentScreen = Screen::SettingsBoot;
                 else if (listSelection == 2) currentScreen = Screen::SettingsConnectivity;
-                else if (listSelection == 3) currentScreen = Screen::SettingsReset;
-                else {
+                else if (listSelection == 3) currentScreen = Screen::SettingsFamiliarLed;
+                else if (listSelection == 4) currentScreen = Screen::System;
+                else if (listSelection == 5) {
                     listSelection = 0;
                     listOffset = 0;
                     checkForFirmwareUpdate();
                     return;
-                }
+                } else if (listSelection == 6) currentScreen = Screen::About;
+                else if (listSelection == 7) {
+                    onboardingPage = 0;
+                    onboardingFromSettings = true;
+                    currentScreen = Screen::Onboarding;
+                } else currentScreen = Screen::SettingsReset;
                 listSelection = 0;
                 listOffset = 0;
                 drawCurrentScreen();
@@ -6115,10 +8001,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 saveWifiCredentials = !saveWifiCredentials;
                 if (!saveWifiCredentials) {
                     autoConnectWifi = false;
-                    preferences.remove("wifi_ssid");
-                    preferences.remove("wifi_pass");
-                    wifiConnectSavedSsid = "";
-                    wifiConnectSavedPassword = "";
+                    clearWifiProfiles();
                 }
                 saveSettings();
             }
@@ -6127,6 +8010,39 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 saveSettings();
             }
             settingsScreens.drawConnectivity();
+            break;
+
+        case Screen::SettingsFamiliarLed:
+            if (up) moveSelection(-1, 7);
+            if (down) moveSelection(1, 7);
+            if (decrease || increase) {
+                if (listSelection == 0) {
+                    familiarLedEnabled = !familiarLedEnabled;
+                } else {
+                    uint8_t* color =
+                        listSelection == 1 ? &familiarLedStartedColor
+                        : listSelection == 2 ? &familiarLedHostColor
+                        : listSelection == 3 ? &familiarLedServiceColor
+                        : listSelection == 4 ? &familiarLedWarningColor
+                        : listSelection == 5 ? &familiarLedCompleteColor
+                                             : &familiarLedErrorColor;
+                    *color = static_cast<uint8_t>(
+                        increase ? (*color + 1) % kLedColorCount
+                                 : (*color + kLedColorCount - 1) %
+                                       kLedColorCount);
+                    // Live preview: flash the newly selected colour so the
+                    // operator can see it without leaving the settings page,
+                    // even while LED alerts are still turned off.
+                    if (*color != 0) {
+                        const LedColor& preview = kLedColorValues[*color];
+                        startLedFlash(preview.red, preview.green,
+                                      preview.blue, 300, 1);
+                    }
+                }
+                saveSettings();
+                lastUserActivity = millis();
+            }
+            settingsScreens.drawFamiliarLed();
             break;
 
         case Screen::SettingsReset:
@@ -6163,9 +8079,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         // These text-entry/session screens return from their dedicated input
         // handlers above before this navigation switch is reached.
+        case Screen::Onboarding:
         case Screen::QrEntry:
         case Screen::QrDisplay:
         case Screen::WifiConnectPassword:
+        case Screen::WifiProfileRename:
         case Screen::BleKeyboard:
         case Screen::TelnetConnect:
         case Screen::TelnetSession:
@@ -6374,6 +8292,42 @@ void setup() {
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
+    meshPrivateKey.resize(32);
+    if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
+        preferences.getBytes("mesh_priv", meshPrivateKey.data(),
+                             meshPrivateKey.size());
+    } else {
+        esp_fill_random(meshPrivateKey.data(), meshPrivateKey.size());
+        preferences.putBytes("mesh_priv", meshPrivateKey.data(),
+                             meshPrivateKey.size());
+    }
+    meshPublicKey.resize(32);
+    if (!Curve25519::eval(meshPublicKey.data(), meshPrivateKey.data(), nullptr)) {
+        meshPrivateKey.clear();
+        meshPublicKey.clear();
+    }
+    meshNodeId = meshIdentityCrc32(meshPublicKey);
+    if (meshNodeId < 4 || meshNodeId == 0xffffffffU) {
+        meshNodeId ^= 0x47570004U;
+    }
+    char defaultMeshName[25];
+    snprintf(defaultMeshName, sizeof(defaultMeshName), "Ghostwire %04lX",
+             static_cast<unsigned long>(meshNodeId & 0xffffU));
+    meshNodeName = preferences.getString("mesh_name", defaultMeshName);
+    meshNodeShortName = preferences.getString("mesh_short", "GW");
+    loraService.setMeshKeyPair(meshPrivateKey, meshPublicKey);
+    if (meshNodeName.isEmpty() || meshNodeName.length() > 24) {
+        meshNodeName = defaultMeshName;
+    }
+    if (meshNodeShortName.isEmpty() || meshNodeShortName.length() > 4) {
+        meshNodeShortName = "GW";
+    }
+    meshHopLimit = preferences.getUChar("mesh_hops", 7);
+    if (meshHopLimit < 1 || meshHopLimit > 7) meshHopLimit = 7;
+    meshBackgroundEnabled =
+        preferences.getBool("mesh_bg", kDefaultMeshBackground);
+    meshMessageAlertsEnabled =
+        preferences.getBool("mesh_alert", kDefaultMeshMessageAlerts);
     verifyOtaBootOrRollback();
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
@@ -6420,12 +8374,46 @@ void setup() {
     if (familiarCueIndex >= kFamiliarCueCount) {
         familiarCueIndex = kDefaultFamiliarCue;
     }
+    familiarLedEnabled =
+        preferences.getBool("led_on", kDefaultFamiliarLedEnabled);
+    familiarLedStartedColor =
+        preferences.getUChar("led_start", kDefaultLedColorStarted);
+    familiarLedHostColor =
+        preferences.getUChar("led_host", kDefaultLedColorHost);
+    familiarLedServiceColor =
+        preferences.getUChar("led_svc", kDefaultLedColorService);
+    familiarLedWarningColor =
+        preferences.getUChar("led_warn", kDefaultLedColorWarning);
+    familiarLedCompleteColor =
+        preferences.getUChar("led_done", kDefaultLedColorComplete);
+    familiarLedErrorColor =
+        preferences.getUChar("led_err", kDefaultLedColorError);
+    if (familiarLedStartedColor >= kLedColorCount) {
+        familiarLedStartedColor = kDefaultLedColorStarted;
+    }
+    if (familiarLedHostColor >= kLedColorCount) {
+        familiarLedHostColor = kDefaultLedColorHost;
+    }
+    if (familiarLedServiceColor >= kLedColorCount) {
+        familiarLedServiceColor = kDefaultLedColorService;
+    }
+    if (familiarLedWarningColor >= kLedColorCount) {
+        familiarLedWarningColor = kDefaultLedColorWarning;
+    }
+    if (familiarLedCompleteColor >= kLedColorCount) {
+        familiarLedCompleteColor = kDefaultLedColorComplete;
+    }
+    if (familiarLedErrorColor >= kLedColorCount) {
+        familiarLedErrorColor = kDefaultLedColorError;
+    }
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
-        wifiConnectSavedSsid = preferences.getString("wifi_ssid", "");
-        wifiConnectSavedPassword = preferences.getString("wifi_pass", "");
+        loadWifiProfiles();
     } else {
         autoConnectWifi = false;
+        wifiProfiles.clear();
+        activeWifiProfile = SIZE_MAX;
+        refreshActiveWifiCredentialCache();
         preferences.remove("wifi_ssid");
         preferences.remove("wifi_pass");
     }
@@ -6438,14 +8426,52 @@ void setup() {
     hidService.begin();
     gnssService.begin();
     initSd();
+    loadMeshChannels();
+    meshTransmitChannel = preferences.getUChar("mesh_tx_ch", 0);
+    if (meshTransmitChannel >= loraService.meshChannels().size()) {
+        meshTransmitChannel = 0;
+    }
+    loadMeshState();
+    LoRaService::MeshNode localMeshNode;
+    localMeshNode.id = meshNodeId;
+    localMeshNode.longName = meshNodeName;
+    localMeshNode.shortName = meshNodeShortName;
+    localMeshNode.publicKey = meshPublicKey;
+    loraService.restoreNode(localMeshNode);
+    if (meshBackgroundEnabled) {
+        loraService.begin();
+    }
     recordBootTelemetry();
+    if (isDevelopmentBuild() && sdAvailable) {
+        heapSoakLogger.begin(
+            "heap_soak",
+            "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,"
+            "max_loop_gap_ms,battery_pct,battery_v,sd_free_mb,operation,"
+            "stability_events");
+        nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+        lastHeapSoakLoopMs = millis();
+        operationEventLogger.begin(
+            "operation_events",
+            "timestamp_utc,uptime_ms,operation,transition,heap_free_kb,"
+            "heap_min_kb");
+    }
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
     showSplash();
-    menuScreens.drawMain();
     markBootHealthy();
+    bootDiagnosticExportPending = isDevelopmentBuild();
+
+    if (!preferences.getBool("intro_done", false)) {
+        onboardingPage = 0;
+        onboardingFromSettings = false;
+        currentScreen = Screen::Onboarding;
+        onboardingScreens.draw();
+    } else {
+        currentScreen = Screen::MainMenu;
+        menuScreens.drawMain();
+    }
 
     if (autoConnectWifi && !wifiConnectSavedSsid.isEmpty()) {
         Serial.printf("[wifi] auto-connecting to %s\n",
@@ -6462,10 +8488,19 @@ void setup() {
 }
 
 void loop() {
+    if (heapSoakLogger.isActive()) {
+        const uint32_t now = millis();
+        const uint32_t gap = now - lastHeapSoakLoopMs;
+        if (gap > heapSoakMaxLoopGapMs) heapSoakMaxLoopGapMs = gap;
+        lastHeapSoakLoopMs = now;
+    }
     M5Cardputer.update();
+    pollDevLedControl();
+    updateStatusLedAndDevMessage();
     observeFamiliarToolScreen();
     familiarPatrolService.update();
     updateFamiliarVoice();
+    updateMeshMessageAlert();
     const uint32_t patrolHosts = familiarPatrolService.hostsFound();
     const uint32_t patrolOpenPorts = familiarPatrolService.openPortsFound();
     if (patrolHosts < familiarObservedPatrolHosts) {
@@ -6579,9 +8614,44 @@ void loop() {
             }
         }
     }
+    if (bootDiagnosticExportPending && WiFi.status() == WL_CONNECTED) {
+        bootDiagnosticExportPending = false;
+        exportSystemDiagnostics();
+        if (diagnosticExportStatus.startsWith("HTTP sent")) {
+            devRemoteMessage = "Diagnostic sent";
+            devRemoteMessageUntil = millis() + 1800;
+            devRemoteMessageVisible = false;
+        }
+    }
     updateBatteryEstimate();
     gnssService.update();
     loraService.update();
+    archivePendingMeshMessages();
+    if (loraService.receivedMessageCount() != observedMeshMessageCount) {
+        observedMeshMessageCount = loraService.receivedMessageCount();
+        playMeshMessageAlert();
+    }
+    if (loraService.messageRevision() != observedMeshMessageRevision) {
+        observedMeshMessageRevision = loraService.messageRevision();
+        if (!actionMenuOpen && currentScreen == Screen::MeshMessageDetail) {
+            loraService.markConversationRead(
+                meshConversationDirect, meshConversationPeer,
+                meshConversationChannel);
+            meshPersistDue = millis() + 2000;
+            drawCurrentScreen();
+        } else if (!actionMenuOpen && currentScreen == Screen::MeshMessages) {
+            drawCurrentScreen();
+        }
+    }
+    if (loraService.packetCount() != lastPersistedMeshPacket &&
+        meshPersistDue == 0) {
+        meshPersistDue = millis() + 2000;
+    }
+    if (meshPersistDue != 0 &&
+        static_cast<long>(millis() - meshPersistDue) >= 0) {
+        saveMeshState();
+        meshPersistDue = 0;
+    }
     wifiSnifferService.update();
     bleSpamService.update();
     if (!clockSynced && millis() - lastClockSyncAttempt >= 1000) {
@@ -6603,6 +8673,34 @@ void loop() {
         gnssLogger.append(row);
     }
     gnssLogger.update();
+    if (heapSoakLogger.isActive() &&
+        static_cast<long>(millis() - nextHeapSoakSampleMs) >= 0) {
+        nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
+        ++heapSoakSampleCounter;
+        if (sdAvailable &&
+            (heapSoakSdFreeMb == 0 ||
+             heapSoakSampleCounter % kHeapSoakSdFreeEveryNSamples == 0)) {
+            const uint64_t used = SD.usedBytes();
+            const uint64_t total = SD.totalBytes();
+            heapSoakSdFreeMb = total > used
+                                   ? (total - used) / (1024ULL * 1024ULL)
+                                   : 0;
+        }
+        String row = (clockSynced ? utcTimestamp() : String("")) + "," +
+                     String(millis()) + "," +
+                     String(ESP.getFreeHeap() / 1024) + "," +
+                     String(ESP.getMinFreeHeap() / 1024) + "," +
+                     String(heapSoakMaxLoopGapMs) + "," +
+                     String(batteryPercentage()) + "," +
+                     String(readBatteryVoltage(), 2) + "," +
+                     String(static_cast<unsigned long>(heapSoakSdFreeMb)) +
+                     "," + operationCoordinator.primaryLabel() + "," +
+                     String(abnormalResetCount);
+        heapSoakLogger.append(row);
+        heapSoakMaxLoopGapMs = 0;
+    }
+    heapSoakLogger.update();
+    operationEventLogger.update();
     if (loraLogger.isActive() &&
         loraService.packetCount() != lastLoggedLoRaPacket) {
         lastLoggedLoRaPacket = loraService.packetCount();
@@ -6749,6 +8847,77 @@ void loop() {
     }
     guardianEventLogger.update();
 
+    // Background operation progress belongs above the screenSleeping early
+    // return below: it must keep advancing even while the display is off,
+    // the same way Wi-Fi/BLE capture, GNSS, LoRa, Guardian, and Patrol
+    // already do further up in loop(). Only their *drawing* stays gated on
+    // currentScreen further down -- harmless and correct to skip while
+    // asleep. (Found via hardware soak: Host Discovery visibly stalled once
+    // the screen timed out mid-scan, because its update() call previously
+    // lived after the early return.)
+    warDriveService.update();
+    WarDriveWifiResult warDriveWifi;
+    while (warDriveService.nextWifiResult(warDriveWifi)) {
+        cyberFamiliar.observeWifiIdentity(warDriveWifi.bssid);
+        logWarDriveWifiResult(warDriveWifi);
+    }
+    WarDriveBleResult warDriveBle;
+    while (warDriveService.nextBleResult(warDriveBle)) {
+        cyberFamiliar.observeBleIdentity(warDriveBle.address);
+        logWarDriveBleResult(warDriveBle);
+    }
+    networkHostScanService.update();
+    NetworkHostResult networkHostResult;
+    while (networkHostScanService.nextHostResult(networkHostResult)) {
+        networkHostResults.push_back(networkHostResult);
+    }
+    networkPortScanService.update();
+    NetworkPortResult networkPortResult;
+    while (networkPortScanService.nextPortResult(networkPortResult)) {
+        networkPortResults.push_back(networkPortResult.port);
+    }
+    if (wifiConnectAttempting) {
+        const wl_status_t status = WiFi.status();
+        if (status == WL_CONNECTED) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Connected";
+            if (saveWifiCredentials) {
+                wifiProfileStatus =
+                    saveWifiProfile(wifiConnectSsid,
+                                    wifiConnectAttemptPassword)
+                        ? "Profile saved"
+                        : "Connected; profile list full";
+            }
+            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
+                wifiConnectPasswordInput.setCharAt(i, '\0');
+            }
+            wifiConnectPasswordInput = "";
+            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
+                wifiConnectAttemptPassword.setCharAt(i, '\0');
+            }
+            wifiConnectAttemptPassword = "";
+        } else if (status == WL_CONNECT_FAILED) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: wrong password?";
+        } else if (status == WL_NO_SSID_AVAIL) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: network not found";
+        } else if (millis() - wifiConnectStartMs > 15000) {
+            wifiConnectAttempting = false;
+            wifiConnectStatusText = "Failed: timed out";
+        }
+        if (!wifiConnectAttempting && WiFi.status() != WL_CONNECTED) {
+            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
+                wifiConnectPasswordInput.setCharAt(i, '\0');
+            }
+            wifiConnectPasswordInput = "";
+            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
+                wifiConnectAttemptPassword.setCharAt(i, '\0');
+            }
+            wifiConnectAttemptPassword = "";
+        }
+    }
+
     if (screenSleeping) {
         if (M5Cardputer.Keyboard.isChange() &&
             M5Cardputer.Keyboard.isPressed()) {
@@ -6876,18 +9045,9 @@ void loop() {
         }
     }
 
-    warDriveService.update();
-    WarDriveWifiResult warDriveWifi;
-    while (warDriveService.nextWifiResult(warDriveWifi)) {
-        cyberFamiliar.observeWifiIdentity(warDriveWifi.bssid);
-        logWarDriveWifiResult(warDriveWifi);
-    }
-    WarDriveBleResult warDriveBle;
-    while (warDriveService.nextBleResult(warDriveBle)) {
-        cyberFamiliar.observeBleIdentity(warDriveBle.address);
-        logWarDriveBleResult(warDriveBle);
-    }
-
+    // warDriveService/networkHostScanService/networkPortScanService progress
+    // itself now lives above the screenSleeping early return; only their
+    // periodic redraw stays gated on currentScreen here.
     if (currentScreen == Screen::WarDrive && !actionMenuOpen &&
         millis() - lastWarDriveDraw >= 500) {
         lastWarDriveDraw = millis();
@@ -6900,22 +9060,12 @@ void loop() {
         familiarScreens.drawPatrol(false);
     }
 
-    networkHostScanService.update();
-    NetworkHostResult networkHostResult;
-    while (networkHostScanService.nextHostResult(networkHostResult)) {
-        networkHostResults.push_back(networkHostResult);
-    }
     if (currentScreen == Screen::NetworkHostScan && !actionMenuOpen &&
         millis() - lastNetworkHostScanDraw >= 500) {
         lastNetworkHostScanDraw = millis();
         networkScanScreens.drawNetworkHostScan(false);
     }
 
-    networkPortScanService.update();
-    NetworkPortResult networkPortResult;
-    while (networkPortScanService.nextPortResult(networkPortResult)) {
-        networkPortResults.push_back(networkPortResult.port);
-    }
     if (currentScreen == Screen::NetworkPortScan && !actionMenuOpen &&
         millis() - lastNetworkPortScanDraw >= 500) {
         lastNetworkPortScanDraw = millis();
@@ -6977,47 +9127,8 @@ void loop() {
         }
     }
 
-    if (wifiConnectAttempting) {
-        const wl_status_t status = WiFi.status();
-        if (status == WL_CONNECTED) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Connected";
-            if (saveWifiCredentials) {
-                preferences.putString("wifi_ssid", wifiConnectSsid);
-                preferences.putString("wifi_pass", wifiConnectAttemptPassword);
-                wifiConnectSavedSsid = wifiConnectSsid;
-                wifiConnectSavedPassword = wifiConnectAttemptPassword;
-            }
-            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
-                wifiConnectPasswordInput.setCharAt(i, '\0');
-            }
-            wifiConnectPasswordInput = "";
-            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
-                wifiConnectAttemptPassword.setCharAt(i, '\0');
-            }
-            wifiConnectAttemptPassword = "";
-        } else if (status == WL_CONNECT_FAILED) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: wrong password?";
-        } else if (status == WL_NO_SSID_AVAIL) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: network not found";
-        } else if (millis() - wifiConnectStartMs > 15000) {
-            wifiConnectAttempting = false;
-            wifiConnectStatusText = "Failed: timed out";
-        }
-        if (!wifiConnectAttempting && WiFi.status() != WL_CONNECTED) {
-            for (size_t i = 0; i < wifiConnectPasswordInput.length(); ++i) {
-                wifiConnectPasswordInput.setCharAt(i, '\0');
-            }
-            wifiConnectPasswordInput = "";
-            for (size_t i = 0; i < wifiConnectAttemptPassword.length(); ++i) {
-                wifiConnectAttemptPassword.setCharAt(i, '\0');
-            }
-            wifiConnectAttemptPassword = "";
-        }
-    }
-
+    // wifiConnectAttempting resolution also now lives above the
+    // screenSleeping early return; only its redraw stays gated here.
     if (currentScreen == Screen::WifiConnectStatus && !actionMenuOpen &&
         millis() - lastWifiConnectDraw >= 1000) {
         lastWifiConnectDraw = millis();

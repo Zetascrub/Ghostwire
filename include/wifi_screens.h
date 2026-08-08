@@ -6,6 +6,7 @@
 #include "app_screen.h"
 #include "pcap_logger.h"
 #include "wifi_sniffer_service.h"
+#include "wifi_profile.h"
 
 // Wi-Fi discovery/connect flow screens: scan results, channel analyzer,
 // per-AP detail, deauth confirmation, handshake capture, and the Connect
@@ -28,7 +29,10 @@ public:
                bool& handshakePmkidFound, uint8_t (&handshakePmkid)[16],
                PcapLogger& handshakeCaptureLogger, String& wifiConnectSavedSsid,
                String& wifiConnectSsid, String& wifiConnectPasswordInput,
-               String& wifiConnectStatusText)
+               String& wifiConnectStatusText,
+               std::vector<WifiProfile>& wifiProfiles,
+               size_t& activeWifiProfile, String& wifiProfileStatus,
+               String& wifiProfileNameInput)
         : accessPoints_(accessPoints),
           listSelection_(listSelection),
           listOffset_(listOffset),
@@ -45,7 +49,11 @@ public:
           wifiConnectSavedSsid_(wifiConnectSavedSsid),
           wifiConnectSsid_(wifiConnectSsid),
           wifiConnectPasswordInput_(wifiConnectPasswordInput),
-          wifiConnectStatusText_(wifiConnectStatusText) {}
+          wifiConnectStatusText_(wifiConnectStatusText),
+          wifiProfiles_(wifiProfiles),
+          activeWifiProfile_(activeWifiProfile),
+          wifiProfileStatus_(wifiProfileStatus),
+          wifiProfileNameInput_(wifiProfileNameInput) {}
 
     void drawRecon();
     void drawChannelAnalyzer();
@@ -55,6 +63,9 @@ public:
     void drawConnectSelect();
     void drawConnectPassword();
     void drawConnectStatus(bool fullDraw = true);
+    void drawProfiles();
+    void drawProfileRename();
+    void drawProfileDeleteConfirm();
 
     // Single source of truth for the auth-mode label shown on-screen and
     // used in a couple of main.cpp's CSV exports.
@@ -78,4 +89,8 @@ private:
     String& wifiConnectSsid_;
     String& wifiConnectPasswordInput_;
     String& wifiConnectStatusText_;
+    std::vector<WifiProfile>& wifiProfiles_;
+    size_t& activeWifiProfile_;
+    String& wifiProfileStatus_;
+    String& wifiProfileNameInput_;
 };

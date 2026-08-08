@@ -21,7 +21,7 @@ void SystemScreens::drawSystem(const std::vector<SystemDiagnostic>& diagnostics)
     }
     ScreenChrome::drawFooter(
         diagnosticExportStatus_.isEmpty()
-            ? "W/S: browse  Enter: clock  Tab: actions  Q: back"
+            ? "W/S browse Enter clock Tab menu Q back"
             : diagnosticExportStatus_.c_str());
 }
 

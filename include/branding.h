@@ -8,7 +8,7 @@ namespace Branding {
 // Change these values to rename or restyle the entire firmware.
 static constexpr char productName[] = "Ghostwire";
 static constexpr char creatorName[] = "Zetascrub";
-static constexpr char version[] = "0.4.8";
+static constexpr char version[] = "0.5.0";
 
 struct Theme {
     const char* name;

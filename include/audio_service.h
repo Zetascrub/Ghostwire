@@ -14,6 +14,7 @@ public:
     bool beginMicrophone();
     bool updateMicrophone(uint16_t& level);
     void endMicrophone();
+    bool isMicrophoneActive() const { return microphoneActive_; }
     bool recordWav(const char* path, uint32_t durationMs,
                    String& error);
 

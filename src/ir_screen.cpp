@@ -21,7 +21,7 @@ void IrScreen::draw() {
     display.print("RX requires an external receiver.");
     display.setCursor(8, 102);
     display.print("View emitter through phone camera.");
-    ScreenChrome::drawFooter("Enter/R: emit test burst  Backspace/Q: back");
+    ScreenChrome::drawFooter("Enter/R: test burst   Q: back");
 }
 
 void IrScreen::transmitSelfTest() {
