@@ -232,6 +232,24 @@ void FamiliarScreens::drawResetConfirm() {
     ScreenChrome::drawFooter("Enter: reset   Esc: cancel");
 }
 
+void FamiliarScreens::drawMissions() {
+    ScreenChrome::drawHeader("Familiar Missions");
+    ScreenChrome::normalizeListPosition(kMissionCount);
+    const char* const labels[kMissionCount] = {
+        "Network Recon",
+        "Handshake Capture",
+    };
+    const String values[kMissionCount] = {
+        patrol_.isActive() ? "ACTIVE" : "",
+        handshakeMissionRunning_ ? "ACTIVE" : "",
+    };
+    for (size_t row = 0; row < kMissionCount; ++row) {
+        ScreenChrome::drawListRow(row, labels[row], row == listSelection_,
+                                  values[row]);
+    }
+    ScreenChrome::drawFooter("Enter: open   Q: back");
+}
+
 void FamiliarScreens::drawPatrolConfirm() {
     ScreenChrome::drawHeader("Confirm Familiar Patrol");
     auto& display = M5Cardputer.Display;

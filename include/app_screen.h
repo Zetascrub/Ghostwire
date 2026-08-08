@@ -24,6 +24,7 @@ enum class Screen {
     CyberFamiliar,
     FamiliarPatrol,
     FamiliarPatrolConfirm,
+    FamiliarMissions,
     FamiliarMissionSelect,
     FamiliarMissionConfirm,
     FamiliarMission,

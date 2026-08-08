@@ -321,11 +321,16 @@ String aiNotice;
 size_t aiScrollLines = 0;
 String familiarWorkflowStatus;
 AiChatScreen aiChatScreen(aiService, aiPrompt, aiNotice, aiScrollLines);
+// Declared here (ahead of the rest of the Familiar Handshake Mission state
+// further down) since familiarScreens needs it and is constructed this
+// early in the file.
+bool familiarMissionRunning = false;
 FamiliarScreens familiarScreens(
     cyberFamiliar, familiarPatrolService, familiarPage, familiarWorkflowStatus,
     familiarReaction, familiarReactionUntil, familiarSpeechBubble,
     familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
-    familiarPatrolIntervalIndex, sdAvailable);
+    familiarPatrolIntervalIndex, sdAvailable, listSelection,
+    familiarMissionRunning);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
 // Familiar phrase word bank: see include/familiar_phrases.h.
 constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
@@ -595,7 +600,6 @@ unsigned long familiarMissionTargetStartMs = 0;
 unsigned long familiarMissionLastDeauthMs = 0;
 String familiarMissionStatus;
 unsigned long lastFamiliarMissionDraw = 0;
-bool familiarMissionRunning = false;
 constexpr uint32_t kFamiliarMissionTargetTimeoutMs = 25000;
 constexpr uint32_t kFamiliarMissionDeauthIntervalMs = 3000;
 FamiliarMissionScreens familiarMissionScreens(
@@ -1731,12 +1735,7 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'f', "Cycle RSSI filter (" +
                               String(bleCaptureRssiFilter) + " dBm)"}};
         case Screen::CyberFamiliar:
-            return {{'a', familiarPatrolService.isActive()
-                              ? "Open active patrol"
-                              : "Start Familiar Patrol"},
-                    {'m', familiarMissionRunning
-                              ? "Open active mission"
-                              : "Handshake mission"},
+            return {{'a', "Missions"},
                     {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
@@ -4810,6 +4809,7 @@ void drawCurrentScreen() {
         case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
         case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
         case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
+        case Screen::FamiliarMissions: familiarScreens.drawMissions(); break;
         case Screen::FamiliarMissionSelect:
             familiarMissionScreens.drawSelect();
             break;
@@ -5655,6 +5655,12 @@ void goBack() {
     }
     if (currentScreen == Screen::FamiliarPatrol ||
         currentScreen == Screen::FamiliarPatrolConfirm) {
+        listSelection = 0;
+        currentScreen = Screen::FamiliarMissions;
+        familiarScreens.drawMissions();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarMissions) {
         currentScreen = Screen::CyberFamiliar;
         familiarPage = 0;
         familiarScreens.drawFamiliar();
@@ -5999,8 +6005,9 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::FamiliarMissionSelect) {
-        currentScreen = Screen::CyberFamiliar;
-        familiarScreens.drawFamiliar();
+        listSelection = 0;
+        currentScreen = Screen::FamiliarMissions;
+        familiarScreens.drawMissions();
         return;
     }
     if (currentScreen == Screen::FamiliarMissionConfirm) {
@@ -6012,8 +6019,9 @@ void goBack() {
     // keeps running unattended in the background. "Stop mission" (Tab menu,
     // or 'x' on this screen) is the only way to actually end it early.
     if (currentScreen == Screen::FamiliarMission) {
-        currentScreen = Screen::CyberFamiliar;
-        familiarScreens.drawFamiliar();
+        listSelection = 1;
+        currentScreen = Screen::FamiliarMissions;
+        familiarScreens.drawMissions();
         return;
     }
     if (currentScreen == Screen::WifiProfileRename) {
@@ -7639,14 +7647,24 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 return;
             }
             if (pressedLetter(keys, 'a')) {
-                currentScreen = familiarPatrolService.isActive()
-                                    ? Screen::FamiliarPatrol
-                                    : Screen::FamiliarPatrolConfirm;
+                listSelection = 0;
+                listOffset = 0;
+                currentScreen = Screen::FamiliarMissions;
                 drawCurrentScreen();
                 return;
             }
-            if (pressedLetter(keys, 'm')) {
-                if (familiarMissionRunning) {
+            familiarScreens.drawFamiliar();
+            break;
+
+        case Screen::FamiliarMissions:
+            if (up) moveSelection(-1, FamiliarScreens::kMissionCount);
+            if (down) moveSelection(1, FamiliarScreens::kMissionCount);
+            if (keys.enter) {
+                if (listSelection == 0) {
+                    currentScreen = familiarPatrolService.isActive()
+                                        ? Screen::FamiliarPatrol
+                                        : Screen::FamiliarPatrolConfirm;
+                } else if (familiarMissionRunning) {
                     currentScreen = Screen::FamiliarMission;
                 } else {
                     familiarMissionSelected.assign(accessPoints.size(), false);
@@ -7657,7 +7675,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
-            familiarScreens.drawFamiliar();
+            familiarScreens.drawMissions();
             break;
 
         case Screen::FamiliarMissionSelect:
@@ -7691,7 +7709,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::FamiliarMission:
             if (pressedLetter(keys, 'x')) {
                 stopFamiliarMission();
-                currentScreen = Screen::CyberFamiliar;
+                currentScreen = Screen::FamiliarMissions;
                 drawCurrentScreen();
                 return;
             }

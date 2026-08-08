@@ -6,6 +6,15 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Unify the Familiar's autonomous capabilities behind one **Missions** hub
+  (`My Familiar` -> `Tab` -> **Missions**) instead of two separately-keyed
+  entry points. Lists **Network Recon** (Familiar Patrol) and **Handshake
+  Capture**, each showing ACTIVE if already running, and routes into the
+  same screens those already used. Back navigation from either flows back
+  through the hub rather than straight to the Familiar dashboard, so the
+  hierarchy reads as Familiar -> Missions -> a specific mission -> back up,
+  not a flat list of unrelated shortcuts. Future mission types get a row
+  here instead of their own scattered key.
 - Add the Familiar Handshake Mission (`My Familiar` -> `Tab` -> **Handshake
   mission**): pick target APs from a Wi-Fi scan on a multi-select checklist,
   confirm the exact list about to receive deauth frames, then the Familiar

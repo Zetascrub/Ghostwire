@@ -69,7 +69,8 @@ public:
                     FamiliarReaction& reaction, unsigned long& reactionUntil,
                     String& speechBubble, unsigned long& speechBubbleUntil,
                     bool& patrolContinuousChoice, uint8_t& patrolIntervalIndex,
-                    bool& sdAvailable)
+                    bool& sdAvailable, size_t& listSelection,
+                    bool& handshakeMissionRunning)
         : familiar_(familiar),
           patrol_(patrol),
           page_(page),
@@ -80,15 +81,23 @@ public:
           speechBubbleUntil_(speechBubbleUntil),
           patrolContinuousChoice_(patrolContinuousChoice),
           patrolIntervalIndex_(patrolIntervalIndex),
-          sdAvailable_(sdAvailable) {}
+          sdAvailable_(sdAvailable),
+          listSelection_(listSelection),
+          handshakeMissionRunning_(handshakeMissionRunning) {}
 
     void drawCreature(int centerX, int baseY, bool large);
     void drawSpeechBubble(int x, int y, int width);
 
     void drawFamiliar(bool fullDraw = true);
     void drawResetConfirm();
+    // The Familiar's unified "what can it do unattended" hub -- currently
+    // Network Recon (Familiar Patrol) and Handshake Capture; new mission
+    // types get a row here rather than their own scattered entry point.
+    void drawMissions();
     void drawPatrol(bool fullDraw = true);
     void drawPatrolConfirm();
+
+    static constexpr size_t kMissionCount = 2;
 
 private:
     const char* face() const;
@@ -104,4 +113,6 @@ private:
     bool& patrolContinuousChoice_;
     uint8_t& patrolIntervalIndex_;
     bool& sdAvailable_;
+    size_t& listSelection_;
+    bool& handshakeMissionRunning_;
 };
