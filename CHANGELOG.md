@@ -6,6 +6,15 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-08
+
+- Fix Host Discovery, Port Scan, War Drive, and an in-flight Wi-Fi Connect
+  attempt all silently pausing whenever the screen timed out mid-operation.
+  `loop()`'s early return for the idle-animation screensaver sat above their
+  `update()` calls; Wi-Fi/BLE capture, GNSS, LoRa, Guardian, and Familiar
+  Patrol were unaffected since they're updated earlier in `loop()`, above
+  that gate. Hardware-confirmed each of these now keeps progressing with the
+  screen off.
 - Fix Settings back-navigation landing on the main menu instead of Settings
   from the new Familiar LED page, and two other Settings sub-screens
   highlighting the wrong row on return, all left over from inserting
