@@ -384,6 +384,14 @@ uint32_t heapSoakMaxLoopGapMs = 0;
 uint8_t heapSoakSampleCounter = 0;
 uint64_t heapSoakSdFreeMb = 0;
 constexpr uint32_t kHeapSoakIntervalMs = 60000;
+// Off by default -- same reasoning as kBootDiagnosticExportEnabled above:
+// this was 0.5-soak-specific convenience, not something that should cost
+// every dev-build boot a delay. SdLogger::begin() finds a free numbered
+// filename with a linear SD.exists() scan, so its cost grows with how many
+// heap_soak_NNNN.csv/operation_events_NNNN.csv files a given SD card has
+// already accumulated -- after months of dev boots that scan alone was
+// adding several seconds to startup. Flip back to true for a future soak.
+constexpr bool kHeapSoakLoggingEnabled = false;
 // SD.usedBytes() walks the FAT free-cluster count on a FatFs volume that
 // doesn't have it cached, which can stall for a while on a large/fragmented
 // card -- too risky to call every sample. Refreshed roughly every 10 minutes
@@ -9147,14 +9155,7 @@ void setup() {
     config.output_power = true;
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
-    // Temporary boot-phase timing: prints elapsed ms at each major setup()
-    // checkpoint so a slow pre-splash boot can be pinpointed from a serial
-    // log instead of guessed at. Remove once the reported regression is
-    // tracked down.
-    const unsigned long bootTraceStart = millis();
-    Serial.printf("[boot-trace] t=%lums display ready\n", millis() - bootTraceStart);
     preferences.begin("ghostwire", false);
-    Serial.printf("[boot-trace] t=%lums preferences open\n", millis() - bootTraceStart);
     meshPrivateKey.resize(32);
     if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
         preferences.getBytes("mesh_priv", meshPrivateKey.data(),
@@ -9191,11 +9192,7 @@ void setup() {
         preferences.getBool("mesh_bg", kDefaultMeshBackground);
     meshMessageAlertsEnabled =
         preferences.getBool("mesh_alert", kDefaultMeshMessageAlerts);
-    Serial.printf("[boot-trace] t=%lums mesh key/identity ready\n",
-                  millis() - bootTraceStart);
     verifyOtaBootOrRollback();
-    Serial.printf("[boot-trace] t=%lums OTA boot check done\n",
-                  millis() - bootTraceStart);
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
         preferences.getUChar("brightness", kDefaultBrightness);
@@ -9278,8 +9275,6 @@ void setup() {
     if (clockUtcOffsetMinutes < -720 || clockUtcOffsetMinutes > 840) {
         clockUtcOffsetMinutes = kDefaultClockUtcOffsetMinutes;
     }
-    Serial.printf("[boot-trace] t=%lums settings loaded\n",
-                  millis() - bootTraceStart);
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
         loadWifiProfiles();
@@ -9299,11 +9294,7 @@ void setup() {
     updateBatteryEstimate(true);
     hidService.begin();
     gnssService.begin();
-    Serial.printf("[boot-trace] t=%lums HID/GNSS begin() done\n",
-                  millis() - bootTraceStart);
     initSd();
-    Serial.printf("[boot-trace] t=%lums initSd() done (sdAvailable=%d)\n",
-                  millis() - bootTraceStart, sdAvailable);
     loadMeshChannels();
     meshTransmitChannel = preferences.getUChar("mesh_tx_ch", 0);
     if (meshTransmitChannel >= loraService.meshChannels().size()) {
@@ -9319,10 +9310,8 @@ void setup() {
     if (meshBackgroundEnabled) {
         loraService.begin();
     }
-    Serial.printf("[boot-trace] t=%lums mesh state/radio done\n",
-                  millis() - bootTraceStart);
     recordBootTelemetry();
-    if (isDevelopmentBuild() && sdAvailable) {
+    if (isDevelopmentBuild() && sdAvailable && kHeapSoakLoggingEnabled) {
         heapSoakLogger.begin(
             "heap_soak",
             "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,"
@@ -9336,15 +9325,9 @@ void setup() {
             "heap_min_kb");
     }
     if (sdAvailable) familiarPatrolService.begin();
-    Serial.printf("[boot-trace] t=%lums familiarPatrolService.begin() done\n",
-                  millis() - bootTraceStart);
     cyberFamiliar.begin(preferences);
-    Serial.printf("[boot-trace] t=%lums cyberFamiliar.begin() done\n",
-                  millis() - bootTraceStart);
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
-    Serial.printf("[boot-trace] t=%lums entering showSplash()\n",
-                  millis() - bootTraceStart);
     showSplash();
     markBootHealthy();
     bootDiagnosticExportPending =

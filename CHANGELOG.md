@@ -13,13 +13,17 @@ assessment tools built on those verified foundations.
   The target list also gets its own `R`: rescan now, resetting selections
   since a rescan can add, drop, or reorder APs and a stale checkbox
   position could otherwise point at the wrong network.
-- Add temporary `[boot-trace]` serial timing at each major `setup()`
-  checkpoint (display ready, preferences open, mesh identity, OTA boot
-  check, settings loaded, SD init, mesh state/radio, Patrol/Familiar
-  begin(), entering the boot animation) to track down a reported
-  multi-second increase in the blank-screen time before the boot animation
-  starts. Diagnostic only, meant to come back out once the slow phase is
-  identified.
+- Fix a multi-second blank-screen delay before the boot animation on dev
+  builds. Root-caused with live serial timing: the 0.5-soak's `heap_soak`
+  and `operation_events` `SdLogger`s were starting unconditionally on every
+  dev-build boot with an SD card present, and `SdLogger::begin()` finds a
+  free numbered filename with a linear `SD.exists()` scan -- after many
+  reboots accumulating hundreds of `heap_soak_NNNN.csv`/
+  `operation_events_NNNN.csv` files, that scan alone was costing several
+  seconds at startup. Gated both loggers off by default behind a new
+  `kHeapSoakLoggingEnabled` constant, same pattern already used for
+  `kBootDiagnosticExportEnabled` below -- flip it back to `true` for a
+  future soak session rather than rebuilding this from scratch.
 - Unify the Familiar's autonomous capabilities behind one **Missions** hub
   (`My Familiar` -> `Tab` -> **Missions**) instead of two separately-keyed
   entry points. Lists **Network Recon** (Familiar Patrol) and **Handshake
