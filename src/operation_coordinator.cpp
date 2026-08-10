@@ -55,6 +55,18 @@ bool OperationCoordinator::conflicts(OperationKind left, OperationKind right) {
                isConnectedNetwork(left) || isConnectedNetwork(right) ||
                isBleRadio(left) || isBleRadio(right);
     }
+    // Evil Portal puts Wi-Fi in AP mode to serve the clone + captive portal --
+    // exclusive with monitor-mode capture, an existing station connection,
+    // BLE radio work, and War Drive, same broad "owns the whole deck" policy
+    // as War Drive above.
+    if (left == OperationKind::EvilPortal ||
+        right == OperationKind::EvilPortal) {
+        return isWifiMonitor(left) || isWifiMonitor(right) ||
+               isConnectedNetwork(left) || isConnectedNetwork(right) ||
+               isBleRadio(left) || isBleRadio(right) ||
+               left == OperationKind::WarDrive ||
+               right == OperationKind::WarDrive;
+    }
     if (isWifiMonitor(left) &&
         (isWifiMonitor(right) || isConnectedNetwork(right) ||
          isBleRadio(right))) return true;
@@ -101,6 +113,7 @@ const char* OperationCoordinator::label(OperationKind operation) {
         case OperationKind::RemoteSession: return "Remote session";
         case OperationKind::Audio: return "Audio";
         case OperationKind::FirmwareUpdate: return "Firmware update";
+        case OperationKind::EvilPortal: return "Evil Portal";
         case OperationKind::Count: break;
     }
     return "Unknown";

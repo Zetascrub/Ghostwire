@@ -72,7 +72,8 @@ public:
                     bool& sdAvailable, size_t& listSelection,
                     bool& handshakeMissionRunning, uint32_t& lootHostsFound,
                     uint32_t& lootServicesFound, uint32_t& lootWarningsRaised,
-                    uint32_t& lootHandshakesCaptured)
+                    uint32_t& lootHandshakesCaptured,
+                    uint32_t& lootCredsCaptured)
         : familiar_(familiar),
           patrol_(patrol),
           page_(page),
@@ -89,7 +90,8 @@ public:
           lootHostsFound_(lootHostsFound),
           lootServicesFound_(lootServicesFound),
           lootWarningsRaised_(lootWarningsRaised),
-          lootHandshakesCaptured_(lootHandshakesCaptured) {}
+          lootHandshakesCaptured_(lootHandshakesCaptured),
+          lootCredsCaptured_(lootCredsCaptured) {}
 
     void drawCreature(int centerX, int baseY, bool large);
     void drawSpeechBubble(int x, int y, int width);
@@ -128,4 +130,5 @@ private:
     uint32_t& lootServicesFound_;
     uint32_t& lootWarningsRaised_;
     uint32_t& lootHandshakesCaptured_;
+    uint32_t& lootCredsCaptured_;
 };

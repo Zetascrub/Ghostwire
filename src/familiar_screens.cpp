@@ -252,18 +252,20 @@ void FamiliarScreens::drawMissions() {
 
 void FamiliarScreens::drawLootBoard() {
     ScreenChrome::drawHeader("Loot Board");
-    static constexpr size_t kRowCount = 4;
+    static constexpr size_t kRowCount = 5;
     const char* const labels[kRowCount] = {
         "Hosts found",
         "Services found",
         "Warnings raised",
         "Handshakes captured",
+        "Logins captured",
     };
     const uint32_t values[kRowCount] = {
         lootHostsFound_,
         lootServicesFound_,
         lootWarningsRaised_,
         lootHandshakesCaptured_,
+        lootCredsCaptured_,
     };
     for (size_t row = 0; row < kRowCount; ++row) {
         ScreenChrome::drawListRow(row, labels[row], false,

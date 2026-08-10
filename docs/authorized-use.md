@@ -38,3 +38,22 @@ somewhere a bystander's or neighboring network's connectivity could be
 disrupted without their knowledge. Captured PCAPs and the mission's Markdown
 report are the same category of sensitive assessment data as any other
 handshake capture.
+
+Evil Portal is the credential-capture function line 9 refers to: it clones a
+single operator-selected SSID as an open access point and serves a sign-in
+page to whatever connects, logging anything submitted. It is never started by
+anything but the operator explicitly picking one target AP and confirming --
+there is no unattended or multi-target form of it. This only belongs in an
+engagement whose scope specifically names credential-harvesting/phishing
+assessment, with the client's informed consent that real users may be
+prompted for real credentials against a network they trust; running it
+against a network merely because it's in range is not authorization. Anyone
+who submits to the portal has had their input captured without a chance to
+tell it apart from the real network -- treat that as you would any other
+social-engineering technique requiring separate, explicit sign-off from a
+general recon/assessment scope. Captured submissions land in
+`/ghostwire/logs/portal_creds_NNNN.csv` as plain text and are the most
+sensitive category of data this device can produce; retrieve or securely
+erase them as soon as the assessment allows, and never let them leave the
+device by any path other than the engagement's approved evidence-handling
+process.

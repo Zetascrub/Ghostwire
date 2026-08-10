@@ -6,12 +6,28 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
+  Portal**): clones the selected SSID as an open access point wrapped in a
+  captive-portal DNS redirect and a sign-in page; any submission is queued,
+  logged to `/ghostwire/logs/portal_creds_NNNN.csv`, cued through the
+  Familiar (Warning cue), and counted on the Loot Board ("Logins
+  captured"). A single ongoing session against one operator-confirmed
+  target -- not a Familiar Mission, since (unlike Handshake Capture) there
+  is nothing to iterate across a target list; it lives as its own Wi-Fi
+  tool the same way Guardian does, including stopping automatically on
+  Esc/back rather than continuing unattended. New `EvilPortal`
+  OperationKind conflicts broadly with anything else touching the Wi-Fi or
+  BLE radio (same policy as War Drive), since AP mode needs the whole
+  deck. See `docs/authorized-use.md` for the credential-capture-specific
+  authorization guidance this required -- it is the strongest content that
+  document's existing "credential capture" caution already named.
 - Add the Loot Board (`My Familiar` -> `Tab` -> **Loot board**): a
   Bjorn/Ragnar-style trophy case of lifetime discovery totals -- hosts
-  found, services found, warnings raised, handshakes captured -- persisted
-  in Preferences and bumped at each genuine discovery event (Familiar
-  Patrol's new-host/new-port diffing, Guardian disconnect-burst detection,
-  and both the manual and Familiar Mission handshake-capture paths).
+  found, services found, warnings raised, handshakes captured, logins
+  captured -- persisted in Preferences and bumped at each genuine
+  discovery event (Familiar Patrol's new-host/new-port diffing, Guardian
+  disconnect-burst detection, both the manual and Familiar Mission
+  handshake-capture paths, and Evil Portal submissions -- see below).
   Counts survive reboots rather than resetting each session; nothing new
   is tracked that wasn't already being detected, this just aggregates it
   in one place instead of scattered per-tool SD logs.

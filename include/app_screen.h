@@ -11,6 +11,8 @@ enum class Screen {
     WifiDetail,
     WifiDeauthConfirm,
     WifiHandshakeCapture,
+    WifiEvilPortalConfirm,
+    WifiEvilPortal,
     WifiConnectSelect,
     WifiConnectPassword,
     WifiConnectStatus,
