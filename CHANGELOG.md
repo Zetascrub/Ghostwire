@@ -6,6 +6,15 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Add the Loot Board (`My Familiar` -> `Tab` -> **Loot board**): a
+  Bjorn/Ragnar-style trophy case of lifetime discovery totals -- hosts
+  found, services found, warnings raised, handshakes captured -- persisted
+  in Preferences and bumped at each genuine discovery event (Familiar
+  Patrol's new-host/new-port diffing, Guardian disconnect-burst detection,
+  and both the manual and Familiar Mission handshake-capture paths).
+  Counts survive reboots rather than resetting each session; nothing new
+  is tracked that wasn't already being detected, this just aggregates it
+  in one place instead of scattered per-tool SD logs.
 - Fix Handshake Capture requiring a manual Wi-Fi Discovery scan first.
   Selecting it from the Missions hub with no scan results now runs the scan
   itself before presenting the target checklist, instead of showing "run

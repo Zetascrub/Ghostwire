@@ -307,6 +307,18 @@ FamiliarReaction familiarReaction = FamiliarReaction::None;
 unsigned long familiarReactionUntil = 0;
 uint32_t familiarObservedPatrolHosts = 0;
 uint32_t familiarObservedOpenPorts = 0;
+// Loot Board: lifetime totals across every boot, not just this session --
+// the Bjorn/Ragnar-style "trophy case" the Familiar accumulates over time.
+// Loaded from Preferences in setup(), bumped (and re-saved) at each genuine
+// discovery event below rather than centrally inside playFamiliarCue(),
+// since that same cue enum also fires for unrelated things (a Settings
+// preview, a mission's own "Service" cue meaning "handshake," etc.) that
+// would otherwise double-count or miscategorize loot. bumpLootCounter()
+// itself lives further down, after Preferences preferences is declared.
+uint32_t lootHostsFound = 0;
+uint32_t lootServicesFound = 0;
+uint32_t lootWarningsRaised = 0;
+uint32_t lootHandshakesCaptured = 0;
 String familiarSpeechBubble;
 unsigned long familiarSpeechBubbleUntil = 0;
 unsigned long lastFamiliarCueMs = 0;
@@ -330,7 +342,8 @@ FamiliarScreens familiarScreens(
     familiarReaction, familiarReactionUntil, familiarSpeechBubble,
     familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
     familiarPatrolIntervalIndex, sdAvailable, listSelection,
-    familiarMissionRunning);
+    familiarMissionRunning, lootHostsFound, lootServicesFound,
+    lootWarningsRaised, lootHandshakesCaptured);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
 // Familiar phrase word bank: see include/familiar_phrases.h.
 constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
@@ -407,6 +420,12 @@ constexpr uint8_t kHeapSoakSdFreeEveryNSamples = 10;
 SdLogger operationEventLogger;
 OperationCoordinator operationCoordinator;
 Preferences preferences;
+// See lootHostsFound and friends above -- persists a Loot Board counter
+// bump immediately, same as every other Preferences write in this file.
+void bumpLootCounter(uint32_t& counter, const char* key) {
+    ++counter;
+    preferences.putUInt(key, counter);
+}
 std::vector<String> audioFiles;
 std::vector<String> duckyScripts;
 size_t duckyCommandCount = 0;
@@ -584,6 +603,13 @@ uint32_t handshakeEapolFrameCount = 0;
 bool handshakeMessageSeen[5] = {};  // Index 1-4 used; 0 unused.
 bool handshakePmkidFound = false;
 uint8_t handshakePmkid[16] = {};
+// Loot Board rising-edge guard for the *manual* single-target capture
+// screen -- the Mission flow already counts its own captures in
+// updateFamiliarMission(). Reset whenever a fresh manual capture starts (see
+// the 'h' key on WifiDetail and the refresh/rescan case on
+// WifiHandshakeCapture below), so leaving the capture screen without
+// stopping and coming back doesn't relitigate an already-counted catch.
+bool manualHandshakeLootCounted = false;
 WifiScreens wifiScreens(accessPoints, listSelection, listOffset, currentScreen,
                         wifiStatus, wifiExportStatus, wifiDeauthStatus,
                         wifiSnifferService, handshakeEapolFrameCount,
@@ -1744,6 +1770,7 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                               String(bleCaptureRssiFilter) + " dBm)"}};
         case Screen::CyberFamiliar:
             return {{'a', "Missions"},
+                    {'l', "Loot board"},
                     {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
@@ -4513,6 +4540,7 @@ void updateFamiliarMission() {
         triggerFamiliarReaction(FamiliarReaction::ServiceFound, 1900);
         showFamiliarSpeech("Got it! Handshake from " + target.ssid + "!");
         playFamiliarCue(FamiliarCue::Service);
+        bumpLootCounter(lootHandshakesCaptured, "loot_hs");
         advanceFamiliarMission();
         return;
     }
@@ -4815,6 +4843,7 @@ void drawCurrentScreen() {
         case Screen::DevicesMenu: menuScreens.drawDevices(); break;
         case Screen::AiChat: aiChatScreen.draw(); break;
         case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
+        case Screen::LootBoard: familiarScreens.drawLootBoard(); break;
         case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
         case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
         case Screen::FamiliarMissions: familiarScreens.drawMissions(); break;
@@ -5657,6 +5686,11 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::CyberFamiliarResetConfirm) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarScreens.drawFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::LootBoard) {
         currentScreen = Screen::CyberFamiliar;
         familiarScreens.drawFamiliar();
         return;
@@ -7183,6 +7217,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 handshakeEapolFrameCount = 0;
                 for (bool& seen : handshakeMessageSeen) seen = false;
                 handshakePmkidFound = false;
+                manualHandshakeLootCounted = false;
                 wifiSnifferService.begin();
                 wifiSnifferService.setHandshakeTarget(
                     accessPoints[listSelection].bssid);
@@ -7212,6 +7247,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 handshakeEapolFrameCount = 0;
                 for (bool& seen : handshakeMessageSeen) seen = false;
                 handshakePmkidFound = false;
+                manualHandshakeLootCounted = false;
                 wifiSnifferService.setHandshakeTarget(
                     accessPoints[listSelection].bssid);
                 handshakeCaptureLogger.begin("handshake");
@@ -7661,7 +7697,16 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
+            if (pressedLetter(keys, 'l')) {
+                currentScreen = Screen::LootBoard;
+                drawCurrentScreen();
+                return;
+            }
             familiarScreens.drawFamiliar();
+            break;
+
+        case Screen::LootBoard:
+            familiarScreens.drawLootBoard();
             break;
 
         case Screen::FamiliarMissions:
@@ -9156,6 +9201,10 @@ void setup() {
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
     preferences.begin("ghostwire", false);
+    lootHostsFound = preferences.getUInt("loot_hosts", 0);
+    lootServicesFound = preferences.getUInt("loot_svcs", 0);
+    lootWarningsRaised = preferences.getUInt("loot_warn", 0);
+    lootHandshakesCaptured = preferences.getUInt("loot_hs", 0);
     meshPrivateKey.resize(32);
     if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
         preferences.getBytes("mesh_priv", meshPrivateKey.data(),
@@ -9370,6 +9419,11 @@ void loop() {
     observeFamiliarToolScreen();
     familiarPatrolService.update();
     updateFamiliarMission();
+    if (currentScreen == Screen::WifiHandshakeCapture &&
+        !manualHandshakeLootCounted && familiarMissionCaptured()) {
+        manualHandshakeLootCounted = true;
+        bumpLootCounter(lootHandshakesCaptured, "loot_hs");
+    }
     updateFamiliarVoice();
     updateMeshMessageAlert();
     const uint32_t patrolHosts = familiarPatrolService.hostsFound();
@@ -9382,6 +9436,7 @@ void loop() {
         showFamiliarSpeech("Oh! Found " + familiarHostLabel(
                                familiarPatrolService.lastSeenHost()) + "!");
         playFamiliarCue(FamiliarCue::Host);
+        bumpLootCounter(lootHostsFound, "loot_hosts");
     }
     if (patrolOpenPorts < familiarObservedOpenPorts) {
         familiarObservedOpenPorts = patrolOpenPorts;
@@ -9400,11 +9455,13 @@ void loop() {
                                familiarServiceName(foundPort) + " on " +
                                endpoint + "!");
             playFamiliarCue(FamiliarCue::Warning);
+            bumpLootCounter(lootWarningsRaised, "loot_warn");
         } else {
             showFamiliarSpeech(String("Interesting: ") +
                                familiarServiceName(foundPort) + " on " +
                                endpoint + "!");
             playFamiliarCue(FamiliarCue::Service);
+            bumpLootCounter(lootServicesFound, "loot_svcs");
         }
     }
     const FamiliarPatrolState patrolState = familiarPatrolService.state();
@@ -9715,6 +9772,7 @@ void loop() {
         triggerFamiliarReaction(FamiliarReaction::Warning, 4500);
         showFamiliarSpeech("Warning! Disconnect burst observed.", 4500);
         playFamiliarCue(FamiliarCue::Warning);
+        bumpLootCounter(lootWarningsRaised, "loot_warn");
     }
     guardianEventLogger.update();
 

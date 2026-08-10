@@ -28,6 +28,7 @@ enum class Screen {
     FamiliarMissionSelect,
     FamiliarMissionConfirm,
     FamiliarMission,
+    LootBoard,
     CyberFamiliarResetConfirm,
     BleDiscovery,
     BleDetail,

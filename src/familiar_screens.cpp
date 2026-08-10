@@ -250,6 +250,28 @@ void FamiliarScreens::drawMissions() {
     ScreenChrome::drawFooter("Enter: open   Q: back");
 }
 
+void FamiliarScreens::drawLootBoard() {
+    ScreenChrome::drawHeader("Loot Board");
+    static constexpr size_t kRowCount = 4;
+    const char* const labels[kRowCount] = {
+        "Hosts found",
+        "Services found",
+        "Warnings raised",
+        "Handshakes captured",
+    };
+    const uint32_t values[kRowCount] = {
+        lootHostsFound_,
+        lootServicesFound_,
+        lootWarningsRaised_,
+        lootHandshakesCaptured_,
+    };
+    for (size_t row = 0; row < kRowCount; ++row) {
+        ScreenChrome::drawListRow(row, labels[row], false,
+                                  String(values[row]));
+    }
+    ScreenChrome::drawFooter("Lifetime totals   Q: back");
+}
+
 void FamiliarScreens::drawPatrolConfirm() {
     ScreenChrome::drawHeader("Confirm Familiar Patrol");
     auto& display = M5Cardputer.Display;

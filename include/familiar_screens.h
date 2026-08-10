@@ -70,7 +70,9 @@ public:
                     String& speechBubble, unsigned long& speechBubbleUntil,
                     bool& patrolContinuousChoice, uint8_t& patrolIntervalIndex,
                     bool& sdAvailable, size_t& listSelection,
-                    bool& handshakeMissionRunning)
+                    bool& handshakeMissionRunning, uint32_t& lootHostsFound,
+                    uint32_t& lootServicesFound, uint32_t& lootWarningsRaised,
+                    uint32_t& lootHandshakesCaptured)
         : familiar_(familiar),
           patrol_(patrol),
           page_(page),
@@ -83,7 +85,11 @@ public:
           patrolIntervalIndex_(patrolIntervalIndex),
           sdAvailable_(sdAvailable),
           listSelection_(listSelection),
-          handshakeMissionRunning_(handshakeMissionRunning) {}
+          handshakeMissionRunning_(handshakeMissionRunning),
+          lootHostsFound_(lootHostsFound),
+          lootServicesFound_(lootServicesFound),
+          lootWarningsRaised_(lootWarningsRaised),
+          lootHandshakesCaptured_(lootHandshakesCaptured) {}
 
     void drawCreature(int centerX, int baseY, bool large);
     void drawSpeechBubble(int x, int y, int width);
@@ -94,6 +100,9 @@ public:
     // Network Recon (Familiar Patrol) and Handshake Capture; new mission
     // types get a row here rather than their own scattered entry point.
     void drawMissions();
+    // Bjorn/Ragnar-style trophy case: lifetime discovery totals, bumped in
+    // main.cpp at each genuine find (see lootHostsFound and friends there).
+    void drawLootBoard();
     void drawPatrol(bool fullDraw = true);
     void drawPatrolConfirm();
 
@@ -115,4 +124,8 @@ private:
     bool& sdAvailable_;
     size_t& listSelection_;
     bool& handshakeMissionRunning_;
+    uint32_t& lootHostsFound_;
+    uint32_t& lootServicesFound_;
+    uint32_t& lootWarningsRaised_;
+    uint32_t& lootHandshakesCaptured_;
 };
