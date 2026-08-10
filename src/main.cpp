@@ -7667,6 +7667,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 } else if (familiarMissionRunning) {
                     currentScreen = Screen::FamiliarMission;
                 } else {
+                    // Scan first if nothing's been discovered yet, so
+                    // picking Handshake Capture cold (no prior manual Wi-Fi
+                    // Discovery) still lands on a populated target list
+                    // instead of "no scan results, go run Discovery first."
+                    if (accessPoints.empty()) scanWifiNetworks();
                     familiarMissionSelected.assign(accessPoints.size(), false);
                     listSelection = 0;
                     listOffset = 0;
@@ -7679,6 +7684,18 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::FamiliarMissionSelect:
+            if (refresh) {
+                scanWifiNetworks();
+                // A rescan can add, drop, or reorder APs, so previous
+                // checkbox positions can no longer be trusted to point at
+                // the same network -- reset rather than risk deauthing
+                // whatever now happens to sit at an old selected index.
+                familiarMissionSelected.assign(accessPoints.size(), false);
+                listSelection = 0;
+                listOffset = 0;
+                familiarMissionScreens.drawSelect();
+                return;
+            }
             if (up) moveSelection(-1, accessPoints.size());
             if (down) moveSelection(1, accessPoints.size());
             if (keys.enter && !accessPoints.empty()) {
@@ -9130,7 +9147,14 @@ void setup() {
     config.output_power = true;
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
+    // Temporary boot-phase timing: prints elapsed ms at each major setup()
+    // checkpoint so a slow pre-splash boot can be pinpointed from a serial
+    // log instead of guessed at. Remove once the reported regression is
+    // tracked down.
+    const unsigned long bootTraceStart = millis();
+    Serial.printf("[boot-trace] t=%lums display ready\n", millis() - bootTraceStart);
     preferences.begin("ghostwire", false);
+    Serial.printf("[boot-trace] t=%lums preferences open\n", millis() - bootTraceStart);
     meshPrivateKey.resize(32);
     if (preferences.getBytesLength("mesh_priv") == meshPrivateKey.size()) {
         preferences.getBytes("mesh_priv", meshPrivateKey.data(),
@@ -9167,7 +9191,11 @@ void setup() {
         preferences.getBool("mesh_bg", kDefaultMeshBackground);
     meshMessageAlertsEnabled =
         preferences.getBool("mesh_alert", kDefaultMeshMessageAlerts);
+    Serial.printf("[boot-trace] t=%lums mesh key/identity ready\n",
+                  millis() - bootTraceStart);
     verifyOtaBootOrRollback();
+    Serial.printf("[boot-trace] t=%lums OTA boot check done\n",
+                  millis() - bootTraceStart);
     speakerVolume = preferences.getUChar("volume", kDefaultVolume);
     screenBrightness =
         preferences.getUChar("brightness", kDefaultBrightness);
@@ -9250,6 +9278,8 @@ void setup() {
     if (clockUtcOffsetMinutes < -720 || clockUtcOffsetMinutes > 840) {
         clockUtcOffsetMinutes = kDefaultClockUtcOffsetMinutes;
     }
+    Serial.printf("[boot-trace] t=%lums settings loaded\n",
+                  millis() - bootTraceStart);
     Branding::applyTheme(themeIndex);
     if (saveWifiCredentials) {
         loadWifiProfiles();
@@ -9269,7 +9299,11 @@ void setup() {
     updateBatteryEstimate(true);
     hidService.begin();
     gnssService.begin();
+    Serial.printf("[boot-trace] t=%lums HID/GNSS begin() done\n",
+                  millis() - bootTraceStart);
     initSd();
+    Serial.printf("[boot-trace] t=%lums initSd() done (sdAvailable=%d)\n",
+                  millis() - bootTraceStart, sdAvailable);
     loadMeshChannels();
     meshTransmitChannel = preferences.getUChar("mesh_tx_ch", 0);
     if (meshTransmitChannel >= loraService.meshChannels().size()) {
@@ -9285,6 +9319,8 @@ void setup() {
     if (meshBackgroundEnabled) {
         loraService.begin();
     }
+    Serial.printf("[boot-trace] t=%lums mesh state/radio done\n",
+                  millis() - bootTraceStart);
     recordBootTelemetry();
     if (isDevelopmentBuild() && sdAvailable) {
         heapSoakLogger.begin(
@@ -9300,9 +9336,15 @@ void setup() {
             "heap_min_kb");
     }
     if (sdAvailable) familiarPatrolService.begin();
+    Serial.printf("[boot-trace] t=%lums familiarPatrolService.begin() done\n",
+                  millis() - bootTraceStart);
     cyberFamiliar.begin(preferences);
+    Serial.printf("[boot-trace] t=%lums cyberFamiliar.begin() done\n",
+                  millis() - bootTraceStart);
     chameleonSavedPath = preferences.getString("cham_last", "");
     if (isAbnormalReset(esp_reset_reason())) cyberFamiliar.noteRecovery();
+    Serial.printf("[boot-trace] t=%lums entering showSplash()\n",
+                  millis() - bootTraceStart);
     showSplash();
     markBootHealthy();
     bootDiagnosticExportPending =

@@ -12,8 +12,8 @@ void FamiliarMissionScreens::drawSelect() {
         auto& display = M5Cardputer.Display;
         display.setTextColor(Branding::muted, Branding::background);
         display.setCursor(8, 38);
-        display.print("No scan results. Run Wi-Fi Discovery first.");
-        ScreenChrome::drawFooter("Q: back");
+        display.print("No networks found.");
+        ScreenChrome::drawFooter("R: rescan   Q: back");
         return;
     }
     size_t chosen = 0;
@@ -35,7 +35,7 @@ void FamiliarMissionScreens::drawSelect() {
                                   "CH " + String(ap.primary));
     }
     const String footer =
-        chosen == 0 ? String("Enter: toggle   Q: back")
+        chosen == 0 ? String("Enter: toggle   R: rescan   Q: back")
                    : "Enter: toggle   Tab: start (" + String(chosen) +
                          ")   Q: back";
     ScreenChrome::drawFooter(footer.c_str());

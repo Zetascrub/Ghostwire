@@ -6,6 +6,20 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Fix Handshake Capture requiring a manual Wi-Fi Discovery scan first.
+  Selecting it from the Missions hub with no scan results now runs the scan
+  itself before presenting the target checklist, instead of showing "run
+  Wi-Fi Discovery first" and making the operator back out and do it by hand.
+  The target list also gets its own `R`: rescan now, resetting selections
+  since a rescan can add, drop, or reorder APs and a stale checkbox
+  position could otherwise point at the wrong network.
+- Add temporary `[boot-trace]` serial timing at each major `setup()`
+  checkpoint (display ready, preferences open, mesh identity, OTA boot
+  check, settings loaded, SD init, mesh state/radio, Patrol/Familiar
+  begin(), entering the boot animation) to track down a reported
+  multi-second increase in the blank-screen time before the boot animation
+  starts. Diagnostic only, meant to come back out once the slow phase is
+  identified.
 - Unify the Familiar's autonomous capabilities behind one **Missions** hub
   (`My Familiar` -> `Tab` -> **Missions**) instead of two separately-keyed
   entry points. Lists **Network Recon** (Familiar Patrol) and **Handshake
