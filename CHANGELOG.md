@@ -15,6 +15,97 @@ assessment tools built on those verified foundations.
   forwarder; every other screen investigated reaches into shared globals
   or cross-subsystem calls its class doesn't hold yet, so this is staying
   a one-screen-at-a-time effort. See `docs/screen-extraction.md`.
+- Add BLE PvP battles between two Familiars -- `Tab -> PvP Battle` on the
+  Familiar screen, either **Host** (advertise + wait to be challenged) or
+  **Find Opponent** (scan, pick a badge from the list, connect and
+  challenge it). Scoped to the design doc's manual "Direct Challenge" mode
+  rather than its full passive/automatic roaming-encounter design
+  (concurrent advertise+scan+RSSI+cooldowns+random-roll) -- every existing
+  BLE feature in this codebase runs one role at a time and fully tears
+  NimBLE down between switches (Wi-Fi and BLE share the ESP32-S3's radio),
+  so automatic roaming would need advertise+scan+GATT-server+GATT-client
+  all running at once, genuinely new territory here; manual challenge
+  needs only one role active at a time and fits that existing discipline.
+  Automatic roaming is a natural follow-up slice once this is proven on
+  hardware. Battle stats (HP/attack/defense) derive purely from the
+  Familiar's existing level/evolution stage, no new persisted fields; both
+  sides compute turn results independently from a shared PRNG seed
+  exchanged in the opening handshake so neither has to trust the other's
+  self-reported outcome. New `include/familiar_battle_service.h` /
+  `src/familiar_battle_service.cpp` (`FamiliarBattleService`), new battle
+  screens in `familiar_screens.h/.cpp`, and `BattleWon`/`BattleLost`/
+  `BattleFled` added to the `FamiliarXpEvent` table. Also added
+  `tools/vpet_battle_simulator.py`, a desktop script (`pip install bless`)
+  that plays the peripheral/responder side of the same protocol so a real
+  badge can battle it via Find Opponent without needing a second Cardputer
+  -- the first script in `tools/` needing a non-stdlib dependency, since
+  Python has no built-in BLE support.
+  Hardware-verified end to end against the desktop simulator (connect,
+  handshake, a full turn-based battle, XP award). Found and fixed a real
+  bug along the way: the inbound BLE message handoff from NimBLE's host
+  task to the main loop used a single-slot buffer (matching
+  `ChameleonUltraClient::onNotify()`'s reasoning that exactly one message
+  is ever in flight) -- true for that strictly request/response-paced
+  protocol, but not for this one, where a peer sends its HELLO reply
+  immediately followed by its first move with no gap. Both notifications
+  could land before the main loop's next tick, silently clobbering the
+  first with the second and stalling the handshake forever -- looked
+  exactly like a dropped BLE connection from the outside (several hours of
+  a session were spent chasing what turned out to be a red herring around
+  a multi-adapter Linux Bluetooth setup before the real cause surfaced).
+  Replaced with a small SPSC ring buffer that drains every queued message
+  per tick instead of just one.
+- Give each Familiar evolution stage its own silhouette instead of one
+  fixed creature shape -- Script Sprite keeps today's round cat-eared blob
+  as the origin form, and each stage past it grows a genuinely different
+  outline using the same primitives (`fillRoundRect`/`fillTriangle`/
+  `drawLine`/`fillCircle`, no bitmaps/asset pipeline): Packet Gremlin's
+  horns and tail-bend, Grid Imp's squared-off blocky body and grid
+  crosshatch, Signal Wyrm's serpentine raised head and wifi-wave antennae,
+  Beacon Warden's armored double-outline and pulsing beacon orb, and Hex
+  Familiar's final-form true hexagonal body, spike crown, and orbiting
+  aura. `drawCreature()` dispatches on `stageIndex()` to one of six
+  self-contained draw functions.
+  Also redesigned the Familiar dashboard (page 0): dropped the progress
+  bar (moved to a new `Tab -> Evolution details` screen alongside the full
+  stage ladder and XP-to-next-stage readout), put Lv/name/Bond in a side
+  column, and let the creature render bigger and wander slowly left/right
+  across the freed space. The idle watch screen (`w`) is now just a big
+  creature render with no text at all.
+  Along the way, fixed a real animation-flicker bug: `familiarCanvas_`
+  (page 0) and the idle screensaver were meant to double-buffer into an
+  offscreen `M5Canvas` and blit with one `pushSprite()`, but the idle
+  canvas's `createSprite()` was silently failing every single frame --
+  by the time this screensaver typically gets used, the heap has enough
+  fragmentation from a session's Wi-Fi/BLE/etc. activity that no
+  contiguous block big enough for a full 16-bit 240x135 canvas exists
+  (measured: 73KB free, but only a 63.5KB contiguous block, against a
+  64.8KB request) -- so it was silently falling back to drawing straight
+  to the display, clear-then-redraw-many-shapes and all. Both canvases now
+  allocate at 8-bit color depth instead of 16-bit (half the memory; the
+  creature is flat theme colors, not gradients, so the coarser palette
+  costs nothing visible), which comfortably clears that ceiling. Also
+  found and fixed a second, independent flicker source hiding behind the
+  first: the header's wifi/clock/battery status icons were being redrawn
+  directly to the display once a second regardless of sleep state, racing
+  with and getting wiped by the idle screensaver's own redraws -- now
+  gated off while `screenSleeping`.
+- Give the Familiar a real, strictly XP-gated evolution ladder -- Script
+  Sprite -> Packet Gremlin -> Grid Imp -> Signal Wyrm -> Beacon Warden ->
+  Hex Familiar -- replacing the old `evolutionName()`, which picked a
+  flavor title from recent playstyle mix and could flicker between titles
+  rather than progress one way. `stageName()`/`stageIndex()`/
+  `stageProgressPercent()` sit alongside the existing fine-grained `level()`
+  (1-99, unchanged) the way a game has both a numeric level and a species
+  form -- level-ups stay frequent and small, stage-ups are rare and get
+  their own "Evolved into `<Stage>`!" journal entry distinct from "Level
+  up!". Also reconciled every XP amount the Familiar hands out (previously
+  ~20 numeric literals scattered across `main.cpp` call sites) into one
+  `FamiliarXpEvent`/`xpForEvent()` table in `cyber_familiar.cpp`, which
+  surfaced one real inconsistency along the way -- a "nothing new found"
+  patrol result was paying 0, 3, or 5 XP depending on which of three code
+  paths hit it -- normalized to a single value. Inspired by a similar
+  tiered-evolution design in a companion Python project.
 - Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
   Portal**): clones the selected SSID as an open access point wrapped in a
   captive-portal DNS redirect and a sign-in page; any submission is queued,

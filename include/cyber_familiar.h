@@ -23,6 +23,42 @@ struct FamiliarActivity {
     uint8_t batteryPercent = 100;
 };
 
+// One entry per distinct XP-granting event, so every reward the class
+// hands out -- whether triggered internally (interact(), observeTool(),
+// the telemetry reactions in update()) or externally via notePatrol() --
+// draws from the single xpForEvent() table in cyber_familiar.cpp instead
+// of a numeric literal at each call site. Values there are a
+// reconciliation of what was already being awarded, not a rebalance,
+// except "nothing new found" patrol results (previously 0/3/5 XP
+// depending on which of three call sites hit it) normalized to one value.
+enum class FamiliarXpEvent : uint8_t {
+    Interact,
+    CycleName,
+    ToolUnlocked,
+    IdentitySeen,
+    LoraPacketHeard,
+    GnssFixFound,
+    WifiUplinkConnected,
+    GuardianWatchStarted,
+    GuardianWatchEnded,
+    GuardianDisconnectAnomaly,
+    EvilPortalLive,
+    EvilPortalStoppedQuiet,
+    EvilPortalStoppedWithCaptures,
+    EvilPortalLoginCaptured,
+    PatrolStarted,
+    PatrolStoppedByOperator,
+    PatrolQuiet,
+    WatchPassFound,
+    PatrolCompleteFound,
+    PatrolNeedsAttention,
+    HandshakeMissionQuiet,
+    HandshakeMissionFound,
+    BattleWon,
+    BattleLost,
+    BattleFled,
+};
+
 class CyberFamiliar {
 public:
     void begin(Preferences& preferences);
@@ -34,7 +70,7 @@ public:
     void cycleName();
     void toggleIdleMode();
     void noteRecovery();
-    void notePatrol(const String& message, uint16_t xp = 0,
+    void notePatrol(const String& message, FamiliarXpEvent event,
                     FamiliarMood mood = FamiliarMood::Curious);
     void resetProgress();
 
@@ -43,7 +79,24 @@ public:
     const std::vector<String>& journal() const { return journal_; }
     FamiliarMood mood() const { return mood_; }
     const char* moodName() const;
-    const char* evolutionName() const;
+    // Strictly XP-gated evolution tier (Script Sprite -> ... -> Hex
+    // Familiar) -- not to be confused with level() below, which is a much
+    // finer-grained (1-99) trickle stat that keeps ticking up within a
+    // stage. A stage change is the rare, big-deal moment; a level-up is
+    // the frequent, small one -- both show up in the journal, distinctly.
+    const char* stageName() const;
+    uint8_t stageIndex() const;
+    bool isMaxStage() const;
+    // 0-100, progress within the *current* stage toward the next one (100
+    // once isMaxStage()). Mirrors what the Evolution details screen shows.
+    uint8_t stageProgressPercent() const;
+    // XP still needed to reach the next stage (0 once isMaxStage()).
+    uint32_t xpToNextStage() const;
+    // Full ladder, for the Evolution details screen's stage list -- backed
+    // by the same kStages table stageName()/stageIndex() use internally.
+    static uint8_t stageCount();
+    static const char* stageNameAt(uint8_t index);
+    static uint32_t stageXpThresholdAt(uint8_t index);
     uint16_t level() const;
     uint32_t xp() const { return xp_; }
     uint32_t xpForNextLevel() const;
