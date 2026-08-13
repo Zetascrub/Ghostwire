@@ -4,8 +4,10 @@
 #include <vector>
 
 #include "gnss_service.h"
+#include "grove_companion_link.h"
 #include "network_host_scan_service.h"
 #include "network_port_scan_service.h"
+#include "poe_companion_service.h"
 #include "war_drive_service.h"
 
 // Network scouting screens: War Drive summary, the Network Dashboard
@@ -24,7 +26,12 @@ public:
                        NetworkPortScanService& portScan,
                        std::vector<uint16_t>& portResults,
                        String& portScanExportStatus, IPAddress& portScanTarget,
-                       bool& portScanIsFull)
+                       bool& portScanIsFull,
+                       PoeCompanionService& poeCompanion,
+                       GroveCompanionLink& groveLink,
+                       std::vector<String>& poeScripts,
+                       String& poeScriptUploadStatus,
+                       String& poeLootExtractStatus)
         : warDrive_(warDrive),
           gnss_(gnss),
           listSelection_(listSelection),
@@ -36,7 +43,12 @@ public:
           portResults_(portResults),
           portScanExportStatus_(portScanExportStatus),
           portScanTarget_(portScanTarget),
-          portScanIsFull_(portScanIsFull) {}
+          portScanIsFull_(portScanIsFull),
+          poeCompanion_(poeCompanion),
+          groveLink_(groveLink),
+          poeScripts_(poeScripts),
+          poeScriptUploadStatus_(poeScriptUploadStatus),
+          poeLootExtractStatus_(poeLootExtractStatus) {}
 
     // Redraws just the live counters (no header/footer) -- called on every
     // update while war-driving, so it must not touch drawHeader()'s
@@ -44,8 +56,14 @@ public:
     void drawWarDriveDynamic();
     void drawWarDrive();
     void drawNetworkDashboard();
+    void drawPoeCompanion(bool fullDraw = true);
+    void drawPoeCompanionDetail(bool fullDraw = true);
     void drawNetworkHostScan(bool fullDraw = true);
     void drawNetworkPortScan(bool fullDraw = true);
+    // `targetSlot` is which slot a file selected here gets uploaded to --
+    // fixed by which Tab-menu item ("Upload to slot 0"/"Upload to slot 1")
+    // opened this screen, not screen state of its own.
+    void drawPoePayloadScripts(uint8_t targetSlot, bool fullDraw = true);
 
 private:
     WarDriveService& warDrive_;
@@ -60,6 +78,13 @@ private:
     String& portScanExportStatus_;
     IPAddress& portScanTarget_;
     bool& portScanIsFull_;
+    PoeCompanionService& poeCompanion_;
+    GroveCompanionLink& groveLink_;
+    std::vector<String>& poeScripts_;
+    String& poeScriptUploadStatus_;
+    String& poeLootExtractStatus_;
     uint32_t lastHostScanSignature_ = UINT32_MAX;
     uint32_t lastPortScanSignature_ = UINT32_MAX;
+    uint32_t lastPoeCompanionSignature_ = UINT32_MAX;
+    uint32_t lastPoeCompanionDetailSignature_ = UINT32_MAX;
 };

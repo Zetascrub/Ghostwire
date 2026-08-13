@@ -6,6 +6,383 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+## 0.6.0 - 2026-08-13
+
+- Start extracting screens' *input handling* out of `main.cpp`'s
+  `handleInput()` (the other giant per-screen switch, alongside the
+  already-fully-extracted `drawCurrentScreen()`) into their own modules --
+  `Screen::Infrared` first, since it's the one case that touched nothing
+  beyond the `IrService&` `IrScreen` already held. Added
+  `IrScreen::handleInput()` and a new `ScreenChrome::pressedLetter()`
+  forwarder; every other screen investigated reaches into shared globals
+  or cross-subsystem calls its class doesn't hold yet, so this is staying
+  a one-screen-at-a-time effort. See `docs/screen-extraction.md`.
+- Add BLE PvP battles between two Familiars -- `Tab -> PvP Battle` on the
+  Familiar screen, either **Host** (advertise + wait to be challenged) or
+  **Find Opponent** (scan, pick a badge from the list, connect and
+  challenge it). Scoped to the design doc's manual "Direct Challenge" mode
+  rather than its full passive/automatic roaming-encounter design
+  (concurrent advertise+scan+RSSI+cooldowns+random-roll) -- every existing
+  BLE feature in this codebase runs one role at a time and fully tears
+  NimBLE down between switches (Wi-Fi and BLE share the ESP32-S3's radio),
+  so automatic roaming would need advertise+scan+GATT-server+GATT-client
+  all running at once, genuinely new territory here; manual challenge
+  needs only one role active at a time and fits that existing discipline.
+  Automatic roaming is a natural follow-up slice once this is proven on
+  hardware. Battle stats (HP/attack/defense) derive purely from the
+  Familiar's existing level/evolution stage, no new persisted fields; both
+  sides compute turn results independently from a shared PRNG seed
+  exchanged in the opening handshake so neither has to trust the other's
+  self-reported outcome. New `include/familiar_battle_service.h` /
+  `src/familiar_battle_service.cpp` (`FamiliarBattleService`), new battle
+  screens in `familiar_screens.h/.cpp`, and `BattleWon`/`BattleLost`/
+  `BattleFled` added to the `FamiliarXpEvent` table. Also added
+  `tools/vpet_battle_simulator.py`, a desktop script (`pip install bless`)
+  that plays the peripheral/responder side of the same protocol so a real
+  badge can battle it via Find Opponent without needing a second Cardputer
+  -- the first script in `tools/` needing a non-stdlib dependency, since
+  Python has no built-in BLE support.
+  Hardware-verified end to end against the desktop simulator (connect,
+  handshake, a full turn-based battle, XP award). Found and fixed a real
+  bug along the way: the inbound BLE message handoff from NimBLE's host
+  task to the main loop used a single-slot buffer (matching
+  `ChameleonUltraClient::onNotify()`'s reasoning that exactly one message
+  is ever in flight) -- true for that strictly request/response-paced
+  protocol, but not for this one, where a peer sends its HELLO reply
+  immediately followed by its first move with no gap. Both notifications
+  could land before the main loop's next tick, silently clobbering the
+  first with the second and stalling the handshake forever -- looked
+  exactly like a dropped BLE connection from the outside (several hours of
+  a session were spent chasing what turned out to be a red herring around
+  a multi-adapter Linux Bluetooth setup before the real cause surfaced).
+  Replaced with a small SPSC ring buffer that drains every queued message
+  per tick instead of just one.
+- Give each Familiar evolution stage its own silhouette instead of one
+  fixed creature shape -- Script Sprite keeps today's round cat-eared blob
+  as the origin form, and each stage past it grows a genuinely different
+  outline using the same primitives (`fillRoundRect`/`fillTriangle`/
+  `drawLine`/`fillCircle`, no bitmaps/asset pipeline): Packet Gremlin's
+  horns and tail-bend, Grid Imp's squared-off blocky body and grid
+  crosshatch, Signal Wyrm's serpentine raised head and wifi-wave antennae,
+  Beacon Warden's armored double-outline and pulsing beacon orb, and Hex
+  Familiar's final-form true hexagonal body, spike crown, and orbiting
+  aura. `drawCreature()` dispatches on `stageIndex()` to one of six
+  self-contained draw functions.
+  Also redesigned the Familiar dashboard (page 0): dropped the progress
+  bar (moved to a new `Tab -> Evolution details` screen alongside the full
+  stage ladder and XP-to-next-stage readout), put Lv/name/Bond in a side
+  column, and let the creature render bigger and wander slowly left/right
+  across the freed space. The idle watch screen (`w`) is now just a big
+  creature render with no text at all.
+  Along the way, fixed a real animation-flicker bug: `familiarCanvas_`
+  (page 0) and the idle screensaver were meant to double-buffer into an
+  offscreen `M5Canvas` and blit with one `pushSprite()`, but the idle
+  canvas's `createSprite()` was silently failing every single frame --
+  by the time this screensaver typically gets used, the heap has enough
+  fragmentation from a session's Wi-Fi/BLE/etc. activity that no
+  contiguous block big enough for a full 16-bit 240x135 canvas exists
+  (measured: 73KB free, but only a 63.5KB contiguous block, against a
+  64.8KB request) -- so it was silently falling back to drawing straight
+  to the display, clear-then-redraw-many-shapes and all. Both canvases now
+  allocate at 8-bit color depth instead of 16-bit (half the memory; the
+  creature is flat theme colors, not gradients, so the coarser palette
+  costs nothing visible), which comfortably clears that ceiling. Also
+  found and fixed a second, independent flicker source hiding behind the
+  first: the header's wifi/clock/battery status icons were being redrawn
+  directly to the display once a second regardless of sleep state, racing
+  with and getting wiped by the idle screensaver's own redraws -- now
+  gated off while `screenSleeping`.
+- Give the Familiar a real, strictly XP-gated evolution ladder -- Script
+  Sprite -> Packet Gremlin -> Grid Imp -> Signal Wyrm -> Beacon Warden ->
+  Hex Familiar -- replacing the old `evolutionName()`, which picked a
+  flavor title from recent playstyle mix and could flicker between titles
+  rather than progress one way. `stageName()`/`stageIndex()`/
+  `stageProgressPercent()` sit alongside the existing fine-grained `level()`
+  (1-99, unchanged) the way a game has both a numeric level and a species
+  form -- level-ups stay frequent and small, stage-ups are rare and get
+  their own "Evolved into `<Stage>`!" journal entry distinct from "Level
+  up!". Also reconciled every XP amount the Familiar hands out (previously
+  ~20 numeric literals scattered across `main.cpp` call sites) into one
+  `FamiliarXpEvent`/`xpForEvent()` table in `cyber_familiar.cpp`, which
+  surfaced one real inconsistency along the way -- a "nothing new found"
+  patrol result was paying 0, 3, or 5 XP depending on which of three code
+  paths hit it -- normalized to a single value. Inspired by a similar
+  tiered-evolution design in a companion Python project.
+- Reorganize SD card exports into per-feature subfolders under
+  `/ghostwire/logs/` (`wifi`, `ble`, `mesh`, `gnss`, `imu`, `network`,
+  `poe`, `wardrive`, `tools`, `system`, `familiar`) instead of every
+  feature's CSV/pcap/text export piling into that one flat directory --
+  found while validating the loot-extraction feature above, whose exports
+  had gone missing from the Files/Evidence screens because that folder had
+  quietly grown past the Files screen's 128-entry listing cap this session.
+  `SdLogger`/`PcapLogger` both gained an optional subfolder parameter
+  (default `"logs"`, so nothing else had to change). The Evidence screen
+  (`Main Menu`/`Tools -> Evidence`) now opens on a category submenu
+  (`Screen::LogCategories`) instead of dumping every log from every feature
+  into one flat list -- picking a category scopes the scan to just that
+  subfolder; "All" reproduces the original unscoped behavior. Evidence
+  categorization is now based on which subfolder a file actually lives in,
+  not a filename-prefix guess.
+- Make the P4's two payload slots runtime-editable and add scan-loot
+  extraction, both over Grove or Wi-Fi. `Tab -> Upload to slot 0/1` on
+  either PoE Companion screen browses `.txt` scripts under
+  `/ghostwire/poe-scripts/` on the SD card (a separate directory and
+  vocabulary from the BLE HID DuckyScript picker) and uploads the chosen
+  one -- authenticated the same way command triggers are, persisted across
+  P4 reboots via NVS. `Tab -> Extract loot` pulls the P4's accumulated
+  `PORT_SCAN` findings (deduplicated, RAM-only, cleared on P4 reboot) and
+  saves them as a CSV, kept separate from the Familiar's own lifetime Loot
+  Board counters. New P4 endpoints: `POST /v1/payload`, `POST /v1/loot`,
+  and Grove frame types `U`/`V`/`D`/`F` (chunked script upload) and
+  `X`/`N`/`E` (chunked loot download) -- see shared/protocol/README.md.
+- Fix a P4 hardware bug found while validating the Wi-Fi command channel
+  below: the HTTP server task's default 4096-byte stack (`esp_http_server`'s
+  `HTTPD_DEFAULT_CONFIG()`) was already marginal because of newlib's `%f`
+  float formatting (`build_status_json()`'s temperature field pulls in
+  `_dtoa_r`/`_Balloc`, both stack-heavy) and started reliably overflowing
+  once that function grew for the fields below -- a repeating "Stack
+  protection fault" panic/reboot loop on real hardware, visible as the LED
+  cycling and Wi-Fi discovery silently failing. Fixed by giving the httpd
+  task 8192 bytes instead.
+- Extend the Companion Mode command channel to Wi-Fi (`POST /v1/command` on
+  the P4), reusing the same Grove-established session key/clock offset --
+  `Run slot 0`/`Run slot 1` now work whenever the P4 is reachable by either
+  transport, preferring Grove when connected. Wi-Fi's authenticated message
+  adds a per-request nonce (`slot || nonce`, vs. Grove's bare slot byte) so
+  a small ring-buffer replay cache on the P4 can reject a captured-and-
+  resent request without also rejecting a genuine second press -- Wi-Fi
+  sniffing is a realistic threat a physically-wired Grove link isn't, so
+  this only applies to the new HTTP path.
+- Revise the Relay screens: entering no longer blocks for a few seconds
+  (was a synchronous discovery/HTTP fetch on every screen entry -- now
+  deferred to the existing background poll); the detail screen is now a
+  scrollable, overflow-safe row list (was fixed-position text that could
+  run past the screen edge) and gains a `Device` row; both screens' Tab
+  menus grow `Run slot 0`/`Run slot 1` (with direct `0`/`1` hotkeys too, so
+  firing a payload no longer requires visiting the detail screen first) and
+  `Forget pairing key`; periodic redraws now skip repainting when nothing
+  displayed actually changed, rather than repainting once a second just
+  because a fresh Grove sample arrived.
+- Add a Companion Mode command channel over Grove: once paired, the
+  Cardputer's PoE Companion detail screen offers `Run slot 0`/`Run slot 1`,
+  remotely triggering the P4's existing button payload slots through the
+  same authenticated-tag mechanism pairing set up. The P4's pairing response
+  now also carries its NTP-synced Unix time, letting the Cardputer derive a
+  clock offset (it has no RTC/NTP of its own) and compute the time-windowed
+  HMAC tag each command needs without any Wi-Fi dependency. An accepted
+  command dispatches through the identical queue/task a real button press
+  uses, so the LED's amber/green/red behavior and the status frame's new
+  `payload_state`/`finding_count` fields are indistinguishable from a
+  physical press -- the detail screen's status line now shows both pairing
+  and the live/last payload result (`Paired  Slot: idle/running/ok (N)/
+  error`). Grove-only for this slice; a Wi-Fi command channel is a deferred
+  follow-up needing its own replay-cache design.
+
+- Add Grove pairing between the Cardputer and the Unit PoE-P4: `Tab -> Pair
+  via Grove` on the PoE Companion detail screen runs a real X25519 ECDH key
+  exchange over the physical Grove link and derives a session key via
+  HKDF-SHA256, persisted on both sides (NVS on the P4, `Preferences` on the
+  Cardputer). The session key is never transmitted over the wire itself --
+  only the ephemeral public keys are. Also lands the P4's first UTC time
+  sync (NTP, matching the Cardputer's own server list) and a reusable
+  time-windowed HMAC command-authentication primitive (`shared/protocol/
+  auth.h`) that a later command channel will use to keep a captured command
+  from being replayed after its ~30s window passes. Not yet wired to any
+  real command.
+
+- Give the P4's button-triggered scan payload a small DuckyScript-flavored
+  interpreter (`REM`/`DELAY`/`LOG`/`INTERNET_CHECK`/`PING_SWEEP`/
+  `PORT_SCAN [ports]`) instead of hardcoded functions per slot, and add a
+  real host-discovery + common-port scan payload (long press) alongside the
+  existing internet-reachability check (short press), matching the
+  Cardputer's own Host Discovery/Port Scan behavior. `GHOSTWIRE_COMMON_PORTS`
+  is now shared between both firmwares instead of duplicated.
+
+- Add a payload engine to the Unit PoE-P4: its side button (GPIO45) triggers
+  a short- or long-press payload slot, with the onboard LED switching to a
+  traffic-light amber/green/red while a payload runs and for a few seconds
+  after, then reverting to the normal connectivity indicator.
+
+- Split the PoE Companion screen into a compact summary (status, IP, LAN/
+  internet reachability) and a `Tab`-reachable detail screen (firmware,
+  uptime, temperature, heap, LED state, Grove link counters), fixing the
+  merged panel overflowing the display once Grove alone could populate it
+  without ever going through network discovery. Grove's status frame now
+  carries the P4's DHCP-assigned IP directly, so the summary shows a real
+  address even with no Wi-Fi/mDNS path at all. Also fix the periodic
+  poll/redraw only ever running from a keypress-gated input handler, so a
+  passively-watched screen never polled or updated on its own; it's now
+  driven by an unconditional loop tick like the rest of the app's live
+  telemetry.
+
+- Grove now carries live PoE-P4 companion telemetry, not just a heartbeat.
+  The P4 pushes a status frame (link/speed/duplex, internet reachability,
+  indicator state, uptime, reset reason, temperature, heap, IP) once a
+  second and a slower identity frame (device id, firmware) every ten
+  seconds, reusing the existing versioned/CRC32-protected frame style. The
+  PoE Companion screen now prefers this Grove telemetry over the network
+  status fetch whenever it's fresh -- it's faster and needs no Wi-Fi -- and
+  falls back to the existing mDNS/HTTP path otherwise; network polling
+  backs off to once a minute while Grove is fresh, both to honor that
+  priority and to avoid re-introducing the blocking-mDNS-stalls-Grove issue
+  fixed below. Gateway/DNS/port stay network-only telemetry.
+
+- Fix the Grove UART link dropping frames during PoE companion discovery:
+  mDNS discovery blocked the whole main loop for up to ~4.5s per failed
+  attempt, and repeating that on every 10-second poll pushed the Grove link
+  close to (and once, past) its own 5-second timeout. Discovery now backs
+  off 30s between attempts while the companion stays unfound, and the Grove
+  UART's RX buffer grew from 256 to 1024 bytes so a stall elsewhere in the
+  loop can no longer drop frames.
+
+- Add a read-only Grove UART diagnostic between Cardputer ADV GPIO1/GPIO2 and
+  Unit PoE-P4 GPIO53/GPIO54. The P4 sends one versioned, sequenced, CRC32-
+  protected heartbeat per second; the Cardputer validates and acknowledges it,
+  and both local and relayed link states appear on the PoE Companion screen.
+  A three-second timeout prevents stale links from remaining marked active.
+
+- Add the first Ghostwire Unit PoE-P4 companion vertical slice. The independent
+  ESP-IDF 5.4.2 image brings up the board's IP101 Ethernet interface, obtains a
+  DHCP lease, advertises `_ghostwire._tcp`, and exposes bounded read-only
+  protocol-v1 status and WebSocket event endpoints. `Scout network > PoE
+  Companion` on the Cardputer discovers the service, validates its protocol and
+  capabilities, and displays the wired link, address, model, firmware, and
+  live reachability/connection telemetry. Add a common-anode RGB state machine
+  on the companion: pulsing amber boot, blue ready, cyan LAN, green internet,
+  and purple recent Ghostwire contact. The Cardputer keeps that contact state
+  alive with a 10-second poll while its companion screen is open. State-changing
+  commands remain unavailable until pairing and authenticated sessions are
+  designed.
+- Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
+  Portal**): clones the selected SSID as an open access point wrapped in a
+  captive-portal DNS redirect and a sign-in page; any submission is queued,
+  logged to `/ghostwire/logs/portal_creds_NNNN.csv`, cued through the
+  Familiar (Warning cue), and counted on the Loot Board ("Logins
+  captured"). A single ongoing session against one operator-confirmed
+  target -- not a Familiar Mission, since (unlike Handshake Capture) there
+  is nothing to iterate across a target list; it lives as its own Wi-Fi
+  tool the same way Guardian does, including stopping automatically on
+  Esc/back rather than continuing unattended. New `EvilPortal`
+  OperationKind conflicts broadly with anything else touching the Wi-Fi or
+  BLE radio (same policy as War Drive), since AP mode needs the whole
+  deck. See `docs/authorized-use.md` for the credential-capture-specific
+  authorization guidance this required -- it is the strongest content that
+  document's existing "credential capture" caution already named.
+- Add the Loot Board (`My Familiar` -> `Tab` -> **Loot board**): a
+  Bjorn/Ragnar-style trophy case of lifetime discovery totals -- hosts
+  found, services found, warnings raised, handshakes captured, logins
+  captured -- persisted in Preferences and bumped at each genuine
+  discovery event (Familiar Patrol's new-host/new-port diffing, Guardian
+  disconnect-burst detection, both the manual and Familiar Mission
+  handshake-capture paths, and Evil Portal submissions -- see below).
+  Counts survive reboots rather than resetting each session; nothing new
+  is tracked that wasn't already being detected, this just aggregates it
+  in one place instead of scattered per-tool SD logs.
+- Fix Handshake Capture requiring a manual Wi-Fi Discovery scan first.
+  Selecting it from the Missions hub with no scan results now runs the scan
+  itself before presenting the target checklist, instead of showing "run
+  Wi-Fi Discovery first" and making the operator back out and do it by hand.
+  The target list also gets its own `R`: rescan now, resetting selections
+  since a rescan can add, drop, or reorder APs and a stale checkbox
+  position could otherwise point at the wrong network.
+- Fix a multi-second blank-screen delay before the boot animation on dev
+  builds. Root-caused with live serial timing: the 0.5-soak's `heap_soak`
+  and `operation_events` `SdLogger`s were starting unconditionally on every
+  dev-build boot with an SD card present, and `SdLogger::begin()` finds a
+  free numbered filename with a linear `SD.exists()` scan -- after many
+  reboots accumulating hundreds of `heap_soak_NNNN.csv`/
+  `operation_events_NNNN.csv` files, that scan alone was costing several
+  seconds at startup. Gated both loggers off by default behind a new
+  `kHeapSoakLoggingEnabled` constant, same pattern already used for
+  `kBootDiagnosticExportEnabled` below -- flip it back to `true` for a
+  future soak session rather than rebuilding this from scratch.
+- Unify the Familiar's autonomous capabilities behind one **Missions** hub
+  (`My Familiar` -> `Tab` -> **Missions**) instead of two separately-keyed
+  entry points. Lists **Network Recon** (Familiar Patrol) and **Handshake
+  Capture**, each showing ACTIVE if already running, and routes into the
+  same screens those already used. Back navigation from either flows back
+  through the hub rather than straight to the Familiar dashboard, so the
+  hierarchy reads as Familiar -> Missions -> a specific mission -> back up,
+  not a flat list of unrelated shortcuts. Future mission types get a row
+  here instead of their own scattered key.
+- Add the Familiar Handshake Mission (`My Familiar` -> `Tab` -> **Handshake
+  mission**): pick target APs from a Wi-Fi scan on a multi-select checklist,
+  confirm the exact list about to receive deauth frames, then the Familiar
+  works through it unattended -- deauth, wait up to 25s for the 4-way
+  handshake or a PMKID, capture to a numbered PCAP, move to the next target
+  -- and writes a Markdown summary to `/ghostwire/assessments/`. Reuses the
+  exact machinery the existing single-target manual flow already uses
+  (`transmitWifiDeauth()`, `wifiSnifferService`'s handshake watch,
+  `handshakeCaptureLogger`) rather than duplicating it; a mission is that
+  same flow driven across a pre-approved list instead of once per manual
+  confirm. Deliberately does not pick targets itself -- every network it
+  transmits against was explicitly checked by the operator first, which is
+  where authorization for that network is established (see
+  `docs/authorized-use.md`, updated with mission-specific guidance since Wi-Fi
+  range doesn't respect authorization scope). Like Familiar Patrol, a running
+  mission survives navigating away; only the Tab menu's **Stop mission** (or
+  the global emergency stop) ends it early.
+- Fix SSH sending both `\r` and `\n` for a single Enter keypress. Over the
+  PTY-backed interactive shell `ssh_service.cpp` requests, that's two
+  line-terminators: `\r` executed the typed command, then the standalone
+  `\n` landed on the now-empty line and submitted again, producing an extra
+  blank prompt (the command itself only ran once). Real terminals send only
+  `\r` for Enter over a PTY.
+- Turn the dev-build boot diagnostic auto-export off by default
+  (`kBootDiagnosticExportEnabled`). It was a convenience for the 0.5
+  hardware soak specifically; flip that one constant back on for a future
+  soak session rather than rebuilding it.
+- Fix SSH/Telnet sessions needing a second keypress before a response
+  actually appeared on screen. Their periodic redraw shared one timer between
+  "draw new data" and "refresh the footer," and reset that timer on every
+  tick it fired even when nothing was drawn -- if the real response arrived
+  a few ticks after one of those no-op resets, the draw was suppressed until
+  either the full 150ms window passed or another keystroke forced a redraw
+  through a different path, which is what actually revealed it. New data now
+  draws the moment it arrives, decoupled from the footer's own throttle. The
+  Socket Workbench below copied the same flawed pattern from Telnet before
+  ever being flashed; fixed there too.
+- Add the Network Socket Workbench (`Network > Socket Workbench`): raw TCP
+  Connect and Listen modes (`WiFiServer`-based, one accepted client at a
+  time), a text/hex view toggle (`Ctrl+H`), and optional SD session logging
+  (`Ctrl+L`, `timestamp_utc,direction,payload` CSV) via the shared
+  `SdLogger`. Deliberately not a terminal emulator like Telnet/SSH -- data is
+  composed a line at a time and sent on Enter rather than forwarded
+  keystroke-by-keystroke, which is what makes hex view and logging have a
+  clean per-line boundary to work with. `Ctrl+letter` was used instead of
+  the Tab action menu specifically because the action menu's Enter handler
+  re-dispatches the chosen key through the normal input path as a synthetic
+  keypress, which would otherwise land right back in the free-text compose
+  capture. Host Discovery and Port Scan both get a **Workbench** action menu
+  entry that hands their selected host (and port, for Port Scan) straight
+  into Connect mode. UDP is deliberately not included yet, per the roadmap's
+  own sequencing (TCP first, UDP only once it's proven stable) -- this
+  completes the last of the four 0.6.0 Field Console items.
+- Add three 0.6.0 Field Console items: QR handoff presets, clock provenance,
+  and Mesh history in Evidence.
+  - **QR handoff presets**: Network Profiles gets a **Share as QR** action
+    (`WIFI:T:WPA;...` format most phone cameras join directly from, gated
+    behind an explicit confirm screen since it embeds the saved password),
+    Network Host Discovery gets **QR host IP**, and System Diagnostics gets
+    **QR summary** (firmware version, device ID, uptime, heap, SD state) --
+    all reusing the existing offline QR generator and its `qrDisplayReturnScreen`
+    handoff, the same mechanism Mesh channel profile export already used.
+  - **Clock provenance**: System Clock now shows sync source, age since last
+    sync, and a qualitative confidence line (GNSS/NTP high-confidence,
+    manual entry explicitly marked low-confidence/unverified), plus a
+    persistent operator-set display timezone offset (Left/Right, 30-minute
+    steps) and a manual UTC date/time entry path for offline logging. The
+    RTC and every logged timestamp stay true UTC always; the offset only
+    shifts the displayed local readout, computed by hand rather than
+    through libc's TZ/DST machinery -- this also replaces the previously
+    hardcoded UK GMT/BST assumption.
+  - **Mesh history in Evidence**: `/ghostwire/mesh/messages.jsonl` now
+    appears in the unified Evidence list (as a deliberate single-file
+    allowlist entry, not a full `/ghostwire/mesh/` directory scan, since
+    that directory also holds `channels.json`'s private-channel key
+    material) and is previewable through the existing bounded 128-line
+    text preview -- the complete archive is never loaded into RAM.
+
 ## 0.5.0 - 2026-08-08
 
 - Fix Host Discovery, Port Scan, War Drive, and an in-flight Wi-Fi Connect

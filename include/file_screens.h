@@ -66,23 +66,56 @@ private:
     Screen& currentScreen_;
 };
 
-// Evidence/log session browser screens: unified list of ordinary logs and
-// nested Familiar Patrol assessment output, session detail, and delete
-// confirmation. Has its own list cursor (logSelection/logOffset), separate
-// from the shared listSelection/listOffset every other menu/list screen
-// uses -- preserved as-is rather than unified as part of this extraction.
+// One entry in the Evidence category submenu (Screen::LogCategories) --
+// `path` is what loadLogSessions() (main.cpp) scopes its directory scan to;
+// "" means unscoped ("All", the original flat-list behavior). Declared here
+// rather than file-local to either file_screens.cpp or main.cpp since both
+// need the same list: this file draws the menu, main.cpp handles selecting
+// an entry and re-scanning.
+struct LogCategoryOption {
+    const char* label;
+    const char* path;
+};
+inline constexpr LogCategoryOption kLogCategories[] = {
+    {"All", ""},
+    {"Wi-Fi", "/ghostwire/logs/wifi"},
+    {"BLE", "/ghostwire/logs/ble"},
+    {"Mesh", "/ghostwire/logs/mesh"},
+    {"GNSS", "/ghostwire/logs/gnss"},
+    {"IMU", "/ghostwire/logs/imu"},
+    {"Network", "/ghostwire/logs/network"},
+    {"POE", "/ghostwire/logs/poe"},
+    {"War Drive", "/ghostwire/logs/wardrive"},
+    {"Tools", "/ghostwire/logs/tools"},
+    {"System", "/ghostwire/logs/system"},
+    {"Familiar", "/ghostwire/logs/familiar"},
+    {"Patrol", "/ghostwire/assessments"},
+};
+inline constexpr size_t kLogCategoryCount =
+    sizeof(kLogCategories) / sizeof(kLogCategories[0]);
+
+// Evidence/log session browser screens: a category submenu
+// (Screen::LogCategories, kLogCategories above), the unified list of
+// ordinary logs and nested Familiar Patrol assessment output scoped to
+// whichever category was chosen, session detail, and delete confirmation.
+// The category submenu uses the shared listSelection/listOffset cursor
+// (every other menu screen's convention); the list itself keeps its own
+// separate cursor (logSelection/logOffset) as it always has.
 class LogScreens {
 public:
     LogScreens(std::vector<LogEntry>& sessions, size_t& logSelection,
               size_t& logOffset, bool& sdAvailable, uint32_t& selectedLogRows,
-              Screen& currentScreen)
+              Screen& currentScreen, size_t& listSelection, size_t& listOffset)
         : sessions_(sessions),
           logSelection_(logSelection),
           logOffset_(logOffset),
           sdAvailable_(sdAvailable),
           selectedLogRows_(selectedLogRows),
-          currentScreen_(currentScreen) {}
+          currentScreen_(currentScreen),
+          listSelection_(listSelection),
+          listOffset_(listOffset) {}
 
+    void drawCategories();
     void drawSessions();
     void drawDetail();
     void drawDeleteConfirm();
@@ -98,4 +131,6 @@ private:
     bool& sdAvailable_;
     uint32_t& selectedLogRows_;
     Screen& currentScreen_;
+    size_t& listSelection_;
+    size_t& listOffset_;
 };

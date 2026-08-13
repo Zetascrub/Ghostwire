@@ -1,5 +1,7 @@
 #pragma once
 
+#include <M5Cardputer.h>
+
 #include "ir_service.h"
 
 // Infrared self-test screen: shows the onboard transmitter's pin/carrier
@@ -19,6 +21,11 @@ public:
     // Emits the self-test burst, showing progress, then redraws. Call this
     // from Screen::Infrared's Enter/refresh handling.
     void transmitSelfTest();
+
+    // Moved from main.cpp's handleInput() -- see docs/screen-extraction.md.
+    // The one case whose input handling touched nothing beyond this class's
+    // own service_ reference already, so it needed no new members.
+    void handleInput(const Keyboard_Class::KeysState& keys);
 
 private:
     IrService& service_;

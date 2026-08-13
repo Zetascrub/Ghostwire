@@ -8,6 +8,71 @@ const char* const kNames[] = {
     "Byte", "Glitch", "Nyx", "Wyrm", "Hex", "Pixel", "Mimic", "Gizmo",
 };
 constexpr size_t kNameCount = sizeof(kNames) / sizeof(kNames[0]);
+
+struct FamiliarStage {
+    const char* name;
+    uint32_t xpThreshold;
+};
+
+// Thresholds spread across the existing level curve (xp = (level-1)*100,
+// capped at level 99 / 9800 xp) rather than a new curve of their own.
+// Reuses 4 of the 5 names the old behavior-mix evolutionName() used
+// ("Beacon Gremlin" dropped in favor of "Beacon Warden", a senior
+// evolution of the same idea) for continuity with what already shipped.
+constexpr FamiliarStage kStages[] = {
+    {"Script Sprite", 0},
+    {"Packet Gremlin", 400},
+    {"Grid Imp", 1100},
+    {"Signal Wyrm", 2400},
+    {"Beacon Warden", 4400},
+    {"Hex Familiar", 6900},
+};
+constexpr uint8_t kStageCount = sizeof(kStages) / sizeof(kStages[0]);
+
+uint8_t stageIndexForXp(uint32_t xp) {
+    uint8_t index = 0;
+    for (uint8_t i = 0; i < kStageCount; ++i) {
+        if (xp >= kStages[i].xpThreshold) index = i;
+    }
+    return index;
+}
+
+// Single source of truth for every reward this class hands out, whether
+// triggered internally (interact(), observeTool(), update()'s telemetry
+// reactions) or externally via notePatrol() -- see the enum's own comment
+// (cyber_familiar.h) for what "reconciled, not rebalanced" means here.
+uint16_t xpForEvent(FamiliarXpEvent event) {
+    switch (event) {
+        case FamiliarXpEvent::Interact: return 3;
+        case FamiliarXpEvent::CycleName: return 1;
+        case FamiliarXpEvent::ToolUnlocked: return 15;
+        case FamiliarXpEvent::IdentitySeen: return 2;
+        case FamiliarXpEvent::LoraPacketHeard: return 8;
+        case FamiliarXpEvent::GnssFixFound: return 12;
+        case FamiliarXpEvent::WifiUplinkConnected: return 5;
+        case FamiliarXpEvent::GuardianWatchStarted: return 5;
+        case FamiliarXpEvent::GuardianWatchEnded: return 3;
+        case FamiliarXpEvent::GuardianDisconnectAnomaly: return 8;
+        case FamiliarXpEvent::EvilPortalLive: return 5;
+        case FamiliarXpEvent::EvilPortalStoppedQuiet: return 3;
+        case FamiliarXpEvent::EvilPortalStoppedWithCaptures: return 15;
+        case FamiliarXpEvent::EvilPortalLoginCaptured: return 10;
+        case FamiliarXpEvent::PatrolStarted: return 10;
+        case FamiliarXpEvent::PatrolStoppedByOperator: return 0;
+        // Normalized: previously 0, 3, or 5 XP depending on which of
+        // three separate "nothing new" call sites hit it.
+        case FamiliarXpEvent::PatrolQuiet: return 3;
+        case FamiliarXpEvent::WatchPassFound: return 10;
+        case FamiliarXpEvent::PatrolCompleteFound: return 30;
+        case FamiliarXpEvent::PatrolNeedsAttention: return 0;
+        case FamiliarXpEvent::HandshakeMissionQuiet: return 5;
+        case FamiliarXpEvent::HandshakeMissionFound: return 20;
+        case FamiliarXpEvent::BattleWon: return 40;
+        case FamiliarXpEvent::BattleLost: return 10;
+        case FamiliarXpEvent::BattleFled: return 0;
+    }
+    return 0;
+}
 }
 
 void CyberFamiliar::begin(Preferences& preferences) {
@@ -72,6 +137,7 @@ void CyberFamiliar::addJournal(const String& message) {
 void CyberFamiliar::award(uint16_t amount, FamiliarMood mood,
                           const String& message) {
     const uint16_t oldLevel = level();
+    const uint8_t oldStage = stageIndex();
     xp_ += amount;
     mood_ = mood;
     lastMoodMs_ = millis();
@@ -79,6 +145,14 @@ void CyberFamiliar::award(uint16_t amount, FamiliarMood mood,
     if (level() > oldLevel) {
         mood_ = FamiliarMood::Proud;
         addJournal("Level up! Now level " + String(level()) + ".");
+    }
+    // Checked independently of the level-up branch above (not else-if) --
+    // a stage boundary is a rarer, bigger deal than a level-up, and both
+    // can legitimately land in the same award() call, so both journal
+    // entries should show up rather than the stage one being swallowed.
+    if (stageIndex() > oldStage) {
+        mood_ = FamiliarMood::Proud;
+        addJournal("Evolved into " + String(stageName()) + "!");
     }
     save();
 }
@@ -92,13 +166,16 @@ void CyberFamiliar::update(const FamiliarActivity& activity) {
     if (activity.loraPackets > previous_.loraPackets) {
         const uint32_t gained = activity.loraPackets - previous_.loraPackets;
         loraDiscoveries_ += gained;
-        award(8, FamiliarMood::Excited, "Heard a voice from the mesh.");
+        award(xpForEvent(FamiliarXpEvent::LoraPacketHeard), FamiliarMood::Excited,
+              "Heard a voice from the mesh.");
     }
     if (activity.gnssFix && !previous_.gnssFix) {
-        award(12, FamiliarMood::Proud, "Found our place in the world.");
+        award(xpForEvent(FamiliarXpEvent::GnssFixFound), FamiliarMood::Proud,
+              "Found our place in the world.");
     }
     if (activity.wifiConnected && !previous_.wifiConnected) {
-        award(5, FamiliarMood::Content, "The uplink is alive.");
+        award(xpForEvent(FamiliarXpEvent::WifiUplinkConnected), FamiliarMood::Content,
+              "The uplink is alive.");
     }
     if (activity.batteryPercent <= 15 && previous_.batteryPercent > 15) {
         mood_ = FamiliarMood::Worried;
@@ -141,7 +218,13 @@ bool CyberFamiliar::observeWifiIdentity(const uint8_t mac[6]) {
         return false;
     }
     ++wifiDiscoveries_;
-    xp_ += 2;
+    // Not routed through award(): these fire far more often than any other
+    // event here (live scan traffic), and award() unconditionally saves --
+    // the batched identityDirty_/lastIdentitySaveMs_ flush in update() is
+    // what keeps that off the NVS write-wear budget. Level/stage-up
+    // detection is a known gap on this path as a result (pre-existing, not
+    // something this reconciliation changes).
+    xp_ += xpForEvent(FamiliarXpEvent::IdentitySeen);
     mood_ = FamiliarMood::Curious;
     lastMoodMs_ = millis();
     addJournal("Met a new Wi-Fi signal.");
@@ -162,7 +245,9 @@ bool CyberFamiliar::observeBleIdentity(const String& address) {
         return false;
     }
     ++bleDiscoveries_;
-    xp_ += 2;
+    // See the matching comment in observeWifiIdentity() for why this
+    // bypasses award().
+    xp_ += xpForEvent(FamiliarXpEvent::IdentitySeen);
     mood_ = FamiliarMood::Excited;
     lastMoodMs_ = millis();
     addJournal("Met a new BLE beacon.");
@@ -175,7 +260,7 @@ void CyberFamiliar::observeTool(uint8_t toolId, const char* label) {
     const uint32_t bit = 1UL << toolId;
     if ((toolMask_ & bit) != 0) return;
     toolMask_ |= bit;
-    award(15, FamiliarMood::Curious,
+    award(xpForEvent(FamiliarXpEvent::ToolUnlocked), FamiliarMood::Curious,
           "Learned the " + String(label) + " tool.");
 }
 
@@ -187,7 +272,7 @@ void CyberFamiliar::interact() {
     }
     lastInteractionMs_ = millis();
     if (bond_ < 999) ++bond_;
-    award(3, FamiliarMood::Content,
+    award(xpForEvent(FamiliarXpEvent::Interact), FamiliarMood::Content,
           bond_ % 5 == 0 ? "We're becoming a proper team."
                          : "Happy electronic chirping.");
 }
@@ -198,7 +283,8 @@ void CyberFamiliar::cycleName() {
         if (name_ == kNames[index]) selected = index;
     }
     name_ = kNames[(selected + 1) % kNameCount];
-    award(1, FamiliarMood::Curious, "New designation: " + name_ + ".");
+    award(xpForEvent(FamiliarXpEvent::CycleName), FamiliarMood::Curious,
+          "New designation: " + name_ + ".");
 }
 
 void CyberFamiliar::toggleIdleMode() {
@@ -213,8 +299,9 @@ void CyberFamiliar::noteRecovery() {
     addJournal("That reboot felt strange.");
 }
 
-void CyberFamiliar::notePatrol(const String& message, uint16_t xp,
+void CyberFamiliar::notePatrol(const String& message, FamiliarXpEvent event,
                                FamiliarMood mood) {
+    const uint16_t xp = xpForEvent(event);
     if (xp > 0) {
         award(xp, mood, message);
         return;
@@ -261,13 +348,44 @@ const char* CyberFamiliar::moodName() const {
     }
 }
 
-const char* CyberFamiliar::evolutionName() const {
-    if (level() < 3) return "Script Sprite";
-    if (loraDiscoveries_ > wifiDiscoveries_ / 2) return "Signal Wyrm";
-    if (bleDiscoveries_ > wifiDiscoveries_) return "Beacon Gremlin";
-    if (toolCount() >= 8) return "Grid Imp";
-    if (bond_ >= 25) return "Hex Familiar";
-    return "Packet Gremlin";
+const char* CyberFamiliar::stageName() const {
+    return kStages[stageIndex()].name;
+}
+
+uint8_t CyberFamiliar::stageIndex() const {
+    return stageIndexForXp(xp_);
+}
+
+bool CyberFamiliar::isMaxStage() const {
+    return stageIndex() == kStageCount - 1;
+}
+
+uint8_t CyberFamiliar::stageProgressPercent() const {
+    const uint8_t index = stageIndex();
+    if (index == kStageCount - 1) return 100;
+    const uint32_t stageStart = kStages[index].xpThreshold;
+    const uint32_t nextStart = kStages[index + 1].xpThreshold;
+    const uint32_t span = nextStart - stageStart;
+    if (span == 0) return 100;
+    const uint32_t progress = xp_ - stageStart;
+    return static_cast<uint8_t>(std::min<uint32_t>(100, progress * 100 / span));
+}
+
+uint32_t CyberFamiliar::xpToNextStage() const {
+    const uint8_t index = stageIndex();
+    if (index == kStageCount - 1) return 0;
+    const uint32_t nextStart = kStages[index + 1].xpThreshold;
+    return nextStart > xp_ ? nextStart - xp_ : 0;
+}
+
+uint8_t CyberFamiliar::stageCount() { return kStageCount; }
+
+const char* CyberFamiliar::stageNameAt(uint8_t index) {
+    return kStages[std::min<uint8_t>(index, kStageCount - 1)].name;
+}
+
+uint32_t CyberFamiliar::stageXpThresholdAt(uint8_t index) {
+    return kStages[std::min<uint8_t>(index, kStageCount - 1)].xpThreshold;
 }
 
 uint16_t CyberFamiliar::level() const {
