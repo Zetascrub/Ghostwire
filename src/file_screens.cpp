@@ -26,7 +26,7 @@ bool FileScreens::isPreviewableFile(const String& name) {
     String lower = name;
     lower.toLowerCase();
     return lower.endsWith(".csv") || lower.endsWith(".txt") ||
-           lower.endsWith(".log");
+           lower.endsWith(".log") || lower.endsWith(".jsonl");
 }
 
 void FileScreens::drawFiles() {
@@ -126,6 +126,18 @@ String LogScreens::displayName(const LogEntry& entry) {
     const int parentSlash = parentPath.lastIndexOf('/');
     const String session = parentPath.substring(parentSlash + 1);
     return session + "/" + entry.name;
+}
+
+void LogScreens::drawCategories() {
+    ScreenChrome::drawHeader("Evidence");
+    ScreenChrome::normalizeListPosition(kLogCategoryCount);
+    ScreenChrome::drawHeaderPosition(listSelection_ + 1, kLogCategoryCount);
+    for (size_t row = 0; row < ScreenChrome::kVisibleRows && row + listOffset_ < kLogCategoryCount;
+        ++row) {
+        ScreenChrome::drawListRow(static_cast<int>(row), kLogCategories[row + listOffset_].label,
+                                  row + listOffset_ == listSelection_);
+    }
+    ScreenChrome::drawFooter("Enter: open   Q: back");
 }
 
 void LogScreens::normalizePosition() {

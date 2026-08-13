@@ -37,3 +37,11 @@ void IrScreen::transmitSelfTest() {
                   IrService::kTransmitPin, IrService::kCarrierKhz);
     draw();
 }
+
+void IrScreen::handleInput(const Keyboard_Class::KeysState& keys) {
+    if (keys.enter || ScreenChrome::pressedLetter(keys, 'r')) {
+        transmitSelfTest();
+        return;
+    }
+    draw();
+}

@@ -329,6 +329,25 @@ void WifiScreens::drawProfileDeleteConfirm() {
     ScreenChrome::drawFooter("Enter: delete   Q: cancel");
 }
 
+void WifiScreens::drawProfileQrConfirm() {
+    if (wifiProfiles_.empty() || listSelection_ >= wifiProfiles_.size()) {
+        currentScreen_ = Screen::WifiProfiles;
+        drawProfiles();
+        return;
+    }
+    ScreenChrome::drawHeader("Share Wi-Fi as QR?");
+    auto& display = M5Cardputer.Display;
+    display.setTextColor(Branding::warning, Branding::background);
+    display.setCursor(8, 40);
+    display.print(wifiProfiles_[listSelection_].name.substring(0, 34));
+    display.setTextColor(Branding::muted, Branding::background);
+    display.setCursor(8, 62);
+    display.print("The saved password will be embedded in the code.");
+    display.setCursor(8, 78);
+    display.print("Anyone who scans it can join this network.");
+    ScreenChrome::drawFooter("Enter: generate   Q: cancel");
+}
+
 void WifiScreens::drawProfileRename() {
     ScreenChrome::drawHeader("Rename Profile");
     auto& display = M5Cardputer.Display;

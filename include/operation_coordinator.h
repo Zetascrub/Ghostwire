@@ -19,6 +19,7 @@ enum class OperationKind : uint8_t {
     RemoteSession,
     Audio,
     FirmwareUpdate,
+    EvilPortal,
     Count,
 };
 

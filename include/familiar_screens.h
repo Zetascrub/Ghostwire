@@ -1,9 +1,11 @@
 #pragma once
 
 #include <Arduino.h>
+#include <M5GFX.h>
 
 #include "ai_service.h"
 #include "cyber_familiar.h"
+#include "familiar_battle_service.h"
 #include "familiar_patrol_service.h"
 
 // Familiar reaction state (set by triggerFamiliarReaction(), read by the
@@ -69,7 +71,12 @@ public:
                     FamiliarReaction& reaction, unsigned long& reactionUntil,
                     String& speechBubble, unsigned long& speechBubbleUntil,
                     bool& patrolContinuousChoice, uint8_t& patrolIntervalIndex,
-                    bool& sdAvailable)
+                    bool& sdAvailable, size_t& listSelection,
+                    bool& handshakeMissionRunning, uint32_t& lootHostsFound,
+                    uint32_t& lootServicesFound, uint32_t& lootWarningsRaised,
+                    uint32_t& lootHandshakesCaptured,
+                    uint32_t& lootCredsCaptured,
+                    FamiliarBattleService& battle)
         : familiar_(familiar),
           patrol_(patrol),
           page_(page),
@@ -80,18 +87,91 @@ public:
           speechBubbleUntil_(speechBubbleUntil),
           patrolContinuousChoice_(patrolContinuousChoice),
           patrolIntervalIndex_(patrolIntervalIndex),
-          sdAvailable_(sdAvailable) {}
+          sdAvailable_(sdAvailable),
+          listSelection_(listSelection),
+          handshakeMissionRunning_(handshakeMissionRunning),
+          lootHostsFound_(lootHostsFound),
+          lootServicesFound_(lootServicesFound),
+          lootWarningsRaised_(lootWarningsRaised),
+          lootHandshakesCaptured_(lootHandshakesCaptured),
+          lootCredsCaptured_(lootCredsCaptured),
+          battle_(battle) {}
 
-    void drawCreature(int centerX, int baseY, bool large);
-    void drawSpeechBubble(int x, int y, int width);
+    void drawCreature(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                      float scale);
+    void drawSpeechBubble(lgfx::LGFXBase& gfx, int x, int y, int width);
 
     void drawFamiliar(bool fullDraw = true);
     void drawResetConfirm();
+    // The Familiar's unified "what can it do unattended" hub -- currently
+    // Network Recon (Familiar Patrol) and Handshake Capture; new mission
+    // types get a row here rather than their own scattered entry point.
+    void drawMissions();
+    // Bjorn/Ragnar-style trophy case: lifetime discovery totals, bumped in
+    // main.cpp at each genuine find (see lootHostsFound and friends there).
+    void drawLootBoard();
+    // Evolution progress bar + full stage ladder -- split out from page 0
+    // so the dashboard can stay uncluttered and give the creature more
+    // room to roam.
+    void drawEvolution();
     void drawPatrol(bool fullDraw = true);
     void drawPatrolConfirm();
 
+    // PvP battle screens -- see include/familiar_battle_service.h for the
+    // BLE/state-machine side. `battle_.state()` picks which of Host/Find/
+    // Battling/Result this is showing; listSelection_ (shared with every
+    // other list screen in this app) drives the Host-vs-Find picker and
+    // the Find results list.
+    void drawBattleMenu();
+    void drawBattleHost();
+    void drawBattleFind();
+    void drawBattle();
+    void drawBattleResult();
+
+    static constexpr size_t kMissionCount = 2;
+    static constexpr size_t kBattleMenuCount = 2;
+
 private:
     const char* face() const;
+    void drawFamiliarDashboard(lgfx::LGFXBase& gfx);
+    // Same stage dispatch drawCreature() uses, but for an explicit stage
+    // index/color rather than always familiar_'s own -- lets drawBattle()
+    // render the opponent's real evolved silhouette too.
+    void drawCreatureStage(lgfx::LGFXBase& gfx, uint8_t stageIndex,
+                           int centerX, int baseY, float scale,
+                           uint16_t color);
+    // drawCreature() dispatches to one of these based on
+    // familiar_.stageIndex() -- one silhouette per evolution stage, each
+    // self-contained (own body/limb geometry, own call to drawFaceGlyph()/
+    // drawSearchPulse()) rather than one shape with stage-conditional
+    // branches sprinkled through it. `gfx` is the render target (the real
+    // display, or an offscreen M5Canvas for flicker-free animation -- see
+    // familiarCanvas_); `scale` sizes the render (1.0 = the idle
+    // screensaver's reference size; page 0 and other callers can pass their
+    // own); `phase`/`wag` are the shared animation clock (bob/blink/
+    // tail-wag) drawCreature() derives from millis() once per call.
+    void drawStageScriptSprite(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                               float scale, uint32_t phase, int wag,
+                               uint16_t color);
+    void drawStagePacketGremlin(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                                float scale, uint32_t phase, int wag,
+                                uint16_t color);
+    void drawStageGridImp(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                          float scale, uint32_t phase, int wag,
+                          uint16_t color);
+    void drawStageSignalWyrm(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                             float scale, uint32_t phase, int wag,
+                             uint16_t color);
+    void drawStageBeaconWarden(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                               float scale, uint32_t phase, int wag,
+                               uint16_t color);
+    void drawStageHexFamiliar(lgfx::LGFXBase& gfx, int centerX, int baseY,
+                              float scale, uint32_t phase, int wag,
+                              uint16_t color);
+    void drawFaceGlyph(lgfx::LGFXBase& gfx, int cx, int cy, float scale,
+                       uint16_t color);
+    void drawSearchPulse(lgfx::LGFXBase& gfx, int cx, int cy, uint32_t phase,
+                         uint16_t color);
 
     CyberFamiliar& familiar_;
     FamiliarPatrolService& patrol_;
@@ -104,4 +184,20 @@ private:
     bool& patrolContinuousChoice_;
     uint8_t& patrolIntervalIndex_;
     bool& sdAvailable_;
+    size_t& listSelection_;
+    bool& handshakeMissionRunning_;
+    uint32_t& lootHostsFound_;
+    uint32_t& lootServicesFound_;
+    uint32_t& lootWarningsRaised_;
+    uint32_t& lootHandshakesCaptured_;
+    uint32_t& lootCredsCaptured_;
+    FamiliarBattleService& battle_;
+    // Offscreen buffer for page 0's animated dashboard -- drawn into once
+    // per tick and blitted with a single pushSprite() so the creature's
+    // bob/blink/wander doesn't visibly flicker the way drawing straight to
+    // the display (clear, then several dozen shape calls) would. Sized and
+    // allocated lazily on first use (see drawFamiliar()), same reasoning as
+    // main.cpp's cyberdeckIdleCanvas.
+    M5Canvas familiarCanvas_;
+    bool familiarCanvasReady_ = false;
 };

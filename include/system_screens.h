@@ -33,18 +33,26 @@ class SystemScreens {
 public:
     SystemScreens(size_t& listSelection, size_t& listOffset,
                  String& diagnosticExportStatus, bool& clockSynced,
-                 String& clockStatus)
+                 String& clockStatus, unsigned long& lastClockSyncMs,
+                 int16_t& clockUtcOffsetMinutes, String& clockProvenance,
+                 bool& clockManualEntryActive, String& clockManualInput)
         : listSelection_(listSelection),
           listOffset_(listOffset),
           diagnosticExportStatus_(diagnosticExportStatus),
           clockSynced_(clockSynced),
-          clockStatus_(clockStatus) {}
+          clockStatus_(clockStatus),
+          lastClockSyncMs_(lastClockSyncMs),
+          clockUtcOffsetMinutes_(clockUtcOffsetMinutes),
+          clockProvenance_(clockProvenance),
+          clockManualEntryActive_(clockManualEntryActive),
+          clockManualInput_(clockManualInput) {}
 
     void drawSystem(const std::vector<SystemDiagnostic>& diagnostics);
     void drawTimeStatus();
     // Partial redraw of just the local/UTC readout rows, used by both
     // drawTimeStatus() and main.cpp's periodic tick while that screen is
-    // shown.
+    // shown. Skipped while a manual time entry is in progress -- see
+    // drawTimeStatus().
     void drawTimeReadouts();
 
 private:
@@ -53,4 +61,9 @@ private:
     String& diagnosticExportStatus_;
     bool& clockSynced_;
     String& clockStatus_;
+    unsigned long& lastClockSyncMs_;
+    int16_t& clockUtcOffsetMinutes_;
+    String& clockProvenance_;
+    bool& clockManualEntryActive_;
+    String& clockManualInput_;
 };

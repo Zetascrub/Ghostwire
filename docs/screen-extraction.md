@@ -232,6 +232,35 @@ batch, `pio test -e native` stayed at 3/3, and RAM/Flash grew by only ~700B
 expected cost of reference members and reduced cross-TU inlining, not a
 behavior change.
 
+## Input handling: deliberately not part of the above
+
+Everything above is `draw*` only. `handleInput()` -- the other giant
+per-screen switch in main.cpp, and the largest single function in the
+firmware -- was left alone on purpose during the whole pass above: unlike
+drawing (which only *reads* state), most cases *mutate* main.cpp's ~100+
+shared globals or call multi-subsystem orchestration functions
+(`startWifiGuardian()`, `restoreDefaultSettings()`, ...) that the
+corresponding screen class doesn't hold references to. Moving those means
+growing each class with new reference members, a real per-screen judgment
+call, not a mechanical move -- so it's tracked separately, screen by
+screen, starting from the same screen this doc's draw pass started from:
+
+- [x] `Screen::Infrared`: its case body touched nothing beyond the
+      `IrService&` `IrScreen` already held, so no new members were needed.
+      Added one new `ScreenChrome::pressedLetter()` forwarder (exposes
+      main.cpp's shortcut-key-match helper across the TU boundary) and
+      `IrScreen::handleInput(const Keyboard_Class::KeysState&)`. Verified:
+      build succeeded, `pio test -e native` stayed 3/3, flash usage was
+      unchanged (a few hundred bytes *smaller*, from the duplicated
+      enter/refresh check collapsing into one place), hardware-confirmed
+      (IR self-test still fires and flickers visibly on camera).
+
+Every other screen investigated so far (`Gnss`, `LoRa`, `WifiGuardian`,
+`Imu`, `QrEntry`/`QrDisplay`, the `MenuScreens`-owned screens, the
+`SettingsScreens`-owned screens) reaches into shared state or cross-
+subsystem calls its class doesn't hold today -- not attempted yet, pending
+reassessment one at a time.
+
 Turning the remaining chrome/idle/boot code into further modules, and
 deciding whether main.cpp's ~100+ globals should eventually move into a
 proper `AppState` struct, are reasonable next steps but weren't required to
