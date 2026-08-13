@@ -7,8 +7,9 @@ removed, or substantially repurposed rather than letting this drift.
 
 Excluded as non-source: `poe-p4/build/` and `poe-p4/managed_components/`
 (ESP-IDF build output and downloaded component dependencies), `.pio/`
-(PlatformIO build cache), `diagnostic-collections/` (runtime output from
-`tools/diagnostic_receiver.py`), and `.git/`.
+(PlatformIO build cache), `diagnostic-collections/` (runtime output from a
+dev-only diagnostic-export receiver kept on the private dev remote), and
+`.git/`.
 
 Many `include/*_screens.h` / `src/*_screens.cpp` pairs follow one
 consistent pattern documented in full at
@@ -50,8 +51,6 @@ time.
 | `features.md` | Full detailed feature reference (README links here for specifics). |
 | `hardware-support.md` | Supported hardware target(s) and board configuration notes. |
 | `ota-updates.md` | How the signed OTA update-checker/installer works and how to use it. |
-| `relay-phase-1-validation.md` | Hardware validation checklist for the Ghostwire Relay (Wi-Fi command channel) phase 1 work. |
-| `release-validation-0.5.md` | Hardware release-gate validation worksheet for the 0.5 milestone. |
 | `roadmap.md` | Product direction and planned work. |
 | `screen-extraction.md` | Explains the ongoing effort to extract per-screen draw logic out of `main.cpp` into paired modules, and the pattern to follow when adding one. |
 | `Project_Map.md` | This file. |
@@ -220,7 +219,4 @@ Grouped by area; each row is a `.h`/`.cpp` pair unless noted otherwise.
 
 | File | Purpose |
 |---|---|
-| `diagnostic_receiver.py` | Local HTTP server that receives manual diagnostic exports from the device during development. |
-| `relay_endurance.py` | Long-running poll/validate loop against the P4 Relay's status endpoint, for endurance testing. |
-| `send_led_message.py` | Sends a development-only message + RGB LED flash command to a running device. |
 | `vpet_battle_simulator.py` | Simulates a second VPet badge over BLE (via `bless`) so a real badge can PvP-battle it without a second Cardputer. |

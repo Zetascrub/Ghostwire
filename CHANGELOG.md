@@ -6,6 +6,8 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+## 0.6.0 - 2026-08-13
+
 - Start extracting screens' *input handling* out of `main.cpp`'s
   `handleInput()` (the other giant per-screen switch, alongside the
   already-fully-extracted `drawCurrentScreen()`) into their own modules --
