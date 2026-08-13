@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <M5Cardputer.h>
 
 // Shared chrome primitives that extracted screen modules use to draw a
 // consistent header/footer and to recover keyboard state after a blocking
@@ -66,5 +67,10 @@ void drawNavigationCard(const char* header, const String& label,
 // live text-entry input handling, so it repaints just that row.
 void drawTextEntryRow(int y, const char* label, const String& value,
                       bool masked = false);
+
+// True if `target` (lowercase) was pressed this frame -- exposes main.cpp's
+// existing key-match helper to extracted screens that need to check for a
+// specific letter shortcut themselves (see IrScreen::handleInput).
+bool pressedLetter(const Keyboard_Class::KeysState& keys, char target);
 
 }  // namespace ScreenChrome

@@ -7984,11 +7984,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::Infrared:
-            if (keys.enter || refresh) {
-                irScreen.transmitSelfTest();
-                return;
-            }
-            irScreen.draw();
+            irScreen.handleInput(keys);
             break;
 
         case Screen::UsbHid:
@@ -9299,6 +9295,9 @@ void drawNavigationCard(const char* header, const String& label,
 void drawTextEntryRow(int y, const char* label, const String& value,
                       bool masked) {
     ::drawTextEntryRow(y, label, value, masked);
+}
+bool pressedLetter(const Keyboard_Class::KeysState& keys, char target) {
+    return ::pressedLetter(keys, target);
 }
 }  // namespace ScreenChrome
 

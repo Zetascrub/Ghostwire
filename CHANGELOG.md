@@ -6,6 +6,15 @@ assessment tools built on those verified foundations.
 
 ## Unreleased
 
+- Start extracting screens' *input handling* out of `main.cpp`'s
+  `handleInput()` (the other giant per-screen switch, alongside the
+  already-fully-extracted `drawCurrentScreen()`) into their own modules --
+  `Screen::Infrared` first, since it's the one case that touched nothing
+  beyond the `IrService&` `IrScreen` already held. Added
+  `IrScreen::handleInput()` and a new `ScreenChrome::pressedLetter()`
+  forwarder; every other screen investigated reaches into shared globals
+  or cross-subsystem calls its class doesn't hold yet, so this is staying
+  a one-screen-at-a-time effort. See `docs/screen-extraction.md`.
 - Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
   Portal**): clones the selected SSID as an open access point wrapped in a
   captive-portal DNS redirect and a sign-in page; any submission is queued,
