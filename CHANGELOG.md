@@ -121,6 +121,136 @@ assessment tools built on those verified foundations.
   subfolder; "All" reproduces the original unscoped behavior. Evidence
   categorization is now based on which subfolder a file actually lives in,
   not a filename-prefix guess.
+- Make the P4's two payload slots runtime-editable and add scan-loot
+  extraction, both over Grove or Wi-Fi. `Tab -> Upload to slot 0/1` on
+  either PoE Companion screen browses `.txt` scripts under
+  `/ghostwire/poe-scripts/` on the SD card (a separate directory and
+  vocabulary from the BLE HID DuckyScript picker) and uploads the chosen
+  one -- authenticated the same way command triggers are, persisted across
+  P4 reboots via NVS. `Tab -> Extract loot` pulls the P4's accumulated
+  `PORT_SCAN` findings (deduplicated, RAM-only, cleared on P4 reboot) and
+  saves them as a CSV, kept separate from the Familiar's own lifetime Loot
+  Board counters. New P4 endpoints: `POST /v1/payload`, `POST /v1/loot`,
+  and Grove frame types `U`/`V`/`D`/`F` (chunked script upload) and
+  `X`/`N`/`E` (chunked loot download) -- see shared/protocol/README.md.
+- Fix a P4 hardware bug found while validating the Wi-Fi command channel
+  below: the HTTP server task's default 4096-byte stack (`esp_http_server`'s
+  `HTTPD_DEFAULT_CONFIG()`) was already marginal because of newlib's `%f`
+  float formatting (`build_status_json()`'s temperature field pulls in
+  `_dtoa_r`/`_Balloc`, both stack-heavy) and started reliably overflowing
+  once that function grew for the fields below -- a repeating "Stack
+  protection fault" panic/reboot loop on real hardware, visible as the LED
+  cycling and Wi-Fi discovery silently failing. Fixed by giving the httpd
+  task 8192 bytes instead.
+- Extend the Companion Mode command channel to Wi-Fi (`POST /v1/command` on
+  the P4), reusing the same Grove-established session key/clock offset --
+  `Run slot 0`/`Run slot 1` now work whenever the P4 is reachable by either
+  transport, preferring Grove when connected. Wi-Fi's authenticated message
+  adds a per-request nonce (`slot || nonce`, vs. Grove's bare slot byte) so
+  a small ring-buffer replay cache on the P4 can reject a captured-and-
+  resent request without also rejecting a genuine second press -- Wi-Fi
+  sniffing is a realistic threat a physically-wired Grove link isn't, so
+  this only applies to the new HTTP path.
+- Revise the Relay screens: entering no longer blocks for a few seconds
+  (was a synchronous discovery/HTTP fetch on every screen entry -- now
+  deferred to the existing background poll); the detail screen is now a
+  scrollable, overflow-safe row list (was fixed-position text that could
+  run past the screen edge) and gains a `Device` row; both screens' Tab
+  menus grow `Run slot 0`/`Run slot 1` (with direct `0`/`1` hotkeys too, so
+  firing a payload no longer requires visiting the detail screen first) and
+  `Forget pairing key`; periodic redraws now skip repainting when nothing
+  displayed actually changed, rather than repainting once a second just
+  because a fresh Grove sample arrived.
+- Add a Companion Mode command channel over Grove: once paired, the
+  Cardputer's PoE Companion detail screen offers `Run slot 0`/`Run slot 1`,
+  remotely triggering the P4's existing button payload slots through the
+  same authenticated-tag mechanism pairing set up. The P4's pairing response
+  now also carries its NTP-synced Unix time, letting the Cardputer derive a
+  clock offset (it has no RTC/NTP of its own) and compute the time-windowed
+  HMAC tag each command needs without any Wi-Fi dependency. An accepted
+  command dispatches through the identical queue/task a real button press
+  uses, so the LED's amber/green/red behavior and the status frame's new
+  `payload_state`/`finding_count` fields are indistinguishable from a
+  physical press -- the detail screen's status line now shows both pairing
+  and the live/last payload result (`Paired  Slot: idle/running/ok (N)/
+  error`). Grove-only for this slice; a Wi-Fi command channel is a deferred
+  follow-up needing its own replay-cache design.
+
+- Add Grove pairing between the Cardputer and the Unit PoE-P4: `Tab -> Pair
+  via Grove` on the PoE Companion detail screen runs a real X25519 ECDH key
+  exchange over the physical Grove link and derives a session key via
+  HKDF-SHA256, persisted on both sides (NVS on the P4, `Preferences` on the
+  Cardputer). The session key is never transmitted over the wire itself --
+  only the ephemeral public keys are. Also lands the P4's first UTC time
+  sync (NTP, matching the Cardputer's own server list) and a reusable
+  time-windowed HMAC command-authentication primitive (`shared/protocol/
+  auth.h`) that a later command channel will use to keep a captured command
+  from being replayed after its ~30s window passes. Not yet wired to any
+  real command.
+
+- Give the P4's button-triggered scan payload a small DuckyScript-flavored
+  interpreter (`REM`/`DELAY`/`LOG`/`INTERNET_CHECK`/`PING_SWEEP`/
+  `PORT_SCAN [ports]`) instead of hardcoded functions per slot, and add a
+  real host-discovery + common-port scan payload (long press) alongside the
+  existing internet-reachability check (short press), matching the
+  Cardputer's own Host Discovery/Port Scan behavior. `GHOSTWIRE_COMMON_PORTS`
+  is now shared between both firmwares instead of duplicated.
+
+- Add a payload engine to the Unit PoE-P4: its side button (GPIO45) triggers
+  a short- or long-press payload slot, with the onboard LED switching to a
+  traffic-light amber/green/red while a payload runs and for a few seconds
+  after, then reverting to the normal connectivity indicator.
+
+- Split the PoE Companion screen into a compact summary (status, IP, LAN/
+  internet reachability) and a `Tab`-reachable detail screen (firmware,
+  uptime, temperature, heap, LED state, Grove link counters), fixing the
+  merged panel overflowing the display once Grove alone could populate it
+  without ever going through network discovery. Grove's status frame now
+  carries the P4's DHCP-assigned IP directly, so the summary shows a real
+  address even with no Wi-Fi/mDNS path at all. Also fix the periodic
+  poll/redraw only ever running from a keypress-gated input handler, so a
+  passively-watched screen never polled or updated on its own; it's now
+  driven by an unconditional loop tick like the rest of the app's live
+  telemetry.
+
+- Grove now carries live PoE-P4 companion telemetry, not just a heartbeat.
+  The P4 pushes a status frame (link/speed/duplex, internet reachability,
+  indicator state, uptime, reset reason, temperature, heap, IP) once a
+  second and a slower identity frame (device id, firmware) every ten
+  seconds, reusing the existing versioned/CRC32-protected frame style. The
+  PoE Companion screen now prefers this Grove telemetry over the network
+  status fetch whenever it's fresh -- it's faster and needs no Wi-Fi -- and
+  falls back to the existing mDNS/HTTP path otherwise; network polling
+  backs off to once a minute while Grove is fresh, both to honor that
+  priority and to avoid re-introducing the blocking-mDNS-stalls-Grove issue
+  fixed below. Gateway/DNS/port stay network-only telemetry.
+
+- Fix the Grove UART link dropping frames during PoE companion discovery:
+  mDNS discovery blocked the whole main loop for up to ~4.5s per failed
+  attempt, and repeating that on every 10-second poll pushed the Grove link
+  close to (and once, past) its own 5-second timeout. Discovery now backs
+  off 30s between attempts while the companion stays unfound, and the Grove
+  UART's RX buffer grew from 256 to 1024 bytes so a stall elsewhere in the
+  loop can no longer drop frames.
+
+- Add a read-only Grove UART diagnostic between Cardputer ADV GPIO1/GPIO2 and
+  Unit PoE-P4 GPIO53/GPIO54. The P4 sends one versioned, sequenced, CRC32-
+  protected heartbeat per second; the Cardputer validates and acknowledges it,
+  and both local and relayed link states appear on the PoE Companion screen.
+  A three-second timeout prevents stale links from remaining marked active.
+
+- Add the first Ghostwire Unit PoE-P4 companion vertical slice. The independent
+  ESP-IDF 5.4.2 image brings up the board's IP101 Ethernet interface, obtains a
+  DHCP lease, advertises `_ghostwire._tcp`, and exposes bounded read-only
+  protocol-v1 status and WebSocket event endpoints. `Scout network > PoE
+  Companion` on the Cardputer discovers the service, validates its protocol and
+  capabilities, and displays the wired link, address, model, firmware, and
+  live reachability/connection telemetry. Add a common-anode RGB state machine
+  on the companion: pulsing amber boot, blue ready, cyan LAN, green internet,
+  and purple recent Ghostwire contact. The Cardputer keeps that contact state
+  alive with a 10-second poll while its companion screen is open. State-changing
+  commands remain unavailable until pairing and authenticated sessions are
+  designed.
 - Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
   Portal**): clones the selected SSID as an open access point wrapped in a
   captive-portal DNS redirect and a sign-in page; any submission is queued,

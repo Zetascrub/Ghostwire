@@ -1,0 +1,19 @@
+# Ghostwire Unit PoE-P4 companion defaults.
+# Keep target-independent project settings here; generated sdkconfig is local.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Primary console over the same USB-Serial-JTAG peripheral esptool already
+# uses for flashing, so ESP_LOGI output reaches the USB-C cable directly --
+# UART0's physical pins aren't broken out anywhere reachable on this board.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# Matches the Cardputer's own NTP server list (src/main.cpp's TimeStatus
+# screen) for consistency; needs all 3 server slots.
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+# Grove pairing (shared/protocol/auth.h): X25519 ECDH is already enabled by
+# default (CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED); HKDF for session-key
+# derivation needs enabling explicitly.
+CONFIG_MBEDTLS_HKDF_C=y

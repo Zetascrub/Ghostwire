@@ -21,6 +21,8 @@ lives in [CHANGELOG.md](CHANGELOG.md).
 - [What it can do](#what-it-can-do) — feature overview
 - [Full feature reference](docs/features.md) — every option, screen by screen
 - [Build and release](docs/build-and-release.md) — download mode, packaging, hardware test checklist
+- [Unit PoE-P4 companion](poe-p4/README.md) — independent ESP-IDF build and hardware target
+- [Companion protocol](shared/protocol/README.md) — shared Cardputer/P4 protocol boundary
 - [Hardware support](docs/hardware-support.md) — target board and pinout
 - [Authorized use and data handling](docs/authorized-use.md)
 - [Roadmap](docs/roadmap.md)
@@ -48,6 +50,11 @@ blank examples and setup instructions, while local credentials such as
 See [Build and release](docs/build-and-release.md) for download-mode
 instructions, release packaging, and the hardware test checklist.
 
+The commands above and the root `platformio.ini` build only the Cardputer ADV
+firmware. The optional Unit PoE-P4 companion is a separate ESP-IDF application
+under [`poe-p4/`](poe-p4/README.md); it does not change the existing PlatformIO
+target or dependencies.
+
 ## What it can do
 
 The home screen is organised around intent rather than subsystems: **My
@@ -59,7 +66,8 @@ a card-based interface — alongside a handful of built-in visual themes.
 - **BLE** — advertisement inspection with continuous capture, HID keyboard emulation
 - **GPS & Mesh** — GNSS logging, LoRa reception, a full Meshtastic chat client (channels, DMs, node radar)
 - **War Drive** — combined GPS-tagged Wi-Fi + BLE capture, WiGLE-compatible export
-- **Network** — live connection dashboard, host discovery, port scanning, Telnet/SSH clients
+- **Network** — live connection dashboard, Unit PoE-P4 companion discovery,
+  host discovery, port scanning, Telnet/SSH clients
 - **Devices** — Biscuit Pro and Chameleon Ultra (RFID) workflows over BLE
 - **AI Chat** — OpenAI/Claude chat with voice input and speech replies
 - **Cyber Familiar** — a persistent companion that reacts to discoveries and can run an unattended network Patrol

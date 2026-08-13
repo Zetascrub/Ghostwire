@@ -24,6 +24,7 @@ zetascrub_cardputer_boot.gif
 .DS_Store
 *.swp
 *.swo
+__pycache__/
 
 # Local removable-media credentials. Keep only documentation and deliberately
 # blank examples in source control.
@@ -40,3 +41,9 @@ sd-card-files/ghostwire/tags/
 .env
 .env.*
 *.local
+
+# ESP-IDF output for the independent Unit PoE-P4 companion application.
+/poe-p4/build/
+/poe-p4/sdkconfig
+/poe-p4/sdkconfig.old
+/poe-p4/managed_components/

@@ -173,7 +173,15 @@ live unique AP and device counters.
 ### Network
 
 Network Dashboard provides live SSID/RSSI, IP, gateway, subnet, DNS, and MAC
-details. Host Discovery: ICMP ping sweep of the connected subnet,
+details. PoE Companion discovers a Ghostwire Unit PoE-P4 over
+`_ghostwire._tcp`, verifies the protocol-v1 status response, and shows its
+wired link, address, model, firmware, internet reachability, system health,
+RGB/Ghostwire connection state, and telemetry freshness. While this screen is
+open, Ghostwire polls the Relay every 10 seconds, preserves the last sample
+during transient errors, reports stale data, marks three consecutive failures
+offline, and recovers automatically. The initial Relay protocol is read-only;
+it does not accept remote operations. Host Discovery:
+ICMP ping sweep of the connected subnet,
   live progress, CSV export. Port Scan: pick a found host, scan either 13
   common ports (`Enter`, seconds) or a full 1-65535 range (`Tab` menu, up
   to ~35 minutes worst case per host, 8 concurrent non-blocking connects), CSV
