@@ -128,6 +128,18 @@ String LogScreens::displayName(const LogEntry& entry) {
     return session + "/" + entry.name;
 }
 
+void LogScreens::drawCategories() {
+    ScreenChrome::drawHeader("Evidence");
+    ScreenChrome::normalizeListPosition(kLogCategoryCount);
+    ScreenChrome::drawHeaderPosition(listSelection_ + 1, kLogCategoryCount);
+    for (size_t row = 0; row < ScreenChrome::kVisibleRows && row + listOffset_ < kLogCategoryCount;
+        ++row) {
+        ScreenChrome::drawListRow(static_cast<int>(row), kLogCategories[row + listOffset_].label,
+                                  row + listOffset_ == listSelection_);
+    }
+    ScreenChrome::drawFooter("Enter: open   Q: back");
+}
+
 void LogScreens::normalizePosition() {
     if (sessions_.empty()) {
         logSelection_ = 0;

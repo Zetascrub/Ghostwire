@@ -106,6 +106,21 @@ assessment tools built on those verified foundations.
   patrol result was paying 0, 3, or 5 XP depending on which of three code
   paths hit it -- normalized to a single value. Inspired by a similar
   tiered-evolution design in a companion Python project.
+- Reorganize SD card exports into per-feature subfolders under
+  `/ghostwire/logs/` (`wifi`, `ble`, `mesh`, `gnss`, `imu`, `network`,
+  `poe`, `wardrive`, `tools`, `system`, `familiar`) instead of every
+  feature's CSV/pcap/text export piling into that one flat directory --
+  found while validating the loot-extraction feature above, whose exports
+  had gone missing from the Files/Evidence screens because that folder had
+  quietly grown past the Files screen's 128-entry listing cap this session.
+  `SdLogger`/`PcapLogger` both gained an optional subfolder parameter
+  (default `"logs"`, so nothing else had to change). The Evidence screen
+  (`Main Menu`/`Tools -> Evidence`) now opens on a category submenu
+  (`Screen::LogCategories`) instead of dumping every log from every feature
+  into one flat list -- picking a category scopes the scan to just that
+  subfolder; "All" reproduces the original unscoped behavior. Evidence
+  categorization is now based on which subfolder a file actually lives in,
+  not a filename-prefix guess.
 - Add Evil Portal (Wi-Fi Discovery -> select an AP -> `Tab` -> **Evil
   Portal**): clones the selected SSID as an open access point wrapped in a
   captive-portal DNS redirect and a sign-in page; any submission is queued,

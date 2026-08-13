@@ -11,7 +11,7 @@ constexpr uint32_t kSnapLen = 2048;
 constexpr uint32_t kLinktypeIeee80211 = 105;  // Plain 802.11, no radiotap.
 }  // namespace
 
-bool PcapLogger::begin(const char* streamName) {
+bool PcapLogger::begin(const char* streamName, const char* subdir) {
     stop();
     status_ = "Preparing capture...";
 
@@ -19,13 +19,27 @@ bool PcapLogger::begin(const char* streamName) {
         status_ = "SD card unavailable";
         return false;
     }
-    SD.mkdir("/ghostwire");
-    SD.mkdir("/ghostwire/logs");
+    // See the matching comment in SdLogger::begin() -- same reasoning for
+    // walking subdir's path components rather than trusting SD.mkdir() to
+    // create nested directories in one call.
+    String subdirPath = "/ghostwire";
+    SD.mkdir(subdirPath);
+    String remaining = subdir;
+    int slash;
+    while ((slash = remaining.indexOf('/')) >= 0) {
+        subdirPath += "/" + remaining.substring(0, slash);
+        SD.mkdir(subdirPath);
+        remaining = remaining.substring(slash + 1);
+    }
+    if (!remaining.isEmpty()) {
+        subdirPath += "/" + remaining;
+        SD.mkdir(subdirPath);
+    }
 
     path_ = "";
     for (uint16_t index = 1; index < 10000; ++index) {
-        char candidate[64];
-        snprintf(candidate, sizeof(candidate), "/ghostwire/logs/%s_%04u.pcap",
+        char candidate[80];
+        snprintf(candidate, sizeof(candidate), "%s/%s_%04u.pcap", subdirPath.c_str(),
                  streamName, index);
         if (!SD.exists(candidate)) {
             path_ = candidate;

@@ -67,6 +67,7 @@ enum class Screen {
     Files,
     FileDetail,
     TextPreview,
+    LogCategories,
     LogSessions,
     LogDetail,
     LogDeleteConfirm,

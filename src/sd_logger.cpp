@@ -2,7 +2,7 @@
 
 #include <SD.h>
 
-bool SdLogger::begin(const char* streamName, const char* csvHeader) {
+bool SdLogger::begin(const char* streamName, const char* csvHeader, const char* subdir) {
     stop();
     status_ = "Preparing log...";
 
@@ -10,13 +10,28 @@ bool SdLogger::begin(const char* streamName, const char* csvHeader) {
         status_ = "SD card unavailable";
         return false;
     }
-    SD.mkdir("/ghostwire");
-    SD.mkdir("/ghostwire/logs");
+    // subdir is commonly nested (e.g. "logs/wifi") -- ESP32's SD.mkdir()
+    // isn't guaranteed to create intermediate directories in one call, so
+    // walk and create each path component in turn rather than relying on
+    // that. mkdir() on an already-existing directory is a harmless no-op.
+    String subdirPath = "/ghostwire";
+    SD.mkdir(subdirPath);
+    String remaining = subdir;
+    int slash;
+    while ((slash = remaining.indexOf('/')) >= 0) {
+        subdirPath += "/" + remaining.substring(0, slash);
+        SD.mkdir(subdirPath);
+        remaining = remaining.substring(slash + 1);
+    }
+    if (!remaining.isEmpty()) {
+        subdirPath += "/" + remaining;
+        SD.mkdir(subdirPath);
+    }
 
     path_ = "";
     for (uint16_t index = 1; index < 10000; ++index) {
-        char candidate[64];
-        snprintf(candidate, sizeof(candidate), "/ghostwire/logs/%s_%04u.csv",
+        char candidate[80];
+        snprintf(candidate, sizeof(candidate), "%s/%s_%04u.csv", subdirPath.c_str(),
                  streamName, index);
         if (!SD.exists(candidate)) {
             path_ = candidate;

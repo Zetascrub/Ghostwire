@@ -10,7 +10,9 @@
 // pcap, but the lifecycle/accessor shape intentionally matches it.
 class PcapLogger {
 public:
-    bool begin(const char* streamName);
+    // See SdLogger::begin()'s matching parameter -- same "own subfolder
+    // under /ghostwire/, default 'logs' for backward compatibility" idea.
+    bool begin(const char* streamName, const char* subdir = "logs");
     bool append(const uint8_t* frame, size_t length, uint32_t timestampSec,
                uint32_t timestampUsec);
     void update();
