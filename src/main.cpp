@@ -44,6 +44,7 @@
 #include "ota_screens.h"
 #include "system_screens.h"
 #include "eapol_parser.h"
+#include "familiar_battle_service.h"
 #include "familiar_patrol_service.h"
 #include "ir_service.h"
 #include "ir_screen.h"
@@ -62,6 +63,9 @@
 #include "lora_screen.h"
 #include "network_host_scan_service.h"
 #include "network_port_scan_service.h"
+#include "poe_companion_service.h"
+#include "grove_companion_link.h"
+#include "scan_ports.h"
 #include "network_scan_screens.h"
 #include "ssh_service.h"
 #include "ssh_screens.h"
@@ -164,6 +168,10 @@ std::vector<LogEntry> logSessions;
 size_t logSelection = 0;
 size_t logOffset = 0;
 uint32_t selectedLogRows = 0;
+// Which kLogCategories entry is active -- "" means "All". Remembered so a
+// Screen::LogSessions refresh (R) re-scans the same category rather than
+// silently reverting to "All".
+String currentLogCategoryPath = "";
 std::vector<String> previewLines;
 size_t previewTopLine = 0;
 size_t previewColumn = 0;
@@ -172,7 +180,7 @@ FileScreens fileScreens(files, listSelection, listOffset, currentPath,
                         sdAvailable, previewLines, previewTopLine,
                         previewColumn, previewTruncated, currentScreen);
 LogScreens logScreens(logSessions, logSelection, logOffset, sdAvailable,
-                      selectedLogRows, currentScreen);
+                      selectedLogRows, currentScreen, listSelection, listOffset);
 std::vector<wifi_ap_record_t> accessPoints;
 std::vector<BleDeviceInfo> bleDevices;
 std::vector<WifiProbeRecord> recentWifiProbes;
@@ -230,6 +238,8 @@ IPAddress networkPortScanTarget;
 std::vector<uint16_t> networkPortResults;
 String networkPortScanExportStatus;
 NetworkPortScanService networkPortScanService;
+PoeCompanionService poeCompanionService;
+GroveCompanionLink groveCompanionLink;
 bool networkPortScanIsFull = false;
 unsigned long lastNetworkPortScanDraw = 0;
 constexpr size_t kMaxTelnetLines = 64;
@@ -296,6 +306,17 @@ AudioService audioService;
 AiService aiService;
 CyberFamiliar cyberFamiliar;
 FamiliarPatrolService familiarPatrolService;
+FamiliarBattleService familiarBattleService;
+bool familiarBattleResultClaimed = false;
+unsigned long lastFamiliarBattleDraw = 0;
+String lastFamiliarBattleSignature;
+// Stable per-device Player ID for PvP battles -- ESP.getEfuseMac() is the
+// same chip-identity source the System screen already displays elsewhere
+// in main.cpp, truncated to 32 bits (plenty of entropy for tie-breaking/
+// display; the battle protocol itself doesn't need global uniqueness).
+uint32_t familiarPlayerId() {
+    return static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFFFULL);
+}
 FamiliarPatrolState lastFamiliarPatrolState = FamiliarPatrolState::Idle;
 unsigned long lastFamiliarPatrolDraw = 0;
 bool familiarPatrolContinuousChoice = false;
@@ -304,7 +325,12 @@ uint8_t familiarPatrolIntervalIndex = 1;
 uint8_t familiarPage = 0;
 unsigned long lastFamiliarDraw = 0;
 bool familiarIdleActive = false;
-bool familiarIdleDrawn = false;
+// Offscreen buffer for the Familiar idle screensaver (drawCyberFamiliarIdle())
+// -- same double-buffering fix as page 0's familiarCanvas_, and same
+// create-on-entry/delete-on-wake lifecycle as cyberdeckIdleCanvas below,
+// since this *is* the Familiar's equivalent of that screensaver.
+M5Canvas familiarIdleCanvas(&M5Cardputer.Display);
+bool familiarIdleCanvasReady = false;
 FamiliarReaction familiarReaction = FamiliarReaction::None;
 unsigned long familiarReactionUntil = 0;
 uint32_t familiarObservedPatrolHosts = 0;
@@ -346,7 +372,8 @@ FamiliarScreens familiarScreens(
     familiarSpeechBubbleUntil, familiarPatrolContinuousChoice,
     familiarPatrolIntervalIndex, sdAvailable, listSelection,
     familiarMissionRunning, lootHostsFound, lootServicesFound,
-    lootWarningsRaised, lootHandshakesCaptured, lootCredsCaptured);
+    lootWarningsRaised, lootHandshakesCaptured, lootCredsCaptured,
+    familiarBattleService);
 constexpr char kAiSpeechPath[] = "/ghostwire/audio/ai_reply.mp3";
 // Familiar phrase word bank: see include/familiar_phrases.h.
 constexpr char kFamiliarAudioPath[] = "/ghostwire/audio/Familiar/";
@@ -361,11 +388,26 @@ constexpr char kAiRecordingPath[] = "/ghostwire/ai_voice.wav";
 GnssService gnssService;
 SdLogger gnssLogger;
 GnssScreen gnssScreen(gnssService, gnssLogger);
+// P4 payload-slot scripts: a *different* SD directory and vocabulary from
+// duckyScripts (declared further down) -- REM/DELAY/LOG/INTERNET_CHECK/
+// PING_SWEEP/PORT_SCAN (the P4's interpreter), not BLE HID DuckyScript
+// (STRING/ENTER/TAB/...).
+std::vector<String> poeScripts;
+// Which slot "Upload to slot 0/1" was chosen for, fixed before entering the
+// picker screen so selecting a file there doesn't need its own "which
+// slot?" sub-prompt.
+uint8_t poeScriptUploadSlot = 0;
+String poeScriptUploadStatus;
+String poeLootExtractStatus;
+// The picker (Screen::PoePayloadScripts) can be opened from either PoE
+// Companion screen's Tab menu -- goBack() needs to know which.
+Screen poePayloadScriptsReturnScreen = Screen::PoeCompanion;
 NetworkScanScreens networkScanScreens(
     warDriveService, gnssService, listSelection, listOffset,
     networkHostScanService, networkHostResults, networkHostScanExportStatus,
     networkPortScanService, networkPortResults, networkPortScanExportStatus,
-    networkPortScanTarget, networkPortScanIsFull);
+    networkPortScanTarget, networkPortScanIsFull, poeCompanionService,
+    groveCompanionLink, poeScripts, poeScriptUploadStatus, poeLootExtractStatus);
 LoRaService loraService;
 WifiSnifferService wifiSnifferService;
 WifiGuardianService wifiGuardianService;
@@ -1731,6 +1773,12 @@ void drawListRow(int row, const String& label, bool selected,
     display.setTextWrap(true);
 }
 
+// Defined further down, alongside handleInput() and the rest of the Relay
+// command-channel logic it's grouped with -- forward-declared here since
+// actionsForScreen() (this function) needs to gate on it before that point
+// in the file.
+bool commandChannelAvailable();
+
 // Returns the one-off actions available on the current screen, filtered
 // by whatever state already gates them today (e.g. "Reconnect saved"
 // only appears if a saved network actually exists) -- the underlying
@@ -1789,6 +1837,8 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
         case Screen::CyberFamiliar:
             return {{'a', "Missions"},
                     {'l', "Loot board"},
+                    {'v', "Evolution details"},
+                    {'y', "PvP Battle"},
                     {'p', "Pet familiar"},
                     {'n', "Choose next name"},
                     {'i', cyberFamiliar.idleMode() ? "Disable idle watch"
@@ -1797,6 +1847,8 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                     {'x', "Export familiar record"},
                     {'g', "Import capture logs"},
                     {'z', "Reset familiar progress"}};
+        case Screen::FamiliarBattleFind:
+            return {{'r', "Rescan"}};
         case Screen::FamiliarMissionSelect: {
             size_t chosen = 0;
             for (bool value : familiarMissionSelected) {
@@ -1824,6 +1876,41 @@ std::vector<ActionMenuItem> actionsForScreen(Screen screen) {
                         {'m', "Set time manually"}};
             }
             return {{'g', "Sync from GNSS"}, {'m', "Set time manually"}};
+        case Screen::PoeCompanion: {
+            std::vector<ActionMenuItem> items;
+            if (commandChannelAvailable()) {
+                items.push_back({'0', "Run slot 0"});
+                items.push_back({'1', "Run slot 1"});
+                items.push_back({'u', "Upload to slot 0"});
+                items.push_back({'v', "Upload to slot 1"});
+                items.push_back({'x', "Extract loot"});
+            }
+            items.push_back({'d', "View details"});
+            // First-time pairing is reachable from here too, not just the
+            // detail screen -- once paired, this screen doesn't repeat it
+            // (re-pairing/forgetting stays a detail-screen action).
+            if (groveCompanionLink.connected() && !groveCompanionLink.hasSessionKey()) {
+                items.push_back({'p', "Pair via Grove"});
+            }
+            return items;
+        }
+        case Screen::PoeCompanionDetail: {
+            std::vector<ActionMenuItem> items;
+            if (commandChannelAvailable()) {
+                items.push_back({'0', "Run slot 0"});
+                items.push_back({'1', "Run slot 1"});
+                items.push_back({'u', "Upload to slot 0"});
+                items.push_back({'v', "Upload to slot 1"});
+                items.push_back({'x', "Extract loot"});
+            }
+            if (groveCompanionLink.connected()) {
+                items.push_back({'p', "Pair via Grove"});
+            }
+            if (groveCompanionLink.hasSessionKey()) {
+                items.push_back({'f', "Forget pairing key"});
+            }
+            return items;
+        }
         case Screen::NetworkHostScan:
             if (!networkHostResults.empty()) {
                 return {{'e', "Export CSV"},
@@ -2155,7 +2242,7 @@ void exportWifiResults() {
     SdLogger logger;
     if (!logger.begin(
             "wifi",
-            "timestamp_utc,ssid,bssid,channel,rssi_dbm,security")) {
+            "timestamp_utc,ssid,bssid,channel,rssi_dbm,security", "logs/wifi")) {
         wifiExportStatus = "Export failed: " + logger.status();
         wifiScreens.drawRecon();
         return;
@@ -2289,7 +2376,7 @@ void exportBleResults() {
             "ble",
             "timestamp_utc,name,address,address_type,rssi_dbm,connectable,"
             "advertisement_type,payload_bytes,service_count,service_uuids,"
-            "manufacturer,manufacturer_data_hex,payload_hex")) {
+            "manufacturer,manufacturer_data_hex,payload_hex", "logs/ble")) {
         bleExportStatus = "Export failed: " + logger.status();
         bleScreens.drawDiscovery();
         return;
@@ -2394,7 +2481,7 @@ void exportNetworkHostResults() {
         return;
     }
     SdLogger logger;
-    if (!logger.begin("network_hosts", "timestamp_utc,ip_address")) {
+    if (!logger.begin("network_hosts", "timestamp_utc,ip_address", "logs/network")) {
         networkHostScanExportStatus = "Export failed: " + logger.status();
         return;
     }
@@ -2413,11 +2500,10 @@ void exportNetworkHostResults() {
 // Host Discovery screen: see
 // include/network_scan_screens.h/src/network_scan_screens.cpp.
 
-const uint16_t kNetworkPortScanPorts[] = {21,  22,  23,  25,   53,  80,
-                                          110, 139, 143, 443, 445, 3389,
-                                          8080};
-constexpr size_t kNetworkPortScanPortCount =
-    sizeof(kNetworkPortScanPorts) / sizeof(kNetworkPortScanPorts[0]);
+// The 13-port quick-scan list lives in shared/protocol/scan_ports.h as
+// GHOSTWIRE_COMMON_PORTS/GHOSTWIRE_COMMON_PORT_COUNT, shared with the P4's
+// button-triggered scan payload so "common ports" means the same thing on
+// both sides.
 
 void scanNetworkPorts(IPAddress target) {
     if (!requireOperationStart(OperationKind::NetworkScan)) return;
@@ -2433,10 +2519,10 @@ void scanNetworkPorts(IPAddress target) {
     M5Cardputer.Display.printf("Scanning %s...", target.toString().c_str());
     drawFooter("Please wait");
 
-    for (size_t i = 0; i < kNetworkPortScanPortCount; ++i) {
+    for (size_t i = 0; i < GHOSTWIRE_COMMON_PORT_COUNT; ++i) {
         WiFiClient client;
-        if (client.connect(target, kNetworkPortScanPorts[i], 300)) {
-            networkPortResults.push_back(kNetworkPortScanPorts[i]);
+        if (client.connect(target, GHOSTWIRE_COMMON_PORTS[i], 300)) {
+            networkPortResults.push_back(GHOSTWIRE_COMMON_PORTS[i]);
         }
         client.stop();
     }
@@ -2452,7 +2538,7 @@ void exportNetworkPortResults() {
         return;
     }
     SdLogger logger;
-    if (!logger.begin("network_ports", "timestamp_utc,ip_address,port")) {
+    if (!logger.begin("network_ports", "timestamp_utc,ip_address,port", "logs/network")) {
         networkPortScanExportStatus = "Export failed: " + logger.status();
         return;
     }
@@ -2633,7 +2719,7 @@ void startSocketWorkbench() {
     }
     if (sdAvailable) {
         socketWorkbenchLoggingActive = socketWorkbenchLogger.begin(
-            "socket_workbench", "timestamp_utc,direction,payload");
+            "socket_workbench", "timestamp_utc,direction,payload", "logs/tools");
     }
     currentScreen = Screen::SocketWorkbenchSession;
     drawCurrentScreen();
@@ -2892,6 +2978,46 @@ void loadDuckyScripts() {
     listOffset = 0;
 }
 
+// P4 payload scripts: see the comment on poeScripts's declaration for why
+// this is a separate directory/vocabulary from loadDuckyScripts() above.
+// Rejects anything at or past kPayloadScriptMaxBytes up front (matching
+// the P4's own PAYLOAD_SCRIPT_MAX_BYTES) rather than letting a file that
+// can never be uploaded successfully show up in the list at all.
+void loadPoeScripts() {
+    poeScripts.clear();
+    if (!sdAvailable) {
+        Serial.println("[poe-scripts] sdAvailable is false");
+        return;
+    }
+    File directory = SD.open("/ghostwire/poe-scripts");
+    if (!directory || !directory.isDirectory()) {
+        Serial.printf("[poe-scripts] open failed: dir=%d isDir=%d\n",
+                      directory ? 1 : 0, directory ? (directory.isDirectory() ? 1 : 0) : -1);
+        return;
+    }
+    File entry = directory.openNextFile();
+    while (entry && poeScripts.size() < 64) {
+        Serial.printf("[poe-scripts] entry name=%s isDir=%d size=%u\n", entry.name(),
+                      entry.isDirectory() ? 1 : 0, (unsigned)entry.size());
+        if (!entry.isDirectory() && entry.size() > 0 &&
+            entry.size() < static_cast<int>(kPayloadScriptMaxBytes)) {
+            String name = entry.name();
+            const int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            String lower = name;
+            lower.toLowerCase();
+            if (lower.endsWith(".txt")) poeScripts.push_back(name);
+        }
+        entry.close();
+        entry = directory.openNextFile();
+    }
+    directory.close();
+    Serial.printf("[poe-scripts] loaded %u script(s)\n", (unsigned)poeScripts.size());
+    std::sort(poeScripts.begin(), poeScripts.end());
+    listSelection = 0;
+    listOffset = 0;
+}
+
 bool isSupportedDuckyCommand(const String& command) {
     return command == "STRING" || command == "STRINGLN" ||
            command == "DELAY" || command == "DEFAULT_DELAY" ||
@@ -3118,20 +3244,20 @@ void loadDirectory() {
 
 // Files browser screen: see include/file_screens.h/src/file_screens.cpp.
 
-String logTypeFromName(const String& name) {
-    String lower = name;
-    lower.toLowerCase();
-    if (lower.startsWith("imu_")) return "IMU";
-    if (lower.startsWith("gnss_")) return "GNSS";
-    if (lower.startsWith("lora_")) return "LoRa";
-    if (lower.startsWith("wifi_")) return "Wi-Fi";
-    if (lower.startsWith("ble_")) return "BLE";
+// Category comes from which logs/<subfolder> (or /ghostwire/assessments/)
+// a file actually lives under -- see kLogCategories (include/file_screens.h)
+// for the same paths one level up (the subfolder itself, not a specific
+// file within it). Path-based rather than filename-prefix-based: more
+// robust than trying to keep a prefix-matching table in sync with every
+// feature's own streamName, and it's exactly how the files are actually
+// organized post-reorg.
+String evidenceTypeFromPath(const String& path) {
+    for (const LogCategoryOption& category : kLogCategories) {
+        const String categoryPath = category.path;
+        if (categoryPath.isEmpty()) continue;  // "All" isn't a real path to match against
+        if (path.startsWith(categoryPath + "/")) return category.label;
+    }
     return "Other";
-}
-
-String evidenceTypeFromPath(const String& path, const String& name) {
-    if (path.startsWith("/ghostwire/assessments/")) return "Patrol";
-    return logTypeFromName(name);
 }
 
 void collectEvidenceFiles(const String& directoryPath, uint8_t depth) {
@@ -3154,8 +3280,7 @@ void collectEvidenceFiles(const String& directoryPath, uint8_t depth) {
             if (!name.endsWith(".tmp") && !name.endsWith(".bak") &&
                 name != "active.json") {
                 logSessions.push_back(
-                    {name, evidenceTypeFromPath(path, name), path,
-                     entry.size()});
+                    {name, evidenceTypeFromPath(path), path, entry.size()});
             }
             entry.close();
         }
@@ -3164,19 +3289,29 @@ void collectEvidenceFiles(const String& directoryPath, uint8_t depth) {
     directory.close();
 }
 
-void loadLogSessions() {
+// `scopedPath` narrows the scan to one kLogCategories entry (e.g.
+// "/ghostwire/logs/wifi") -- empty means unscoped ("All", the original
+// flat-list-of-everything behavior, still capped at 256 total).
+void loadLogSessions(const String& scopedPath = "") {
     logSessions.clear();
     logSelection = 0;
     logOffset = 0;
     if (!sdAvailable) return;
-    collectEvidenceFiles("/ghostwire/logs", 0);
-    collectEvidenceFiles("/ghostwire/assessments", 0);
+    if (scopedPath.isEmpty()) {
+        collectEvidenceFiles("/ghostwire/logs", 0);
+        collectEvidenceFiles("/ghostwire/assessments", 0);
+    } else {
+        collectEvidenceFiles(scopedPath, 0);
+    }
     // Only the append-only message archive, not the rest of /ghostwire/mesh
     // -- channels.json holds private-channel key material and state.json is
     // internal client state, neither belongs in a browsable/deletable
     // evidence list, so this is a deliberate single-file allowlist rather
-    // than a third collectEvidenceFiles() directory scan.
-    if (SD.exists(kMeshMessageArchivePath)) {
+    // than a directory scan. Included for "All" and specifically the "Mesh"
+    // category (its logs/mesh/ scan above only covers loraLogger's own CSV
+    // output, not this).
+    if ((scopedPath.isEmpty() || scopedPath == "/ghostwire/logs/mesh") &&
+        SD.exists(kMeshMessageArchivePath)) {
         File archive = SD.open(kMeshMessageArchivePath, FILE_READ);
         if (archive && !archive.isDirectory()) {
             logSessions.push_back(
@@ -3545,10 +3680,11 @@ bool exportSystemDiagnostics() {
     if (sdAvailable) {
         SD.mkdir("/ghostwire");
         SD.mkdir("/ghostwire/logs");
+        SD.mkdir("/ghostwire/logs/system");
         for (uint16_t index = 1; index < 10000; ++index) {
             char candidate[64];
             snprintf(candidate, sizeof(candidate),
-                     "/ghostwire/logs/diagnostics_%04u.txt", index);
+                     "/ghostwire/logs/system/diagnostics_%04u.txt", index);
             if (!SD.exists(candidate)) {
                 path = candidate;
                 break;
@@ -3737,11 +3873,12 @@ bool startWifiGuardian() {
     wifiSnifferService.setCaptureMode(WifiCaptureMode::Management);
     if (!guardianEventLogger.begin(
             "guardian_events",
-            "timestamp_utc,event,channel,rssi,deauth_total,disassoc_total")) {
+            "timestamp_utc,event,channel,rssi,deauth_total,disassoc_total",
+            "logs/wifi")) {
         guardianLastEvent = guardianEventLogger.status();
         return false;
     }
-    if (!guardianEvidenceLogger.begin("guardian_evidence")) {
+    if (!guardianEvidenceLogger.begin("guardian_evidence", "logs/wifi")) {
         guardianEventLogger.stop();
         guardianLastEvent = guardianEvidenceLogger.status();
         return false;
@@ -3754,8 +3891,8 @@ bool startWifiGuardian() {
     }
     wifiGuardianService.begin(wifiGuardianService.sensitivity());
     guardianLastEvent = "Watching; observations are not proof";
-    cyberFamiliar.notePatrol("Guardian watch started.", 5,
-                             FamiliarMood::Curious);
+    cyberFamiliar.notePatrol("Guardian watch started.",
+                             FamiliarXpEvent::GuardianWatchStarted, FamiliarMood::Curious);
     triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
     showFamiliarSpeech("I'll keep an eye on things.", 2800);
     return true;
@@ -3768,8 +3905,8 @@ void stopWifiGuardian() {
     guardianEventLogger.stop();
     guardianEvidenceLogger.stop();
     if (wasActive) {
-        cyberFamiliar.notePatrol("Guardian watch ended. Evidence saved.", 3,
-                                 FamiliarMood::Content);
+        cyberFamiliar.notePatrol("Guardian watch ended. Evidence saved.",
+                                 FamiliarXpEvent::GuardianWatchEnded, FamiliarMood::Content);
     }
 }
 
@@ -4015,7 +4152,7 @@ void attemptChameleonConnection() {
                                   String(chameleonConnectAttempts);
         if (sdAvailable && !chameleonLogger.isActive()) {
             chameleonLogger.begin(
-                "chameleon_tags", "timestamp_utc,tag_type,id,atqa,sak");
+                "chameleon_tags", "timestamp_utc,tag_type,id,atqa,sak", "logs/tools");
         }
     } else {
         chameleonWorkflowStatus = "Retrying automatically...";
@@ -4444,7 +4581,7 @@ bool startEvilPortal() {
     if (!requireOperationStart(OperationKind::EvilPortal)) return false;
     if (!sdAvailable) return false;
     if (!portalCredsLogger.begin(
-            "portal_creds", "timestamp_utc,client_ip,username,password")) {
+            "portal_creds", "timestamp_utc,client_ip,username,password", "logs/wifi")) {
         return false;
     }
     if (!evilPortalService.begin(evilPortalPendingSsid,
@@ -4455,8 +4592,8 @@ bool startEvilPortal() {
     evilPortalCaptureCount = 0;
     evilPortalLastCapture = "";
     cyberFamiliar.notePatrol(
-        "Evil Portal live: cloning " + evilPortalPendingSsid, 5,
-        FamiliarMood::Curious);
+        "Evil Portal live: cloning " + evilPortalPendingSsid,
+        FamiliarXpEvent::EvilPortalLive, FamiliarMood::Curious);
     triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
     showFamiliarSpeech("Let's see who signs in...", 2800);
     playFamiliarCue(FamiliarCue::Started);
@@ -4474,7 +4611,8 @@ void stopEvilPortal() {
                 : "Evil Portal stopped. " + String(evilPortalCaptureCount) +
                       " login" + (evilPortalCaptureCount == 1 ? "" : "s") +
                       " captured.",
-            evilPortalCaptureCount == 0 ? 3 : 15,
+            evilPortalCaptureCount == 0 ? FamiliarXpEvent::EvilPortalStoppedQuiet
+                                       : FamiliarXpEvent::EvilPortalStoppedWithCaptures,
             evilPortalCaptureCount == 0 ? FamiliarMood::Content
                                         : FamiliarMood::Proud);
     }
@@ -4542,7 +4680,7 @@ void startFamiliarMissionTarget(size_t index) {
     for (bool& seen : handshakeMessageSeen) seen = false;
     handshakePmkidFound = false;
     wifiSnifferService.setHandshakeTarget(target.bssid);
-    handshakeCaptureLogger.begin("handshake");
+    handshakeCaptureLogger.begin("handshake", "logs/wifi");
     familiarMissionTargetStartMs = millis();
     familiarMissionLastDeauthMs = 0;  // Forces an immediate first burst.
     familiarMissionStatus = "Target " + String(index + 1) + "/" +
@@ -4570,7 +4708,8 @@ void finishFamiliarMission() {
                      : "Mission complete. " + String(captured) +
                            " handshake" + (captured == 1 ? "" : "s") +
                            " captured.",
-        captured == 0 ? 5 : 20,
+        captured == 0 ? FamiliarXpEvent::HandshakeMissionQuiet
+                      : FamiliarXpEvent::HandshakeMissionFound,
         captured == 0 ? FamiliarMood::Content : FamiliarMood::Proud);
     triggerFamiliarReaction(FamiliarReaction::Complete, 4000);
     playFamiliarCue(FamiliarCue::Complete);
@@ -4724,11 +4863,12 @@ bool exportFamiliarRecord() {
     }
     SD.mkdir("/ghostwire");
     SD.mkdir("/ghostwire/logs");
+    SD.mkdir("/ghostwire/logs/familiar");
     String path;
     for (uint16_t index = 1; index < 10000; ++index) {
         char candidate[56];
         snprintf(candidate, sizeof(candidate),
-                 "/ghostwire/logs/familiar_%04u.txt", index);
+                 "/ghostwire/logs/familiar/familiar_%04u.txt", index);
         if (!SD.exists(candidate)) {
             path = candidate;
             break;
@@ -4743,7 +4883,7 @@ bool exportFamiliarRecord() {
                 cyberFamiliar.bond(),
                 static_cast<unsigned long>(cyberFamiliar.ageSeconds()));
     file.printf("evolution=%s\nmood=%s\nwifi_discoveries=%lu\n",
-                cyberFamiliar.evolutionName(), cyberFamiliar.moodName(),
+                cyberFamiliar.stageName(), cyberFamiliar.moodName(),
                 static_cast<unsigned long>(
                     cyberFamiliar.wifiDiscoveries()));
     file.printf("ble_discoveries=%lu\ntools_known=%lu\n",
@@ -4813,31 +4953,49 @@ void importFamiliarCaptureLogs() {
 // Cyber Familiar / Familiar Patrol screens: see
 // include/familiar_screens.h/src/familiar_screens.cpp.
 
-void drawCyberFamiliarIdle() {
-    auto& display = M5Cardputer.Display;
-    if (!familiarIdleDrawn) {
-        display.fillRect(0, 0, display.width(), display.height(),
-                         Branding::background);
-        familiarIdleDrawn = true;
-    } else {
-        // The creature and bubble are the only animated idle elements.
-        display.fillRect(0, 0, display.width(), 80, Branding::background);
-    }
-    familiarScreens.drawCreature(120, 75, true);
-    familiarScreens.drawSpeechBubble(15, 4, 210);
-    display.setTextColor(Branding::text, Branding::background);
-    display.setCursor(8, 82);
-    display.printf("%s  Lv%u  %s", cyberFamiliar.name().c_str(),
-                   static_cast<unsigned>(cyberFamiliar.level()),
-                   cyberFamiliar.moodName());
-    display.setTextColor(Branding::muted, Branding::background);
-    display.setCursor(8, 101);
-    display.print(cyberFamiliar.lastMessage().substring(0, 37));
-    display.setCursor(8, 119);
-    display.printf("WiFi:%s  Battery:%u%%",
-                   WiFi.status() == WL_CONNECTED ? "UP" : "--",
-                   batteryPercentage());
+// No text at all -- just a big render of the creature filling the screen.
+// This is a screensaver, glanced at rather than read; the name/level/mood/
+// message/wifi/battery readouts that used to sit under it belong to the
+// regular Familiar screen (page 0), not here.
+void drawCyberFamiliarIdleInto(lgfx::LGFXBase& gfx) {
+    gfx.fillScreen(Branding::background);
+    familiarScreens.drawCreature(gfx, 120, 112, 1.9f);
 }
+
+// Drawn into an offscreen canvas and blitted with one pushSprite() so the
+// creature's bob/blink doesn't flicker the clear-then-redraw way drawing
+// straight to the display did -- same fix as page 0's familiarCanvas_ (see
+// FamiliarScreens::drawFamiliar()). Allocated once and kept for the life
+// of the app (like familiarCanvas_) rather than created/freed on every
+// idle entry/exit -- avoids any repeated-alloc heap churn as a possible
+// contributor while chasing the remaining flicker report.
+void drawCyberFamiliarIdle() {
+    if (!familiarIdleCanvasReady) {
+        // 8-bit (not the default 16-bit) so the buffer is half the size --
+        // by the time this screensaver typically gets used (well into a
+        // session, after Wi-Fi/BLE scans and everything else have chewed
+        // up and fragmented the heap), the largest contiguous free block
+        // can be well under what a full 16-bit 240x135 canvas needs. The
+        // creature is a handful of flat theme colors, not a gradient, so
+        // RGB332's coarser palette costs nothing visible here.
+        familiarIdleCanvas.setColorDepth(8);
+        familiarIdleCanvasReady = familiarIdleCanvas.createSprite(
+            M5Cardputer.Display.width(), M5Cardputer.Display.height());
+    }
+    if (!familiarIdleCanvasReady) {
+        // OOM fallback: draw straight to the display, flicker and all,
+        // rather than show nothing.
+        drawCyberFamiliarIdleInto(M5Cardputer.Display);
+        return;
+    }
+    drawCyberFamiliarIdleInto(familiarIdleCanvas);
+    familiarIdleCanvas.pushSprite(&M5Cardputer.Display, 0, 0);
+}
+
+// No-op now that familiarIdleCanvas is kept persistently (see
+// drawCyberFamiliarIdle()) -- left in place so its call sites don't need
+// touching.
+void freeFamiliarIdleCanvas() {}
 
 // Settings root menu: see MenuScreens::drawSettings.
 // Settings sub-screens, About, Placeholder: see
@@ -4913,6 +5071,12 @@ void drawCurrentScreen() {
         case Screen::AiChat: aiChatScreen.draw(); break;
         case Screen::CyberFamiliar: familiarScreens.drawFamiliar(); break;
         case Screen::LootBoard: familiarScreens.drawLootBoard(); break;
+        case Screen::FamiliarEvolution: familiarScreens.drawEvolution(); break;
+        case Screen::FamiliarBattleMenu: familiarScreens.drawBattleMenu(); break;
+        case Screen::FamiliarBattleHost: familiarScreens.drawBattleHost(); break;
+        case Screen::FamiliarBattleFind: familiarScreens.drawBattleFind(); break;
+        case Screen::FamiliarBattle: familiarScreens.drawBattle(); break;
+        case Screen::FamiliarBattleResult: familiarScreens.drawBattleResult(); break;
         case Screen::FamiliarPatrol: familiarScreens.drawPatrol(); break;
         case Screen::FamiliarPatrolConfirm: familiarScreens.drawPatrolConfirm(); break;
         case Screen::FamiliarMissions: familiarScreens.drawMissions(); break;
@@ -4960,6 +5124,7 @@ void drawCurrentScreen() {
         case Screen::Files: fileScreens.drawFiles(); break;
         case Screen::FileDetail: fileScreens.drawFileDetail(); break;
         case Screen::TextPreview: fileScreens.drawTextPreview(); break;
+        case Screen::LogCategories: logScreens.drawCategories(); break;
         case Screen::LogSessions: logScreens.drawSessions(); break;
         case Screen::LogDetail: logScreens.drawDetail(); break;
         case Screen::LogDeleteConfirm: logScreens.drawDeleteConfirm(); break;
@@ -4970,6 +5135,11 @@ void drawCurrentScreen() {
         case Screen::WarDrive: networkScanScreens.drawWarDrive(); break;
         case Screen::NetworkMenu: menuScreens.drawNetwork(); break;
         case Screen::NetworkDashboard: networkScanScreens.drawNetworkDashboard(); break;
+        case Screen::PoeCompanion: networkScanScreens.drawPoeCompanion(); break;
+        case Screen::PoeCompanionDetail: networkScanScreens.drawPoeCompanionDetail(); break;
+        case Screen::PoePayloadScripts:
+            networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
+            break;
         case Screen::NetworkHostScan: networkScanScreens.drawNetworkHostScan(); break;
         case Screen::NetworkPortScan: networkScanScreens.drawNetworkPortScan(); break;
         case Screen::TelnetConnect: telnetScreens.drawConnect(); break;
@@ -5724,9 +5894,10 @@ void enterMenuItem() {
         case 1: currentScreen = Screen::ObserveMenu; break;
         case 2: currentScreen = Screen::NetworkMenu; break;
         case 3:
-            currentScreen = Screen::LogSessions;
+            currentScreen = Screen::LogCategories;
             evidenceReturnScreen = Screen::MainMenu;
-            loadLogSessions();
+            listSelection = 0;
+            listOffset = 0;
             break;
         case 4: currentScreen = Screen::FieldKitMenu; break;
         case 5: currentScreen = Screen::Settings; break;
@@ -5760,7 +5931,25 @@ void goBack() {
         familiarScreens.drawFamiliar();
         return;
     }
-    if (currentScreen == Screen::LootBoard) {
+    if (currentScreen == Screen::LootBoard ||
+        currentScreen == Screen::FamiliarEvolution) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarScreens.drawFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarBattleMenu) {
+        currentScreen = Screen::CyberFamiliar;
+        familiarScreens.drawFamiliar();
+        return;
+    }
+    if (currentScreen == Screen::FamiliarBattleHost ||
+        currentScreen == Screen::FamiliarBattleFind ||
+        currentScreen == Screen::FamiliarBattle ||
+        currentScreen == Screen::FamiliarBattleResult) {
+        // Bailing out of an active connection/battle this way is
+        // equivalent to walking out of range -- the peer sees a plain
+        // disconnect (see onPeerDisconnected()) rather than a clean Flee.
+        familiarBattleService.end();
         currentScreen = Screen::CyberFamiliar;
         familiarScreens.drawFamiliar();
         return;
@@ -5900,7 +6089,7 @@ void goBack() {
     if (currentScreen == Screen::NetworkHostScan) {
         networkHostScanService.stop();
         currentScreen = Screen::NetworkMenu;
-        listSelection = 1;
+        listSelection = 2;
         menuScreens.drawNetwork();
         return;
     }
@@ -5908,6 +6097,28 @@ void goBack() {
         currentScreen = Screen::NetworkMenu;
         listSelection = 0;
         menuScreens.drawNetwork();
+        return;
+    }
+    if (currentScreen == Screen::PoeCompanionDetail) {
+        currentScreen = Screen::PoeCompanion;
+        networkScanScreens.drawPoeCompanion();
+        return;
+    }
+    if (currentScreen == Screen::PoeCompanion) {
+        currentScreen = Screen::NetworkMenu;
+        listSelection = 1;
+        menuScreens.drawNetwork();
+        return;
+    }
+    if (currentScreen == Screen::PoePayloadScripts) {
+        currentScreen = poePayloadScriptsReturnScreen;
+        listSelection = 0;
+        listOffset = 0;
+        if (currentScreen == Screen::PoeCompanionDetail) {
+            networkScanScreens.drawPoeCompanionDetail();
+        } else {
+            networkScanScreens.drawPoeCompanion();
+        }
         return;
     }
     if (currentScreen == Screen::NetworkPortScan) {
@@ -5986,6 +6197,11 @@ void goBack() {
         return;
     }
     if (currentScreen == Screen::LogSessions) {
+        currentScreen = Screen::LogCategories;
+        logScreens.drawCategories();
+        return;
+    }
+    if (currentScreen == Screen::LogCategories) {
         currentScreen = evidenceReturnScreen;
         if (currentScreen == Screen::MainMenu) {
             menuSelection = 3;
@@ -6294,6 +6510,169 @@ void goBack() {
     }
     currentScreen = Screen::MainMenu;
     menuScreens.drawMain();
+}
+
+// Gates the "Run slot 0/1" actions on both PoE Companion screens: a paired,
+// clock-synced session key is required regardless of transport, then either
+// Grove (preferred, matching telemetry's own Grove-priority) or a reachable
+// Wi-Fi companion makes an actual send possible.
+bool commandChannelAvailable() {
+    if (!groveCompanionLink.hasSessionKey() || !groveCompanionLink.hasClockSync()) {
+        return false;
+    }
+    return groveCompanionLink.connected() ||
+           (WiFi.status() == WL_CONNECTED && !poeCompanionService.companionIp().isEmpty());
+}
+
+// Picks the transport and fires: Grove when connected (faster, no Wi-Fi
+// dependency, matching how telemetry already prefers it), Wi-Fi otherwise.
+// Returns whether the request could be sent at all, not whether the P4
+// accepted it -- same contract as GroveCompanionLink::sendCommand() alone
+// used to have; the result (accepted or not) is always visible via the
+// regular status telemetry's payload state, not a special return value.
+bool sendPayloadCommand(uint8_t slot) {
+    if (!commandChannelAvailable()) return false;
+    if (groveCompanionLink.connected()) {
+        return groveCompanionLink.sendCommand(slot);
+    }
+    const uint32_t nonce = esp_random();
+    uint8_t tag[GHOSTWIRE_AUTH_TAG_BYTES];
+    if (!groveCompanionLink.buildWifiCommandTag(slot, nonce, tag)) return false;
+    return poeCompanionService.sendCommand(slot, nonce, tag);
+}
+
+// "Tab -> Forget pairing key" on the Relay detail screen: clears both the
+// in-memory session key/clock offset and its persisted copy, since there's
+// otherwise no way to clear a stale key short of re-pairing overwriting it
+// (e.g. if the P4 is ever re-flashed/replaced with different key material).
+void forgetGrovePairing() {
+    groveCompanionLink.forgetSessionKey();
+    preferences.remove("grove_key");
+}
+
+// Uploads `script` to the P4's slot 0/1 -- same transport selection as
+// sendPayloadCommand() (Grove preferred, Wi-Fi fallback), same "returns
+// whether it was even attempted, not whether the P4 accepted it" contract.
+// The two transports differ in how they get authenticated (GroveCompanionLink
+// drives the whole multi-frame Grove exchange itself; the Wi-Fi path needs a
+// tag built up front since PoeCompanionService stays crypto-agnostic), but
+// both ultimately hash+authenticate the same script bytes.
+bool sendPayloadScript(uint8_t slot, const String& script) {
+    if (!commandChannelAvailable()) return false;
+    if (groveCompanionLink.connected()) {
+        return groveCompanionLink.sendScript(slot, script);
+    }
+    const uint32_t nonce = esp_random();
+    uint8_t tag[GHOSTWIRE_AUTH_TAG_BYTES];
+    if (!groveCompanionLink.buildWifiScriptTag(slot, nonce, script, tag)) return false;
+    return poeCompanionService.sendScript(slot, nonce, tag, script);
+}
+
+// Pulls the P4's accumulated loot log via whichever transport is available.
+// Unlike the other two actions, a return of `false` here means the request
+// itself failed/was rejected -- `out` is only meaningful when this returns
+// true (matching how there's no separate "ran but empty" telemetry field to
+// fall back on the way payload-run results have).
+bool extractPoeLoot(std::vector<LootEntry>& out) {
+    if (!commandChannelAvailable()) return false;
+    if (groveCompanionLink.connected()) {
+        return groveCompanionLink.requestLoot(out);
+    }
+    const uint32_t nonce = esp_random();
+    uint8_t tag[GHOSTWIRE_AUTH_TAG_BYTES];
+    if (!groveCompanionLink.buildWifiLootTag(nonce, tag)) return false;
+    return poeCompanionService.fetchLoot(nonce, tag, out);
+}
+
+// "Tab -> Upload to slot 0/1" on either PoE Companion screen: fixes which
+// slot a file selected on the next screen goes to, then opens the picker
+// already scoped to it (see drawPoePayloadScripts()'s own comment for why
+// there's no separate "which slot?" sub-prompt).
+void enterPoeScriptPicker(uint8_t slot) {
+    poePayloadScriptsReturnScreen = currentScreen;
+    poeScriptUploadSlot = slot;
+    poeScriptUploadStatus = "";
+    currentScreen = Screen::PoePayloadScripts;
+    listSelection = 0;
+    listOffset = 0;
+    loadPoeScripts();
+}
+
+// Enter on the picker screen: reads the selected file whole (it has to
+// cross the wire as one unit either way, so streaming line-by-line the way
+// loadDuckyScripts()'s player does buys nothing here) and uploads it to
+// poeScriptUploadSlot.
+void uploadSelectedPoeScript() {
+    if (poeScripts.empty() || listSelection >= poeScripts.size()) return;
+    const String path = "/ghostwire/poe-scripts/" + poeScripts[listSelection];
+    File file = SD.open(path, FILE_READ);
+    if (!file) {
+        poeScriptUploadStatus = "Could not open file";
+        return;
+    }
+    String script;
+    script.reserve(file.size());
+    while (file.available() && script.length() < kPayloadScriptMaxBytes) {
+        script += static_cast<char>(file.read());
+    }
+    file.close();
+    if (script.length() >= kPayloadScriptMaxBytes) {
+        poeScriptUploadStatus = "Script too large";
+        return;
+    }
+    poeScriptUploadStatus = "Uploading...";
+    networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
+    const bool sent = sendPayloadScript(poeScriptUploadSlot, script);
+    // sendPayloadScript() only reports whether the transfer was attempted
+    // and completed the P4's own accept/reject reply -- same "attempted,
+    // not necessarily accepted" contract as sendPayloadCommand(), so this
+    // wording matches: a busy slot or a stale pairing rejects just as
+    // silently from here as it does for a command trigger.
+    poeScriptUploadStatus =
+        sent ? "Uploaded to slot " + String(poeScriptUploadSlot) : "Upload failed/rejected";
+}
+
+// "Tab -> Extract loot" on either PoE Companion screen: pulls the P4's
+// accumulated loot log and saves it as a CSV, same SdLogger pattern as
+// exportNetworkHostResults(). Deliberately doesn't touch
+// lootHostsFound/bumpLootCounter() -- kept separate from the Familiar's own
+// lifetime counters (raw recon output, not an engagement metric).
+void extractPoeLootToSd() {
+    if (!sdAvailable) {
+        poeLootExtractStatus = "Extract failed: no SD card";
+        return;
+    }
+    std::vector<LootEntry> entries;
+    if (!extractPoeLoot(entries)) {
+        poeLootExtractStatus = "Extract failed/rejected";
+        return;
+    }
+    if (entries.empty()) {
+        poeLootExtractStatus = "No loot yet";
+        return;
+    }
+    SdLogger logger;
+    // logs/poe, not the flat /ghostwire/logs/ every export used to pile
+    // into -- that folder had accumulated enough files this session to
+    // trip the Files screen's 128-entry listing cap (main.cpp's
+    // loadFiles(), ~line 3197), silently hiding the most recently written
+    // ones, poe_loot included. See the Evidence category split below for
+    // the same fix applied to every other feature's exports.
+    if (!logger.begin("poe_loot", "ip,port", "logs/poe")) {
+        poeLootExtractStatus = "Extract failed: " + logger.status();
+        return;
+    }
+    for (const auto& entry : entries) {
+        logger.append(entry.ip + "," + String(entry.port));
+    }
+    String name = logger.path();
+    const int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    const bool success = logger.isActive();
+    logger.stop();
+    poeLootExtractStatus = success
+        ? "Saved " + name + " (" + String(entries.size()) + ")"
+        : "Extract failed: " + logger.status();
 }
 
 void handleInput(const Keyboard_Class::KeysState& keys) {
@@ -6769,7 +7148,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::TelnetConnect) {
         if (keys.esc) {
             currentScreen = telnetReturnScreen;
-            listSelection = telnetReturnScreen == Screen::NetworkMenu ? 2 : 0;
+            listSelection = telnetReturnScreen == Screen::NetworkMenu ? 3 : 0;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -6827,7 +7206,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         if (keys.esc) {
             currentScreen = socketWorkbenchReturnScreen;
             listSelection = socketWorkbenchReturnScreen == Screen::NetworkMenu
-                                ? 4
+                                ? 5
                                 : 0;
             listOffset = 0;
             drawCurrentScreen();
@@ -6894,7 +7273,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 socketWorkbenchLoggingActive = false;
             } else if (sdAvailable) {
                 socketWorkbenchLoggingActive = socketWorkbenchLogger.begin(
-                    "socket_workbench", "timestamp_utc,direction,payload");
+                    "socket_workbench", "timestamp_utc,direction,payload", "logs/tools");
             }
             socketWorkbenchScreens.drawSessionFooter();
             return;
@@ -6921,7 +7300,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
     if (currentScreen == Screen::SshConnect) {
         if (keys.esc) {
             currentScreen = Screen::NetworkMenu;
-            listSelection = 3;
+            listSelection = 4;
             listOffset = 0;
             drawCurrentScreen();
             return;
@@ -7169,8 +7548,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::ObserveMenu:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 6);
+            if (down) moveSelection(1, 6);
             if (keys.enter) {
                 const size_t mission = listSelection;
                 listSelection = 0;
@@ -7302,7 +7681,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 wifiSnifferService.begin();
                 wifiSnifferService.setHandshakeTarget(
                     accessPoints[listSelection].bssid);
-                handshakeCaptureLogger.begin("handshake");
+                handshakeCaptureLogger.begin("handshake", "logs/wifi");
                 currentScreen = Screen::WifiHandshakeCapture;
                 wifiScreens.drawHandshakeCapture();
                 return;
@@ -7356,7 +7735,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 manualHandshakeLootCounted = false;
                 wifiSnifferService.setHandshakeTarget(
                     accessPoints[listSelection].bssid);
-                handshakeCaptureLogger.begin("handshake");
+                handshakeCaptureLogger.begin("handshake", "logs/wifi");
             }
             wifiScreens.drawHandshakeCapture();
             break;
@@ -7733,7 +8112,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                             "timestamp_utc,name,address,address_type,rssi_dbm,"
                             "connectable,advertisement_type,payload_bytes,"
                             "service_count,service_uuids,manufacturer,"
-                            "manufacturer_data_hex,payload_hex");
+                            "manufacturer_data_hex,payload_hex", "logs/ble");
                     }
                     recoverKeyboardAfterBlockingOperation();
                 }
@@ -7774,7 +8153,6 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (pressedLetter(keys, 'w')) {
                 screenSleeping = true;
                 familiarIdleActive = true;
-                familiarIdleDrawn = false;
                 cyberdeckIdleActive = false;
                 lastFamiliarDraw = 0;
                 drawCyberFamiliarIdle();
@@ -7808,11 +8186,113 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 drawCurrentScreen();
                 return;
             }
+            if (pressedLetter(keys, 'v')) {
+                currentScreen = Screen::FamiliarEvolution;
+                drawCurrentScreen();
+                return;
+            }
+            if (pressedLetter(keys, 'y')) {
+                listSelection = 0;
+                listOffset = 0;
+                currentScreen = Screen::FamiliarBattleMenu;
+                drawCurrentScreen();
+                return;
+            }
             familiarScreens.drawFamiliar();
             break;
 
         case Screen::LootBoard:
             familiarScreens.drawLootBoard();
+            break;
+
+        case Screen::FamiliarEvolution:
+            familiarScreens.drawEvolution();
+            break;
+
+        case Screen::FamiliarBattleMenu:
+            if (up) moveSelection(-1, FamiliarScreens::kBattleMenuCount);
+            if (down) moveSelection(1, FamiliarScreens::kBattleMenuCount);
+            if (keys.enter) {
+                const uint8_t stageIndex = cyberFamiliar.stageIndex();
+                const uint8_t level = static_cast<uint8_t>(cyberFamiliar.level());
+                familiarBattleResultClaimed = false;
+                lastFamiliarBattleSignature = "";
+                if (listSelection == 0) {
+                    if (familiarBattleService.beginHost(familiarPlayerId(),
+                                                        stageIndex, level)) {
+                        currentScreen = Screen::FamiliarBattleHost;
+                    }
+                } else {
+                    listSelection = 0;
+                    listOffset = 0;
+                    familiarBattleService.beginFind(familiarPlayerId(),
+                                                    stageIndex, level);
+                    currentScreen = Screen::FamiliarBattleFind;
+                }
+                drawCurrentScreen();
+                return;
+            }
+            familiarScreens.drawBattleMenu();
+            break;
+
+        case Screen::FamiliarBattleHost:
+            familiarScreens.drawBattleHost();
+            break;
+
+        case Screen::FamiliarBattleFind: {
+            const size_t resultCount = familiarBattleService.scanResults().size();
+            if (up) moveSelection(-1, resultCount);
+            if (down) moveSelection(1, resultCount);
+            if (pressedLetter(keys, 'r')) {
+                const uint8_t stageIndex = cyberFamiliar.stageIndex();
+                const uint8_t level = static_cast<uint8_t>(cyberFamiliar.level());
+                listSelection = 0;
+                listOffset = 0;
+                familiarBattleService.beginFind(familiarPlayerId(), stageIndex,
+                                                level);
+                drawCurrentScreen();
+                return;
+            }
+            if (keys.enter && resultCount > 0) {
+                if (familiarBattleService.connectTo(listSelection)) {
+                    familiarBattleResultClaimed = false;
+                    lastFamiliarBattleSignature = "";
+                    currentScreen = Screen::FamiliarBattleHost;  // reuses
+                                                                 // the same
+                                                                 // status
+                                                                 // screen
+                                                                 // while the
+                                                                 // handshake
+                                                                 // completes
+                }
+                drawCurrentScreen();
+                return;
+            }
+            familiarScreens.drawBattleFind();
+            break;
+        }
+
+        case Screen::FamiliarBattle:
+            if (pressedLetter(keys, 'a')) {
+                familiarBattleService.submitMove(FamiliarBattleMove::Attack);
+            } else if (pressedLetter(keys, 'd')) {
+                familiarBattleService.submitMove(FamiliarBattleMove::Defend);
+            } else if (pressedLetter(keys, 's')) {
+                familiarBattleService.submitMove(FamiliarBattleMove::Special);
+            } else if (pressedLetter(keys, 'f')) {
+                familiarBattleService.submitMove(FamiliarBattleMove::Flee);
+            }
+            familiarScreens.drawBattle();
+            break;
+
+        case Screen::FamiliarBattleResult:
+            if (keys.enter) {
+                familiarBattleService.end();
+                currentScreen = Screen::CyberFamiliar;
+                drawCurrentScreen();
+                return;
+            }
+            familiarScreens.drawBattleResult();
             break;
 
         case Screen::FamiliarMissions:
@@ -7914,7 +8394,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         WiFi.subnetMask(), familiarPatrolContinuousChoice,
                         kFamiliarPatrolIntervals[familiarPatrolIntervalIndex])) {
                     cyberFamiliar.notePatrol("Patrol started. Mapping the deck.",
-                                             10, FamiliarMood::Excited);
+                                             FamiliarXpEvent::PatrolStarted,
+                                             FamiliarMood::Excited);
                     triggerFamiliarReaction(FamiliarReaction::Searching, 2200);
                     showFamiliarSpeech("Let's see who's here!", 2600);
                     playFamiliarCue(FamiliarCue::Started);
@@ -7928,7 +8409,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::FamiliarPatrol:
             if (pressedLetter(keys, 'x')) {
                 familiarPatrolService.stop();
-                cyberFamiliar.notePatrol("Patrol stopped by operator.", 0,
+                cyberFamiliar.notePatrol("Patrol stopped by operator.",
+                                         FamiliarXpEvent::PatrolStoppedByOperator,
                                          FamiliarMood::Content);
             }
             familiarScreens.drawPatrol();
@@ -7959,9 +8441,10 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     case 1: currentScreen = Screen::UsbHid; break;
                     case 2: currentScreen = Screen::Audio; break;
                     case 3:
-                        currentScreen = Screen::LogSessions;
+                        currentScreen = Screen::LogCategories;
                         evidenceReturnScreen = Screen::ToolsMenu;
-                        loadLogSessions();
+                        listSelection = 0;
+                        listOffset = 0;
                         break;
                     case 4:
                         imuAvailable = M5.Imu.isEnabled();
@@ -8141,10 +8624,23 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             fileScreens.drawTextPreview();
             break;
 
+        case Screen::LogCategories:
+            if (up) moveSelection(-1, kLogCategoryCount);
+            if (down) moveSelection(1, kLogCategoryCount);
+            if (keys.enter) {
+                currentLogCategoryPath = kLogCategories[listSelection].path;
+                currentScreen = Screen::LogSessions;
+                loadLogSessions(currentLogCategoryPath);
+                logScreens.drawSessions();
+                return;
+            }
+            logScreens.drawCategories();
+            break;
+
         case Screen::LogSessions:
             if (refresh) {
                 initSd();
-                loadLogSessions();
+                loadLogSessions(currentLogCategoryPath);
             } else if (up && !logSessions.empty()) {
                 logSelection = logSelection == 0
                                    ? logSessions.size() - 1
@@ -8182,7 +8678,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::LogDeleteConfirm:
             if (keys.enter && !logSessions.empty()) {
                 SD.remove(logSessions[logSelection].path);
-                loadLogSessions();
+                loadLogSessions(currentLogCategoryPath);
                 currentScreen = Screen::LogSessions;
                 logScreens.drawSessions();
             }
@@ -8282,11 +8778,11 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                             "FirstSeen,Channel,RSSI,CurrentLatitude,"
                             "CurrentLongitude,AltitudeMeters,AccuracyMeters,Type";
                         warDriveWifiLogger.begin(
-                            "wardrive_wigle", wigleHeader.c_str());
+                            "wardrive_wigle", wigleHeader.c_str(), "logs/wardrive");
                         warDriveBleLogger.begin(
                             "wardrive_ble",
                             "timestamp_utc,lat,lon,fix,name,address,"
-                            "rssi_dbm,connectable,service_uuid");
+                            "rssi_dbm,connectable,service_uuid", "logs/wardrive");
                     }
                 } else {
                     warDriveService.stop();
@@ -8300,19 +8796,31 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             break;
 
         case Screen::NetworkMenu:
-            if (up) moveSelection(-1, 5);
-            if (down) moveSelection(1, 5);
+            if (up) moveSelection(-1, 6);
+            if (down) moveSelection(1, 6);
             if (keys.enter) {
                 if (listSelection == 0) {
                     currentScreen = Screen::NetworkDashboard;
                 } else if (listSelection == 1) {
-                    currentScreen = Screen::NetworkHostScan;
+                    currentScreen = Screen::PoeCompanion;
+                    listSelection = 0;
+                    listOffset = 0;
+                    // No synchronous poeCompanionService.refresh() here --
+                    // that blocks entry for up to ~7s (mDNS + HTTP). Draw
+                    // with whatever's cached (Grove telemetry, if fresh, is
+                    // near-instant anyway); updatePoeCompanionScreen(),
+                    // called unconditionally from loop(), picks up the
+                    // network fetch on its own cadence on the next tick.
+                    networkScanScreens.drawPoeCompanion();
+                    return;
                 } else if (listSelection == 2) {
+                    currentScreen = Screen::NetworkHostScan;
+                } else if (listSelection == 3) {
                     telnetReturnScreen = Screen::NetworkMenu;
                     telnetHostInput = "";
                     telnetStatus = "";
                     currentScreen = Screen::TelnetConnect;
-                } else if (listSelection == 3) {
+                } else if (listSelection == 4) {
                     loadSshHistory();
                     sshHostInput = sshHistory[0];
                     currentScreen = Screen::SshConnect;
@@ -8332,6 +8840,109 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
 
         case Screen::NetworkDashboard:
             if (refresh) networkScanScreens.drawNetworkDashboard();
+            break;
+
+        case Screen::PoeCompanion:
+            // The periodic poll/backoff and Grove-change redraw live in
+            // updatePoeCompanionScreen(), called unconditionally from
+            // loop() -- this handleInput() switch only runs on an actual
+            // keypress, so a passively-watched screen would otherwise never
+            // poll or redraw on its own. 'R' stays here since it's a
+            // deliberate keypress.
+            if (pressedLetter(keys, 'd')) {
+                currentScreen = Screen::PoeCompanionDetail;
+                listSelection = 0;
+                listOffset = 0;
+                networkScanScreens.drawPoeCompanionDetail();
+                return;
+            }
+            // Quick-fire: no need to drill into the detail screen first --
+            // one nav step (Network -> Relay) then straight to 0/1.
+            if ((pressedLetter(keys, '0') || pressedLetter(keys, '1')) &&
+                commandChannelAvailable()) {
+                sendPayloadCommand(pressedLetter(keys, '0') ? 0 : 1);
+                networkScanScreens.drawPoeCompanion();
+                return;
+            }
+            if (pressedLetter(keys, 'p') && groveCompanionLink.connected() &&
+                !groveCompanionLink.hasSessionKey()) {
+                groveCompanionLink.beginPairing();
+                networkScanScreens.drawPoeCompanion();
+                return;
+            }
+            if ((pressedLetter(keys, 'u') || pressedLetter(keys, 'v')) &&
+                commandChannelAvailable()) {
+                enterPoeScriptPicker(pressedLetter(keys, 'u') ? 0 : 1);
+                networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
+                return;
+            }
+            if (pressedLetter(keys, 'x') && commandChannelAvailable()) {
+                extractPoeLootToSd();
+                networkScanScreens.drawPoeCompanion();
+                return;
+            }
+            if (refresh) {
+                networkScanScreens.drawPoeCompanion();
+                poeCompanionService.refresh();
+                networkScanScreens.drawPoeCompanion();
+            }
+            break;
+
+        case Screen::PoeCompanionDetail:
+            if (pressedLetter(keys, 'p') && groveCompanionLink.connected()) {
+                groveCompanionLink.beginPairing();
+                networkScanScreens.drawPoeCompanionDetail();
+                return;
+            }
+            if ((pressedLetter(keys, '0') || pressedLetter(keys, '1')) &&
+                commandChannelAvailable()) {
+                sendPayloadCommand(pressedLetter(keys, '0') ? 0 : 1);
+                networkScanScreens.drawPoeCompanionDetail();
+                return;
+            }
+            if ((pressedLetter(keys, 'u') || pressedLetter(keys, 'v')) &&
+                commandChannelAvailable()) {
+                enterPoeScriptPicker(pressedLetter(keys, 'u') ? 0 : 1);
+                networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
+                return;
+            }
+            if (pressedLetter(keys, 'x') && commandChannelAvailable()) {
+                extractPoeLootToSd();
+                networkScanScreens.drawPoeCompanionDetail();
+                return;
+            }
+            if (pressedLetter(keys, 'f') && groveCompanionLink.hasSessionKey()) {
+                forgetGrovePairing();
+                networkScanScreens.drawPoeCompanionDetail();
+                return;
+            }
+            // kMaxRows in drawPoeCompanionDetail() is the real cap; passing
+            // it here rather than the currently-drawn row count keeps this
+            // independent of which of that function's two branches is
+            // active -- normalizeListPosition() inside the draw call
+            // re-clamps to the real count before anything renders.
+            if (up) moveSelection(-1, 8);
+            if (down) moveSelection(1, 8);
+            if (refresh) {
+                networkScanScreens.drawPoeCompanionDetail();
+                poeCompanionService.refresh();
+            }
+            networkScanScreens.drawPoeCompanionDetail();
+            break;
+
+        case Screen::PoePayloadScripts:
+            if (up) moveSelection(-1, poeScripts.size());
+            if (down) moveSelection(1, poeScripts.size());
+            if (keys.enter && !poeScripts.empty()) {
+                uploadSelectedPoeScript();
+                networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
+                return;
+            }
+            if (refresh) {
+                poeScriptUploadStatus = "";
+                loadPoeScripts();
+            }
+            networkScanScreens.drawPoePayloadScripts(poeScriptUploadSlot);
             break;
 
         case Screen::NetworkHostScan:
@@ -8460,7 +9071,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     gnssLogger.begin(
                         "gnss",
                         "elapsed_ms,timestamp_utc,fix,latitude,longitude,altitude_m,"
-                        "satellites,hdop");
+                        "satellites,hdop", "logs/gnss");
                 }
             } else if (refresh) {
                 gnssService.restart();
@@ -8478,7 +9089,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         "lora",
                         "elapsed_ms,timestamp_utc,packet,profile,frequency_mhz,rssi_dbm,"
                         "snr_db,mesh_from,mesh_to,mesh_id,mesh_port,"
-                        "decoded_preview");
+                        "decoded_preview", "logs/mesh");
                 }
             } else if (pressedLetter(keys, 'p')) {
                 loraService.toggleProfile();
@@ -8798,7 +9409,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                 } else if (sdAvailable) {
                     wifiSnifferLogger.begin(
                         "wifi_probes",
-                        "timestamp_utc,mac_address,ssid,rssi_dbm,channel");
+                        "timestamp_utc,mac_address,ssid,rssi_dbm,channel", "logs/wifi");
                 }
             } else if (pressedLetter(keys, 'p')) {
                 if (wifiPassiveCaptureLogger.isActive()) {
@@ -8812,7 +9423,8 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                         wifiSnifferService.captureMode() ==
                                 WifiCaptureMode::Full
                             ? "wifi_full"
-                            : "wifi_management");
+                            : "wifi_management",
+                        "logs/wifi");
                 }
             } else if (pressedLetter(keys, 'm')) {
                 wifiPassiveCaptureLogger.stop();
@@ -8849,7 +9461,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
                     imuLogger.begin(
                         "imu",
                         "elapsed_ms,timestamp_utc,accel_x_g,accel_y_g,accel_z_g,"
-                        "gyro_x_dps,gyro_y_dps,gyro_z_dps");
+                        "gyro_x_dps,gyro_y_dps,gyro_z_dps", "logs/imu");
                 }
             } else if (pressedLetter(keys, 'c')) {
                 beginImuCalibration();
@@ -8951,6 +9563,7 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
             if (keys.enter && listSelection == 7) {
                 screenSleeping = true;
                 familiarIdleActive = false;
+                freeFamiliarIdleCanvas();
                 beginCyberdeckIdle();
                 drawCyberdeckIdle();
                 return;
@@ -9096,6 +9709,74 @@ void handleInput(const Keyboard_Class::KeysState& keys) {
         case Screen::SocketWorkbenchSetup:
         case Screen::SocketWorkbenchSession: break;
     }
+}
+
+// Called unconditionally from loop() (unlike handleInput(), which only runs
+// on an actual keypress) so the PoE Companion screen keeps polling/redrawing
+// while just sitting there watched, not only when a key happens to be
+// pressed. Grove delivers its own telemetry (~1 Hz) once statusFresh(), so
+// the network poll is only needed as a fallback/for the network-only fields
+// (IP/gateway/DNS) it doesn't carry -- back off to a much longer interval
+// while Grove is fresh, both to honor Grove's priority and to avoid
+// re-introducing the blocking-mDNS-stalls-Grove issue fixed above.
+void updatePoeCompanionScreen() {
+    if (currentScreen != Screen::PoeCompanion &&
+        currentScreen != Screen::PoeCompanionDetail) {
+        return;
+    }
+    // An autonomous redraw must not paint over an open action menu (Tab ->
+    // "Pair via Grove") -- every other per-loop autonomous redraw in this
+    // file guards on !actionMenuOpen for the same reason.
+    if (actionMenuOpen) return;
+    const auto redrawActive = []() {
+        if (currentScreen == Screen::PoeCompanionDetail) {
+            networkScanScreens.drawPoeCompanionDetail(false);
+        } else {
+            networkScanScreens.drawPoeCompanion(false);
+        }
+    };
+    static bool lastLocalGroveState = false;
+    static uint32_t lastLocalGroveSequence = 0;
+    static unsigned long lastLocalGroveStatusMs = 0;
+    const bool localGroveState = groveCompanionLink.connected();
+    const unsigned long pollIntervalMs =
+        groveCompanionLink.statusFresh() ? 60000 : 10000;
+    if (millis() - poeCompanionService.lastRefreshMs() >= pollIntervalMs) {
+        poeCompanionService.poll();
+        redrawActive();
+    } else if (localGroveState != lastLocalGroveState ||
+               groveCompanionLink.lastSequence() != lastLocalGroveSequence ||
+               groveCompanionLink.lastStatusUpdateMs() != lastLocalGroveStatusMs) {
+        redrawActive();
+    }
+    lastLocalGroveState = localGroveState;
+    lastLocalGroveSequence = groveCompanionLink.lastSequence();
+    lastLocalGroveStatusMs = groveCompanionLink.lastStatusUpdateMs();
+}
+
+// Called unconditionally from loop(), independent of which screen is
+// showing, so a pairing that completes after the user has already
+// navigated away still gets its session key persisted.
+void updateGrovePairingPersistence() {
+    static GrovePairingState lastState = GrovePairingState::Idle;
+    const GrovePairingState state = groveCompanionLink.pairingState();
+    if (state == lastState) return;
+    if (state == GrovePairingState::Success) {
+        preferences.putBytes("grove_key", groveCompanionLink.sessionKey(),
+                             GHOSTWIRE_AUTH_KEY_BYTES);
+        char fingerprint[9];
+        for (int i = 0; i < 4; ++i) {
+            snprintf(fingerprint + i * 2, 3, "%02x", groveCompanionLink.sessionKey()[i]);
+        }
+        Serial.printf("[grove] pairing complete, session key fingerprint %s...\n",
+                      fingerprint);
+    } else if (state == GrovePairingState::Failed) {
+        Serial.println("[grove] pairing failed");
+    }
+    if (currentScreen == Screen::PoeCompanionDetail && !actionMenuOpen) {
+        networkScanScreens.drawPoeCompanionDetail(false);
+    }
+    lastState = state;
 }
 
 void beginCyberdeckIdle() {
@@ -9306,7 +9987,15 @@ void setup() {
     config.output_power = true;
     M5Cardputer.begin(config, true);
     Serial.begin(115200);
+    groveCompanionLink.begin();
     preferences.begin("ghostwire", false);
+    {
+        uint8_t savedGroveKey[GHOSTWIRE_AUTH_KEY_BYTES];
+        if (preferences.getBytes("grove_key", savedGroveKey, sizeof(savedGroveKey)) ==
+            sizeof(savedGroveKey)) {
+            groveCompanionLink.loadSessionKey(savedGroveKey);
+        }
+    }
     lootHostsFound = preferences.getUInt("loot_hosts", 0);
     lootServicesFound = preferences.getUInt("loot_svcs", 0);
     lootWarningsRaised = preferences.getUInt("loot_warn", 0);
@@ -9472,13 +10161,13 @@ void setup() {
             "heap_soak",
             "timestamp_utc,uptime_ms,heap_free_kb,heap_min_kb,"
             "max_loop_gap_ms,battery_pct,battery_v,sd_free_mb,operation,"
-            "stability_events");
+            "stability_events", "logs/system");
         nextHeapSoakSampleMs = millis() + kHeapSoakIntervalMs;
         lastHeapSoakLoopMs = millis();
         operationEventLogger.begin(
             "operation_events",
             "timestamp_utc,uptime_ms,operation,transition,heap_free_kb,"
-            "heap_min_kb");
+            "heap_min_kb", "logs/system");
     }
     if (sdAvailable) familiarPatrolService.begin();
     cyberFamiliar.begin(preferences);
@@ -9521,6 +10210,9 @@ void loop() {
         lastHeapSoakLoopMs = now;
     }
     M5Cardputer.update();
+    groveCompanionLink.update();
+    updatePoeCompanionScreen();
+    updateGrovePairingPersistence();
     pollDevLedControl();
     updateStatusLedAndDevMessage();
     observeFamiliarToolScreen();
@@ -9580,14 +10272,17 @@ void loop() {
                            : "Map ready. " + String(fresh) +
                                  (fresh == 1 ? " new host." : " new hosts.");
             cyberFamiliar.notePatrol(
-                message, fresh == 0 ? 0 : 10,
+                message,
+                fresh == 0 ? FamiliarXpEvent::PatrolQuiet
+                           : FamiliarXpEvent::WatchPassFound,
                 fresh == 0 ? FamiliarMood::Content : FamiliarMood::Curious);
         } else if (patrolState == FamiliarPatrolState::Complete) {
             const uint32_t fresh = familiarPatrolService.cycleHostsFound();
             cyberFamiliar.notePatrol(
                 fresh == 0 ? "Quiet patrol. No new hosts."
                            : "Patrol complete. New leads saved.",
-                fresh == 0 ? 5 : 30,
+                fresh == 0 ? FamiliarXpEvent::PatrolQuiet
+                           : FamiliarXpEvent::PatrolCompleteFound,
                 fresh == 0 ? FamiliarMood::Content : FamiliarMood::Proud);
             triggerFamiliarReaction(FamiliarReaction::Complete, 4000);
             showFamiliarSpeech(
@@ -9601,7 +10296,8 @@ void loop() {
             cyberFamiliar.notePatrol(
                 fresh == 0 ? "Quiet watch pass. Nothing changed."
                            : "Scout pass found new company. Keeping watch.",
-                fresh == 0 ? 3 : 10,
+                fresh == 0 ? FamiliarXpEvent::PatrolQuiet
+                           : FamiliarXpEvent::WatchPassFound,
                 fresh == 0 ? FamiliarMood::Sleepy : FamiliarMood::Proud);
             triggerFamiliarReaction(FamiliarReaction::Complete, 3000);
             showFamiliarSpeech(
@@ -9611,7 +10307,8 @@ void loop() {
                 3400);
             playFamiliarCue(FamiliarCue::Complete);
         } else if (patrolState == FamiliarPatrolState::Error) {
-            cyberFamiliar.notePatrol("Patrol needs operator attention.", 0,
+            cyberFamiliar.notePatrol("Patrol needs operator attention.",
+                                     FamiliarXpEvent::PatrolNeedsAttention,
                                      FamiliarMood::Worried);
             showFamiliarSpeech("I need some help!", 3500);
             playFamiliarCue(FamiliarCue::Error);
@@ -9874,7 +10571,8 @@ void loop() {
                 String(wifiGuardianService.disassocFrames()));
         }
         cyberFamiliar.notePatrol(
-            "Guardian observed unusual disconnect traffic.", 8,
+            "Guardian observed unusual disconnect traffic.",
+            FamiliarXpEvent::GuardianDisconnectAnomaly,
             FamiliarMood::Worried);
         triggerFamiliarReaction(FamiliarReaction::Warning, 4500);
         showFamiliarSpeech("Warning! Disconnect burst observed.", 4500);
@@ -9896,7 +10594,8 @@ void loop() {
                 "," + csvSafePayload(portalCapture.username) + "," +
                 csvSafePayload(portalCapture.password));
         }
-        cyberFamiliar.notePatrol("Evil Portal caught a login.", 10,
+        cyberFamiliar.notePatrol("Evil Portal caught a login.",
+                                 FamiliarXpEvent::EvilPortalLoginCaptured,
                                  FamiliarMood::Proud);
         triggerFamiliarReaction(FamiliarReaction::Warning, 3000);
         showFamiliarSpeech("Got one! Login captured.", 3000);
@@ -9986,7 +10685,7 @@ void loop() {
             }
             cyberdeckIdleActive = false;
             familiarIdleActive = false;
-            familiarIdleDrawn = false;
+            freeFamiliarIdleCanvas();
             M5Cardputer.Display.setBrightness(screenBrightness);
             lastUserActivity = millis();
             drawCurrentScreen();
@@ -10012,10 +10711,70 @@ void loop() {
         drawCurrentScreen();
     }
 
-    if (currentScreen == Screen::CyberFamiliar && !actionMenuOpen &&
-        millis() - lastFamiliarDraw >= 180) {
+    // Only page 0 (the creature dashboard) animates -- pages 1/2 (stats,
+    // journal) are static, so skip the tick there instead of paying for a
+    // full content-pane wipe+redraw every 180ms for nothing.
+    if (currentScreen == Screen::CyberFamiliar && familiarPage == 0 &&
+        !actionMenuOpen && millis() - lastFamiliarDraw >= 180) {
         lastFamiliarDraw = millis();
         familiarScreens.drawFamiliar(false);
+    }
+
+    // Battle screens are event-driven, not animated -- redraw only when
+    // something actually changed (a cheap signature comparison) instead of
+    // an unconditional tick, since these draws go straight through
+    // ScreenChrome::drawHeader()'s fillScreen() rather than page 0's
+    // offscreen canvas and would otherwise flicker the same way the idle
+    // screensaver used to before that got double-buffered.
+    if ((currentScreen == Screen::FamiliarBattleHost ||
+        currentScreen == Screen::FamiliarBattleFind ||
+        currentScreen == Screen::FamiliarBattle) &&
+        !actionMenuOpen && millis() - lastFamiliarBattleDraw >= 200) {
+        lastFamiliarBattleDraw = millis();
+        familiarBattleService.update();
+        const FamiliarBattleState battleState = familiarBattleService.state();
+        if (battleState == FamiliarBattleState::Battling &&
+            currentScreen != Screen::FamiliarBattle) {
+            currentScreen = Screen::FamiliarBattle;
+            drawCurrentScreen();
+        } else if (battleState == FamiliarBattleState::Result) {
+            if (!familiarBattleResultClaimed) {
+                familiarBattleResultClaimed = true;
+                switch (familiarBattleService.outcome()) {
+                    case FamiliarBattleOutcome::Victory:
+                        cyberFamiliar.notePatrol("Won a PvP battle!",
+                                                 FamiliarXpEvent::BattleWon,
+                                                 FamiliarMood::Proud);
+                        triggerFamiliarReaction(FamiliarReaction::Complete, 3000);
+                        playFamiliarCue(FamiliarCue::Complete);
+                        break;
+                    case FamiliarBattleOutcome::Defeat:
+                        cyberFamiliar.notePatrol("Lost a PvP battle.",
+                                                 FamiliarXpEvent::BattleLost,
+                                                 FamiliarMood::Worried);
+                        playFamiliarCue(FamiliarCue::Warning);
+                        break;
+                    default:
+                        cyberFamiliar.notePatrol("A PvP battle ended early.",
+                                                 FamiliarXpEvent::BattleFled,
+                                                 FamiliarMood::Content);
+                        break;
+                }
+            }
+            currentScreen = Screen::FamiliarBattleResult;
+            drawCurrentScreen();
+        } else {
+            const String signature =
+                String(static_cast<int>(battleState)) + "|" +
+                familiarBattleService.status() + "|" +
+                String(familiarBattleService.myHp()) + "|" +
+                String(familiarBattleService.opponentHp()) + "|" +
+                String(familiarBattleService.log().size());
+            if (signature != lastFamiliarBattleSignature) {
+                lastFamiliarBattleSignature = signature;
+                drawCurrentScreen();
+            }
+        }
     }
 
     if (currentScreen == Screen::BleDiscovery && !actionMenuOpen &&
@@ -10240,7 +10999,12 @@ void loop() {
         imuScreen.draw(false);
     }
 
-    if (millis() - lastHeaderStatusDraw >= 1000) {
+    // Gated off during screenSleeping: idle/screensaver modes (Cyberdeck
+    // idle, Familiar idle) own the whole screen and periodically blit a
+    // full-screen frame over it -- this drawing straight to the real
+    // display in between those blits was a second, independent flicker
+    // source layered on top of whatever the active idle mode was doing.
+    if (!screenSleeping && millis() - lastHeaderStatusDraw >= 1000) {
         lastHeaderStatusDraw = millis();
         drawHeaderStatus();
     }
@@ -10257,17 +11021,18 @@ void loop() {
         screenSleeping = true;
         if (cyberFamiliar.idleMode()) {
             familiarIdleActive = true;
-            familiarIdleDrawn = false;
             cyberdeckIdleActive = false;
             lastFamiliarDraw = 0;
             drawCyberFamiliarIdle();
         } else if (cyberdeckIdleEnabled) {
             familiarIdleActive = false;
+            freeFamiliarIdleCanvas();
             beginCyberdeckIdle();
             drawCyberdeckIdle();
         } else {
             cyberdeckIdleActive = false;
             familiarIdleActive = false;
+            freeFamiliarIdleCanvas();
             M5Cardputer.Display.setBrightness(0);
         }
     }
